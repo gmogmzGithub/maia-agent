@@ -1,0 +1,19 @@
+[project]
+name = "realestate-hermes-plugin"
+version = "0.1.0"
+description = "Standalone Hermes plugin exposing the real-estate product's typed operations"
+requires-python = ">=3.11,<3.14"
+# Deliberately dependency-light. The plugin runs inside the Hermes process and
+# must not drag product dependencies (SQLAlchemy, psycopg, Alembic) into it.
+# httpx is already part of the Hermes install.
+dependencies = ["httpx>=0.27,<1"]
+
+[project.entry-points."hermes_agent.plugins"]
+realestate = "realestate_hermes_plugin"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["realestate_hermes_plugin*"]

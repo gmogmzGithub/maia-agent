@@ -1,0 +1,346 @@
+"""Checkpoint 5's bounded Administrative recovery work.
+
+This is intentionally not a task manager. It derives four accepted work types
+from Appointment state and accepts a fixed action vocabulary. Hermes interprets
+natural language; this module verifies Calendar evidence and owns every state
+transition.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from realestate.channels.google.calendar import CalendarOutcome, GoogleCalendar
+from realestate.db.models import (
+    Appointment,
+    AppointmentStatus,
+    Conversation,
+    InactiveReviewStatus,
+    InboxMessage,
+    Lead,
+    LeadNotificationStatus,
+    Property,
+)
+from realestate.domain.administration import Administrator
+from realestate.domain.appointments import NEEDS_REVIEW_MESSAGE, confirmation_message
+from realestate.domain.audit import record_audit
+from realestate.domain.availability import WeeklySchedule
+from realestate.domain.outbox import OutboxKind, OutboxService
+
+APPOINTMENT_NEEDS_REVIEW = "AppointmentNeedsReview"
+PENDING_MANUAL_NOTIFICATION = "PendingManualAppointmentNotification"
+INACTIVE_PROPERTY_REVIEW = "InactivePropertyAppointmentReview"
+PENDING_MANUAL_CANCELLATION = "PendingManualCancellation"
+
+CONFIRM = "Confirm"
+REJECT = "Reject"
+MARK_NOTIFIED = "MarkNotified"
+HANDLE_MANUALLY = "HandleManually"
+MARK_COMPLETE = "MarkComplete"
+
+ALLOWED_ACTIONS = frozenset(
+    {CONFIRM, REJECT, MARK_NOTIFIED, HANDLE_MANUALLY, MARK_COMPLETE}
+)
+CUSTOMER_SERVICE_WINDOW = timedelta(hours=24)
+
+
+def _now() -> datetime:
+    return datetime.now(tz=UTC)
+
+
+def rejection_message(
+    *, property_name: str, starts_at: datetime, schedule: WeeklySchedule
+) -> str:
+    local = starts_at.astimezone(schedule.zone)
+    return (
+        f"No fue posible reservar la visita a {property_name} para el "
+        f"{local.strftime('%d/%m/%Y')} a las {local.strftime('%H:%M')}. "
+        "Si quieres, puedo mostrarte otros horarios disponibles."
+    )
+
+
+class AdminWorkService:
+    def __init__(
+        self,
+        session: AsyncSession,
+        calendar: GoogleCalendar,
+        schedule: WeeklySchedule,
+    ) -> None:
+        self._session = session
+        self._calendar = calendar
+        self._schedule = schedule
+
+    async def list_pending(self) -> dict:
+        rows = (
+            (
+                await self._session.execute(
+                    select(Appointment).order_by(Appointment.created_at)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        items: list[dict] = []
+        for row in rows:
+            prop = await self._session.get(Property, row.property_uuid)
+            base = {
+                "reference": row.reference,
+                "property_id": prop.property_key if prop else "unknown",
+                "property_name": prop.name if prop else "Unknown property",
+                "relevant_at": row.starts_at.astimezone(self._schedule.zone).isoformat(),
+            }
+            if row.status == AppointmentStatus.NEEDS_REVIEW.value:
+                items.append(
+                    {
+                        **base,
+                        "type": APPOINTMENT_NEEDS_REVIEW,
+                        "state": AppointmentStatus.NEEDS_REVIEW.value,
+                        "allowed_actions": [CONFIRM, REJECT],
+                    }
+                )
+            if (
+                row.resolution_notification_status
+                == LeadNotificationStatus.PENDING_MANUAL.value
+            ):
+                items.append(
+                    {
+                        **base,
+                        "type": PENDING_MANUAL_NOTIFICATION,
+                        "state": LeadNotificationStatus.PENDING_MANUAL.value,
+                        "allowed_actions": [MARK_NOTIFIED],
+                    }
+                )
+            if row.inactive_review_status == InactiveReviewStatus.PENDING.value:
+                items.append(
+                    {
+                        **base,
+                        "type": INACTIVE_PROPERTY_REVIEW,
+                        "state": InactiveReviewStatus.PENDING.value,
+                        "allowed_actions": [HANDLE_MANUALLY],
+                    }
+                )
+            if (
+                row.inactive_review_status
+                == InactiveReviewStatus.HANDLING_MANUALLY.value
+            ):
+                items.append(
+                    {
+                        **base,
+                        "type": PENDING_MANUAL_CANCELLATION,
+                        "state": InactiveReviewStatus.HANDLING_MANUALLY.value,
+                        "allowed_actions": [MARK_COMPLETE],
+                    }
+                )
+        return {"result": "found", "items": items}
+
+    async def resolve(
+        self, reference: str, action: str, actor: Administrator
+    ) -> dict:
+        if action not in ALLOWED_ACTIONS:
+            return {"result": "invalid_action"}
+        row = (
+            await self._session.execute(
+                select(Appointment)
+                .where(Appointment.reference == reference)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            return {"result": "not_found"}
+
+        if action in (CONFIRM, REJECT):
+            result = await self._resolve_booking(row, action)
+        elif action == MARK_NOTIFIED:
+            result = await self._mark_notified(row)
+        elif action == HANDLE_MANUALLY:
+            result = await self._handle_manually(row)
+        else:
+            result = await self._complete_manual_cancellation(row)
+
+        await self._audit(row, actor, action, result)
+        return result
+
+    async def recover_pending_attempts(self) -> int:
+        """Turn crash-stranded Calendar attempts into visible review work."""
+        rows = (
+            (
+                await self._session.execute(
+                    select(Appointment)
+                    .where(Appointment.status == AppointmentStatus.PENDING.value)
+                    .with_for_update(skip_locked=True)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for row in rows:
+            row.status = AppointmentStatus.NEEDS_REVIEW.value
+            row.last_error = "Process stopped before the Calendar result was persisted."
+            conversation = await self._session.get(Conversation, row.conversation_id)
+            lead = await self._session.get(Lead, row.lead_id)
+            if conversation is not None and lead is not None:
+                await OutboxService(self._session).enqueue(
+                    conversation=conversation,
+                    to_wa_id=lead.wa_id,
+                    body=NEEDS_REVIEW_MESSAGE,
+                    kind="AppointmentNeedsReview",
+                    idempotency_key=f"appointment-needs-review:{row.id}",
+                    covered_inbox_ids=[],
+                )
+                row.lead_notice_at = _now()
+        if rows:
+            await self._session.commit()
+        return len(rows)
+
+    async def _resolve_booking(self, row: Appointment, action: str) -> dict:
+        if row.status != AppointmentStatus.NEEDS_REVIEW.value:
+            if row.status in (
+                AppointmentStatus.CONFIRMED.value,
+                AppointmentStatus.REJECTED.value,
+            ):
+                return {
+                    "result": "already_resolved",
+                    "reference": row.reference,
+                    "outcome": row.status,
+                }
+            return {"result": "conflict", "state": row.status}
+
+        evidence = await self._calendar.find_by_reference(row.reference)
+        if evidence.outcome is not CalendarOutcome.OK:
+            return {"result": "still_ambiguous", "detail": evidence.detail}
+
+        exists = evidence.event_id is not None
+        matches = exists and await self._event_matches(row, evidence)
+        if action == CONFIRM and not matches:
+            return {"result": "conflict" if exists else "still_ambiguous"}
+        if action == REJECT and exists:
+            return {"result": "conflict"}
+
+        row.status = (
+            AppointmentStatus.CONFIRMED.value
+            if action == CONFIRM
+            else AppointmentStatus.REJECTED.value
+        )
+        row.calendar_event_id = evidence.event_id if action == CONFIRM else None
+        row.resolved_at = _now()
+        row.last_error = None
+        notification = await self._release_resolution(row)
+        await self._session.commit()
+        return {
+            "result": "resolved",
+            "reference": row.reference,
+            "outcome": row.status,
+            "lead_notification": notification,
+        }
+
+    async def _event_matches(self, row: Appointment, evidence) -> bool:  # noqa: ANN001
+        if evidence.start != row.starts_at or evidence.end != row.ends_at:
+            return False
+        # The deterministic event title includes the persisted Property name.
+        # The private appointment reference already binds it uniquely; the
+        # title check prevents a manually repurposed event from being accepted.
+        prop = await self._session.get(Property, row.property_uuid)
+        return prop is not None and prop.name.casefold() in (evidence.summary or "").casefold()
+
+    async def _release_resolution(self, row: Appointment) -> str:
+        conversation = await self._session.get(Conversation, row.conversation_id)
+        lead = await self._session.get(Lead, row.lead_id)
+        prop = await self._session.get(Property, row.property_uuid)
+        if conversation is None or lead is None or prop is None:
+            row.resolution_notification_status = (
+                LeadNotificationStatus.PENDING_MANUAL.value
+            )
+            return LeadNotificationStatus.PENDING_MANUAL.value
+
+        latest = (
+            await self._session.execute(
+                select(InboxMessage.persisted_at)
+                .where(InboxMessage.conversation_id == conversation.id)
+                .order_by(InboxMessage.persisted_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if latest is None or latest < _now() - CUSTOMER_SERVICE_WINDOW:
+            row.resolution_notification_status = (
+                LeadNotificationStatus.PENDING_MANUAL.value
+            )
+            return LeadNotificationStatus.PENDING_MANUAL.value
+
+        body = (
+            confirmation_message(
+                property_name=prop.name,
+                starts_at=row.starts_at,
+                schedule=self._schedule,
+            )
+            if row.status == AppointmentStatus.CONFIRMED.value
+            else rejection_message(
+                property_name=prop.name,
+                starts_at=row.starts_at,
+                schedule=self._schedule,
+            )
+        )
+        await OutboxService(self._session).enqueue(
+            conversation=conversation,
+            to_wa_id=lead.wa_id,
+            body=body,
+            kind=OutboxKind.APPOINTMENT_RESOLUTION,
+            idempotency_key=f"appointment-resolution:{row.id}:{row.status}",
+            covered_inbox_ids=[],
+        )
+        row.resolution_notification_status = LeadNotificationStatus.QUEUED.value
+        return LeadNotificationStatus.QUEUED.value
+
+    async def _mark_notified(self, row: Appointment) -> dict:
+        if (
+            row.resolution_notification_status
+            != LeadNotificationStatus.PENDING_MANUAL.value
+        ):
+            return {"result": "conflict"}
+        row.resolution_notification_status = LeadNotificationStatus.NOTIFIED.value
+        row.resolution_notification_at = _now()
+        await self._session.commit()
+        return {"result": "resolved", "reference": row.reference}
+
+    async def _handle_manually(self, row: Appointment) -> dict:
+        if row.inactive_review_status != InactiveReviewStatus.PENDING.value:
+            return {"result": "conflict"}
+        row.inactive_review_status = InactiveReviewStatus.HANDLING_MANUALLY.value
+        await self._session.commit()
+        return {"result": "resolved", "reference": row.reference}
+
+    async def _complete_manual_cancellation(self, row: Appointment) -> dict:
+        if (
+            row.inactive_review_status
+            != InactiveReviewStatus.HANDLING_MANUALLY.value
+        ):
+            return {"result": "conflict"}
+        evidence = await self._calendar.find_by_reference(row.reference)
+        if evidence.outcome is not CalendarOutcome.OK:
+            return {"result": "still_ambiguous", "detail": evidence.detail}
+        if evidence.event_id is not None:
+            return {"result": "conflict", "detail": "Calendar event still exists"}
+        row.inactive_review_status = InactiveReviewStatus.COMPLETE.value
+        row.status = AppointmentStatus.CANCELLED.value
+        row.cancelled_at = _now()
+        await self._session.commit()
+        return {"result": "resolved", "reference": row.reference}
+
+    async def _audit(
+        self, row: Appointment, actor: Administrator, action: str, result: dict
+    ) -> None:
+        await record_audit(
+            self._session,
+            actor_type="Administrative",
+            actor_id=actor.actor_id,
+            action="PendingAdminWorkResolutionRequested",
+            subject_type="Appointment",
+            subject_id=row.reference,
+            details={
+                "action": action,
+                "result": result.get("result"),
+                "origin_message_id": actor.origin_message_id,
+            },
+        )

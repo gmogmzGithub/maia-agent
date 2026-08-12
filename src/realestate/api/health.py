@@ -1,0 +1,56 @@
+"""Operator-facing health surface.
+
+Reports each Stage 0 dependency separately so an operator can tell *which* piece
+is missing. In particular, an unavailable or version-incompatible Hermes Runtime
+is reported as such rather than as a generic failure.
+"""
+
+from __future__ import annotations
+
+import asyncio
+
+from fastapi import APIRouter, Request, Response, status
+
+router = APIRouter(tags=["health"])
+
+
+@router.get("/health")
+async def health(request: Request, response: Response) -> dict[str, object]:
+    state = request.app.state
+    # Five independent dependencies, each a network round trip. Probed
+    # concurrently so an operator waits for the slowest, not for their sum.
+    database, hermes, whatsapp, telegram, calendar = await asyncio.gather(
+        state.database.check_health(),
+        state.hermes.check_health(),
+        state.whatsapp.check_health(),
+        state.telegram.check_health(),
+        state.calendar.check_health(),
+    )
+    loop_state = request.app.state.background_loop.state
+
+    # WhatsApp is reported but does not gate the aggregate: an expired
+    # test-number token is an expected Stage 0 condition, not an outage, and the
+    # rest of the system stays usable without it.
+    healthy = database.ok and hermes.ok and loop_state.running
+    if not healthy:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+
+    return {
+        "status": "ok" if healthy else "degraded",
+        "components": {
+            "database": database.as_dict(),
+            "hermes": hermes.as_dict(),
+            "whatsapp": whatsapp,
+            "telegram": telegram,
+            "calendar": calendar,
+            "background_loop": loop_state.as_dict(),
+        },
+    }
+
+
+@router.get("/health/hermes")
+async def hermes_health(request: Request, response: Response) -> dict[str, object]:
+    result = await request.app.state.hermes.check_health()
+    if not result.ok:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    return result.as_dict()

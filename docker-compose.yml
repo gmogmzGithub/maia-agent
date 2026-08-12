@@ -1,0 +1,90 @@
+# The single local PostgreSQL instance of Maia's Stage 0 topology.
+# No Redis, Kafka, Celery, broker, or business microservice is defined here and
+# none may be added without a new ADR.
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: maia-db
+    environment:
+      POSTGRES_USER: realestate
+      POSTGRES_PASSWORD: realestate
+      POSTGRES_DB: realestate
+    # 5433 on the host so a developer's existing local PostgreSQL is untouched.
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - maia-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U realestate -d realestate"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  hermes:
+    build:
+      context: ..
+      dockerfile: maia-agent/docker/hermes.Dockerfile
+    env_file:
+      - .env
+    # Hermes deliberately refuses an unauthenticated 0.0.0.0 bind. The
+    # Product client uses Hermes's loopback session-token protocol, so keep
+    # Hermes loopback-bound and share the host network namespace in this
+    # single-host Compose topology.
+    network_mode: host
+    environment:
+      HERMES_HOME: /opt/hermes-home
+      HERMES_HOST: 127.0.0.1
+      HERMES_PORT: 9119
+      REALESTATE_BACKEND_URL: http://127.0.0.1:8080
+      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
+    volumes:
+      - hermes-home:/opt/hermes-home
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9119/api/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+    logging:
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  product:
+    build:
+      context: .
+      dockerfile: docker/product.Dockerfile
+    env_file:
+      - .env
+    # Share the host namespace with Hermes so the existing loopback-only
+    # Product/Hermes protocol remains unchanged inside this single-host mode.
+    network_mode: host
+    environment:
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8080
+      DATABASE_URL: postgresql+psycopg://realestate:realestate@127.0.0.1:5433/realestate
+      HERMES_BASE_URL: http://127.0.0.1:9119
+      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
+      REALESTATE_BACKEND_URL: http://product:8080
+    depends_on:
+      db:
+        condition: service_healthy
+      hermes:
+        condition: service_healthy
+    volumes:
+      - product-artifacts:/app/var/property-documents
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+    logging:
+      options:
+        max-size: 10m
+        max-file: "3"
+
+volumes:
+  maia-pgdata:
+  hermes-home:
+  product-artifacts:
