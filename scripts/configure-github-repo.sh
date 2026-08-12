@@ -11,8 +11,7 @@ DESCRIPTION="Hermes-backed real estate lead agent for WhatsApp qualification, ap
 
 echo "==> Setting repository description"
 gh repo edit "$REPO" \
-  --description "$DESCRIPTION" \
-  --visibility public
+  --description "$DESCRIPTION"
 
 echo "==> Protecting main"
 gh api \
@@ -20,16 +19,27 @@ gh api \
   -H "Accept: application/vnd.github+json" \
   -H "X-GitHub-Api-Version: 2022-11-28" \
   "/repos/$REPO/branches/main/protection" \
-  -f required_pull_request_reviews='{"required_approving_review_count":1,"dismiss_stale_reviews":true,"require_code_owner_reviews":false}' \
-  -f required_status_checks='{"strict":true,"contexts":["tests"]}' \
-  -f enforce_admins=true \
-  -f restrictions=null \
-  -f required_linear_history=true \
-  -f allow_force_pushes=false \
-  -f allow_deletions=false \
-  -f block_creations=false \
-  -f required_conversation_resolution=true \
-  -f lock_branch=false \
-  -f allow_fork_syncing=true
+  --input - <<'JSON'
+{
+  "required_status_checks": {
+    "strict": true,
+    "contexts": ["tests"]
+  },
+  "enforce_admins": true,
+  "required_pull_request_reviews": {
+    "required_approving_review_count": 1,
+    "dismiss_stale_reviews": true,
+    "require_code_owner_reviews": false
+  },
+  "restrictions": null,
+  "required_linear_history": true,
+  "allow_force_pushes": false,
+  "allow_deletions": false,
+  "block_creations": false,
+  "required_conversation_resolution": true,
+  "lock_branch": false,
+  "allow_fork_syncing": true
+}
+JSON
 
 echo "GitHub repository configuration complete for $REPO."

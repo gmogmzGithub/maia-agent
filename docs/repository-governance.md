@@ -12,8 +12,17 @@ Use three branch categories:
 | `feature/<topic>` or `codex/<topic>` | Public by default | Normal implementation work before review |
 | `private/<topic>` | Private/local only | Raw planning, sensitive notes, experiments, or memory curation that must not reach `main` |
 
-Do not push `private/*` branches to the public GitHub remote unless they have
-been reviewed as public-safe.
+Important: branch names do not create privacy. In a public GitHub repository,
+any pushed branch is public. `private/*` means **local-only** unless it has been
+reviewed as public-safe. Do not push those branches to `origin`.
+
+For private material that still needs version control, use one of these instead:
+
+- a local-only branch that is never pushed;
+- an ignored `private-notes/` folder for working notes that do not need remote
+  backup;
+- a separate private repository if the notes need cloud backup or multi-machine
+  access.
 
 ## Protecting `main`
 
@@ -41,6 +50,9 @@ gh auth login
 scripts/configure-github-repo.sh
 ```
 
+This script does not make private notes private. It protects `main` from
+accidental direct pushes, force pushes, and unreviewed merges.
+
 ## Public-Safety Checklist
 
 Before opening or merging a PR:
@@ -52,6 +64,7 @@ Before opening or merging a PR:
 - Docs do not claim production readiness unless current evidence proves it.
 - README changes remain recruiter-readable and do not expose private working
   notes.
+- `git branch --list 'private/*'` branches are not pushed to `origin`.
 - Tests run locally or the skipped checks are named explicitly in the PR.
 
 ## What Belongs on `main`

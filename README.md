@@ -136,8 +136,8 @@ state, real leads, credentials, tokens, transcripts, or property documents that
 were not created for public demonstration.
 
 The curated project memory for future agents lives in `PROJECT_MEMORY.md`.
-Private working notes should live outside the public branch or in a private
-branch that is never merged into `main`.
+Private working notes should live outside pushed public branches: use ignored
+local notes, local-only branches, or a separate private repository.
 
 See `docs/repository-governance.md` for the branch and protection strategy.
 

@@ -103,12 +103,17 @@ Use:
 
 - `main` for public, recruiter-visible material;
 - `codex/<topic>` or `feature/<topic>` for normal implementation work;
-- `private/<topic>` for local/private notes that must not be merged into
-  `main`.
+- `private/<topic>` only for local branches that must not be pushed to the
+  public GitHub remote.
 
 `main` should contain clean product code, public-safe docs, and reproducible
 development instructions. Private notes, raw memory, and rough planning belong
 outside `main`.
+
+In a public GitHub repository, pushed branches are visible. Protected branches
+prevent unsafe changes to `main`; they do not hide sensitive content. Private
+material should stay in ignored local files, local-only branches, or a separate
+private repository.
 
 ## Open Next Work
 
