@@ -81,7 +81,7 @@ class AcceptedMessage:
     cycle_created: bool
 
 
-def combined_text(messages: "Sequence[InboxMessage]") -> str:
+def combined_text(messages: Sequence[InboxMessage]) -> str:
     """Messages in arrival order, as one conversational turn.
 
     Batching affects processing only; the durable source records are never

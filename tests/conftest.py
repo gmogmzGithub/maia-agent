@@ -3,8 +3,8 @@
 Tests come in two kinds:
 
 * **Offline** — pure logic, always run.
-* **Live** — exercise the real local topology (PostgreSQL, ``hermes serve``, the
-  Product application). These skip when the dependency is not up, so the suite
+* **Live** — exercise the real Compose topology (PostgreSQL, Hermes, and the
+  Product application). These skip when a dependency is not up, so the suite
   is runnable on a cold machine, but they are the tests that actually prove a
   checkpoint's exit condition.
 """
@@ -62,7 +62,9 @@ def _hostport(url: str, default_port: int) -> tuple[str, int]:
 
 
 HERMES_BASE_URL = env("HERMES_BASE_URL", "http://127.0.0.1:9119")
-APP_BASE_URL = f"http://{env('APP_HOST', '127.0.0.1')}:{env('APP_PORT', '8080')}"
+# The suite runs inside Product's container. APP_HOST is a bind address, not a
+# client address, so always probe the process through loopback.
+APP_BASE_URL = "http://127.0.0.1:8080"
 
 _DEV_DATABASE_URL = env(
     "DATABASE_URL",
@@ -89,15 +91,15 @@ DATABASE_URL = _test_database_url()
 
 requires_hermes = pytest.mark.skipif(
     not _port_open(*_hostport(HERMES_BASE_URL, 9119)),
-    reason="hermes serve is not running (scripts/hermes-serve.sh)",
+    reason="the Hermes container is not running",
 )
 requires_app = pytest.mark.skipif(
     not _port_open(*_hostport(APP_BASE_URL, 8080)),
-    reason="the Product application is not running (scripts/run-app.sh)",
+    reason="the Product container is not running",
 )
 requires_postgres = pytest.mark.skipif(
     not _port_open(*_hostport(DATABASE_URL, 5433)),
-    reason="PostgreSQL is not running (docker compose up -d db)",
+    reason="the PostgreSQL container is not running",
 )
 
 

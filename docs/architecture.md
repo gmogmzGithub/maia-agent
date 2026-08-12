@@ -62,12 +62,24 @@ That keeps the agent interface clear:
 
 ## Current Local Topology
 
-The Stage 0 topology runs on one development machine:
+Docker Compose runs the Stage 0 topology as three containers:
 
-- PostgreSQL in Docker;
-- FastAPI product application;
-- repo-local Hermes runtime and profile state;
-- Maia plugin installed into the Hermes virtual environment;
+- `db`: PostgreSQL and the durable Product state;
+- `product`: FastAPI and the in-process background workers;
+- `hermes`: the pinned Hermes runtime with the standalone Maia plugin.
+
+Product and Hermes share a private network namespace so their authenticated
+JSON-RPC WebSocket remains loopback-only. They are still separate processes and
+containers. Product reaches PostgreSQL through the private Compose network.
+Only Product port 8080 is published to the host.
+
+Runtime configuration lives in one ignored `.env`. Docker volumes retain
+PostgreSQL data, Hermes profile state, and accepted Property Documents. No
+local Python virtual environment or sibling Hermes checkout is part of the
+operator workflow.
+
+Optional integrations require their normal provider credentials:
+
 - optional Meta, Telegram, Google Calendar, and model-provider credentials.
 
 This is enough to prove product behavior and recovery paths before adding cloud

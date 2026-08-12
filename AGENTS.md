@@ -18,7 +18,7 @@ This repository is intended to be public and recruiter-visible.
 Do not commit:
 
 - raw Codex memory files or session transcripts;
-- local Hermes runtime state from `hermes-home/`;
+- Docker volumes containing local Hermes or PostgreSQL runtime state;
 - `.env`, tokens, credentials, or provider keys;
 - real lead data, real customer conversations, or private property documents;
 - private planning notes that are not meant for hiring managers;
@@ -71,22 +71,19 @@ database writes, Calendar credentials, WhatsApp delivery, or business truth.
 
 ## Local Development
 
-Use the repo-local virtual environments:
+The canonical runtime is Docker Compose: PostgreSQL, Product, and Hermes each
+run in their own container. Do not add a second host/virtualenv startup path.
 
 ```bash
-scripts/bootstrap.sh
-source .venv/bin/activate
-PYTHONPATH=. pytest
+cp .env.example .env  # once; fill the required secrets
+docker compose up --build
+docker compose exec product pytest
 ```
 
-`scripts/bootstrap.sh` creates:
-
-- `.venv` for the Maia FastAPI backend;
-- `.venv-hermes` for the pinned Hermes runtime plus the Maia plugin;
-- `.env` with local generated secrets if one does not exist.
-
-The default Hermes checkout is `~/workspace/repos/hermes-agent`; override with
-`HERMES_CHECKOUT` in `.env` when needed.
+Only Product port 8080 is published. Product and Hermes share a private network
+namespace because Hermes's session-token protocol is intentionally loopback-only.
+The Hermes image pins and fetches the reviewed upstream source commit itself;
+no sibling checkout is required to run Maia.
 
 ## Git Hygiene
 

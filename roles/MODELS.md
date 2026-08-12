@@ -1,6 +1,7 @@
 # Which model for which Role
 
-Set in `.env`, applied with `./scripts/apply-models.sh`, then restart Hermes:
+Set the models in `.env`; the Hermes container builds the corresponding
+profiles whenever it starts:
 
 ```bash
 SALES_MODEL=claude-haiku-4-5-20251001
@@ -8,8 +9,11 @@ ADMIN_MODEL=claude-haiku-4-5-20251001
 MODEL_PROVIDER=anthropic
 ```
 
-Never edit `hermes-home/profiles/*/config.yaml` by hand — it is generated and
-will be overwritten.
+After changing a model or a Role guide, rebuild/recreate Hermes:
+
+```bash
+docker compose up -d --build --force-recreate hermes
+```
 
 ## Current setting: Haiku 4.5 for both
 
@@ -59,7 +63,7 @@ So Sonnet is not a strict upgrade. If you switch the Sales Role to Sonnet,
 re-run the disclosure test specifically:
 
 ```bash
-RUN_CONVERSATION_TESTS=1 ./.venv/bin/python -m pytest \
+docker compose exec -e RUN_CONVERSATION_TESTS=1 product pytest \
   tests/test_sales_conversation.py -k inactive
 ```
 
@@ -75,7 +79,7 @@ constrained by the Backend rather than by model judgment.
 Both suites are opt-in because they call the real model:
 
 ```bash
-RUN_CONVERSATION_TESTS=1 ./.venv/bin/python -m pytest \
+docker compose exec -e RUN_CONVERSATION_TESTS=1 product pytest \
   tests/test_sales_conversation.py tests/test_admin_conversation.py
 ```
 

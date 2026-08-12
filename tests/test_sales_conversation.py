@@ -4,7 +4,7 @@ These are the tests that close Checkpoint 1's exit condition. They run a real
 Hermes Sales session against the real product tool, so they need a
 model-provider key configured in the Hermes profile and are opt-in:
 
-    RUN_CONVERSATION_TESTS=1 ./.venv/bin/python -m pytest tests/test_sales_conversation.py
+    docker compose exec -e RUN_CONVERSATION_TESTS=1 product pytest tests/test_sales_conversation.py
 
 Evaluation is semantic, as the plan requires. A probabilistic reply may be
 worded any number of ways, so each test asserts on what must be *true* rather

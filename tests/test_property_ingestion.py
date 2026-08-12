@@ -227,7 +227,7 @@ async def test_a_property_resolves_by_key_or_normalised_name(service, reference)
     ] == "found"
 
 
-async def test_an_unknown_reference_is_not_found(service) -> None:
+async def test_an_unknown_reference_is_not_found_when_inventory_is_empty(service) -> None:
     assert (await service.get_property_information("casa-fantasma", AgentRole.SALES))[
         "result"
     ] == "not_found"
@@ -320,7 +320,7 @@ async def test_a_blank_reference_resolves_to_nothing(service, reference) -> None
     assert await resolve_property(service._session, reference) is None
 
 
-async def test_an_unknown_reference_is_not_found(service) -> None:
+async def test_an_unknown_reference_is_not_found_when_inventory_is_not_empty(service) -> None:
     await service.accept_upload("casa-roble.md", V1, actor_id="developer")
 
     assert (

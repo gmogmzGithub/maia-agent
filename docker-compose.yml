@@ -1,90 +1,88 @@
-# The single local PostgreSQL instance of Maia's Stage 0 topology.
-# No Redis, Kafka, Celery, broker, or business microservice is defined here and
-# none may be added without a new ADR.
+name: maia
+
+# Maia's complete local runtime. All application processes run in containers:
+# PostgreSQL owns durable state, Product owns deterministic business authority,
+# and Hermes owns conversation and tool selection.
 services:
   db:
     image: postgres:16-alpine
-    container_name: maia-db
     environment:
       POSTGRES_USER: realestate
       POSTGRES_PASSWORD: realestate
       POSTGRES_DB: realestate
-    # 5433 on the host so a developer's existing local PostgreSQL is untouched.
-    ports:
-      - "127.0.0.1:5433:5432"
     volumes:
-      - maia-pgdata:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U realestate -d realestate"]
       interval: 2s
       timeout: 3s
       retries: 30
 
-  hermes:
+  product:
     build:
-      context: ..
-      dockerfile: maia-agent/docker/hermes.Dockerfile
-    env_file:
-      - .env
-    # Hermes deliberately refuses an unauthenticated 0.0.0.0 bind. The
-    # Product client uses Hermes's loopback session-token protocol, so keep
-    # Hermes loopback-bound and share the host network namespace in this
-    # single-host Compose topology.
-    network_mode: host
+      context: .
+      dockerfile: docker/product.Dockerfile
+    env_file: .env
     environment:
-      HERMES_HOME: /opt/hermes-home
-      HERMES_HOST: 127.0.0.1
-      HERMES_PORT: 9119
-      REALESTATE_BACKEND_URL: http://127.0.0.1:8080
-      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8080
+      DATABASE_URL: postgresql+psycopg://realestate:realestate@db:5432/realestate
+      TEST_DATABASE_URL: postgresql+psycopg://realestate:realestate@db:5432/realestate_test
+      HERMES_BASE_URL: http://127.0.0.1:9119
+      HERMES_DASHBOARD_SESSION_TOKEN: ${HERMES_DASHBOARD_SESSION_TOKEN:?Set HERMES_DASHBOARD_SESSION_TOKEN in .env}
+      PLUGIN_API_TOKEN: ${PLUGIN_API_TOKEN:?Set PLUGIN_API_TOKEN in .env}
+      DEVELOPER_BASIC_PASSWORD: ${DEVELOPER_BASIC_PASSWORD:?Set DEVELOPER_BASIC_PASSWORD in .env}
+      ARTIFACT_ROOT: /app/var/property-documents
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:8080"
     volumes:
-      - hermes-home:/opt/hermes-home
+      - property-documents:/app/var/property-documents
+      - ./secrets:/run/secrets:ro
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:9119/api/health"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/live"]
       interval: 5s
       timeout: 5s
       retries: 30
-      start_period: 15s
+      start_period: 20s
     logging:
       options:
         max-size: 10m
         max-file: "3"
 
-  product:
+  hermes:
     build:
       context: .
-      dockerfile: docker/product.Dockerfile
-    env_file:
-      - .env
-    # Share the host namespace with Hermes so the existing loopback-only
-    # Product/Hermes protocol remains unchanged inside this single-host mode.
-    network_mode: host
+      dockerfile: docker/hermes.Dockerfile
+    env_file: .env
     environment:
-      APP_HOST: 0.0.0.0
-      APP_PORT: 8080
-      DATABASE_URL: postgresql+psycopg://realestate:realestate@127.0.0.1:5433/realestate
-      HERMES_BASE_URL: http://127.0.0.1:9119
-      LOG_LEVEL: ${LOG_LEVEL:-DEBUG}
-      REALESTATE_BACKEND_URL: http://product:8080
+      HERMES_HOME: /opt/hermes-home
+      HERMES_DASHBOARD_SESSION_TOKEN: ${HERMES_DASHBOARD_SESSION_TOKEN:?Set HERMES_DASHBOARD_SESSION_TOKEN in .env}
+      REALESTATE_PLUGIN_API_TOKEN: ${PLUGIN_API_TOKEN:?Set PLUGIN_API_TOKEN in .env}
+      REALESTATE_BACKEND_URL: http://127.0.0.1:8080
+    # Hermes intentionally accepts its session-token protocol only on loopback.
+    # Sharing Product's private network namespace gives the two separate
+    # containers a loopback link without exposing Hermes on the host network.
+    network_mode: service:product
     depends_on:
-      db:
-        condition: service_healthy
-      hermes:
-        condition: service_healthy
+      product:
+        condition: service_started
     volumes:
-      - product-artifacts:/app/var/property-documents
+      - hermes-state:/opt/hermes-home
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9119/api/health"]
       interval: 5s
       timeout: 5s
       retries: 30
-      start_period: 15s
+      start_period: 20s
     logging:
       options:
         max-size: 10m
         max-file: "3"
 
 volumes:
-  maia-pgdata:
-  hermes-home:
-  product-artifacts:
+  postgres-data:
+  hermes-state:
+  property-documents:
