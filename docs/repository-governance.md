@@ -33,6 +33,14 @@ Recommended GitHub settings for `main`:
 For solo development, one approval can be relaxed later, but status checks and
 force-push protection should stay on.
 
+After authenticating the GitHub CLI, the repository owner can apply the
+description and branch protection with:
+
+```bash
+gh auth login
+scripts/configure-github-repo.sh
+```
+
 ## Public-Safety Checklist
 
 Before opening or merging a PR:
