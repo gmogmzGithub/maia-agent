@@ -18,6 +18,10 @@ jobs:
           sed -i 's/^HERMES_DASHBOARD_SESSION_TOKEN=.*/HERMES_DASHBOARD_SESSION_TOKEN=local-test-hermes-token/' .env
           sed -i 's/^PLUGIN_API_TOKEN=.*/PLUGIN_API_TOKEN=local-test-plugin-token/' .env
           sed -i 's/^DEVELOPER_BASIC_PASSWORD=.*/DEVELOPER_BASIC_PASSWORD=local-test-developer-password/' .env
+          sed -i 's/^META_VERIFY_TOKEN=.*/META_VERIFY_TOKEN=local-test-verify-token/' .env
+          sed -i 's/^META_APP_SECRET=.*/META_APP_SECRET=local-test-app-secret/' .env
+          sed -i 's/^META_ACCESS_TOKEN=.*/META_ACCESS_TOKEN=local-test-access-token/' .env
+          sed -i 's/^META_PHONE_NUMBER_ID=.*/META_PHONE_NUMBER_ID=local-test-phone-number/' .env
 
       - name: Validate Compose configuration
         run: docker compose config --quiet
