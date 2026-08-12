@@ -92,6 +92,17 @@ HEALTHY_HERMES = HermesHealth(
 )
 
 
+async def test_liveness_does_not_require_dependency_state() -> None:
+    app = create_app(Settings(WORKER_ENABLED=False))  # type: ignore[call-arg]
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://product.test"
+    ) as client:
+        response = await client.get("/live")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
 async def test_health_is_ok_when_every_component_is_ok() -> None:
     async with build_client(database=HEALTHY_DB, hermes=HEALTHY_HERMES) as client:
         response = await client.get("/health")

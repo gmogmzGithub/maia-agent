@@ -13,8 +13,6 @@ elsewhere: the JSON-RPC surface in `test_hermes_client.py`, Meta's signature in
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
-
 import pytest
 from sqlalchemy import delete, select
 
@@ -22,7 +20,6 @@ from realestate.channels.whatsapp.client import SendOutcome, SendResult
 from realestate.channels.whatsapp.payload import parse_webhook
 from realestate.db.engine import Database
 from realestate.db.models import (
-    AgentRole,
     AgentSession,
     Conversation,
     InboxGroup,

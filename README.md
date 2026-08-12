@@ -83,6 +83,87 @@ Not claimed yet:
 - legal/privacy readiness for real customer data;
 - horizontal scaling or managed cloud operations.
 
+## Run Maia
+
+The complete local system runs in three Docker containers:
+
+```mermaid
+flowchart LR
+    Host["Your computer<br/>localhost:8080"]
+    subgraph Compose["Docker Compose"]
+        Product["product<br/>Maia API + workers"]
+        Hermes["hermes<br/>conversation runtime"]
+        DB[("db<br/>PostgreSQL")]
+        Product <-->|"private loopback link"| Hermes
+        Product <--> DB
+    end
+    Host --> Product
+```
+
+Hermes and Product are separate containers, but they share a private network
+namespace. This is intentional: Hermes accepts Maia's session-token protocol
+only over loopback. PostgreSQL is a normal third container reached as `db` on
+the private Compose network. Hermes and PostgreSQL are not exposed to the host.
+
+Prerequisite: Docker with Docker Compose.
+
+There are intentionally no bootstrap or startup wrapper scripts. Compose now
+owns the service topology, dependency installation, startup order, health
+checks, migrations, persistent volumes, and shutdown. A wrapper such as
+`scripts/up.sh` would only hide the Compose command and create a second runtime
+path that could drift from this file.
+
+Create the one local environment file:
+
+```bash
+cp .env.example .env
+```
+
+In `.env`, fill these three required local secrets with different values from
+`openssl rand -hex 32`:
+
+```text
+HERMES_DASHBOARD_SESSION_TOKEN=
+PLUGIN_API_TOKEN=
+DEVELOPER_BASIC_PASSWORD=
+```
+
+Add `ANTHROPIC_API_KEY` when you want real model conversations. Meta, Telegram,
+and Google Calendar credentials are optional; their health status is reported
+individually when absent. Google Calendar is the one exception to “one file”:
+Google issues a service-account JSON key, so place it at
+`secrets/google-calendar.json` and set the documented container path in `.env`.
+
+Build the images and start everything the first time, or after dependencies or
+Dockerfiles change:
+
+```bash
+docker compose up --build
+```
+
+For normal day-to-day startup, this is the only command:
+
+```bash
+docker compose up
+```
+
+Maia is available at
+[http://localhost:8080/health](http://localhost:8080/health). Database
+migrations run automatically before Product starts.
+
+Common operations:
+
+```bash
+docker compose down                 # stop; preserve data
+docker compose logs -f              # follow every service
+docker compose exec product pytest  # run the complete test suite in Docker
+```
+
+Do not create local Python virtual environments to run Maia. The images contain
+the Product and Hermes dependencies. The Hermes image fetches the exact reviewed
+upstream commit pinned in `docker/hermes.Dockerfile`; a sibling Hermes checkout
+is not required.
+
 ## Repository Layout
 
 ```text
@@ -92,41 +173,8 @@ roles/                Source prompts for Hermes sales/admin profiles
 tests/                Offline and integration-oriented pytest suite
 migrations/           Alembic migrations for PostgreSQL product state
 docs/                 Public architecture notes and repository governance
-scripts/              Local bootstrap and run helpers
 docker/               Product and Hermes container definitions
 ```
-
-## Local Development
-
-Prerequisites:
-
-- Python 3.12
-- Docker
-- `uv`
-- a sibling Hermes checkout, by default at `~/workspace/repos/hermes-agent`
-
-Bootstrap:
-
-```bash
-scripts/bootstrap.sh
-```
-
-Start the local topology:
-
-```bash
-scripts/up.sh
-```
-
-Run tests:
-
-```bash
-source .venv/bin/activate
-PYTHONPATH=. pytest
-```
-
-Some tests skip unless PostgreSQL, the product app, or `hermes serve` are
-running. The offline suite is designed to run on a cold machine; full
-checkpoint confidence requires the local topology and configured provider keys.
 
 ## Public Repo Policy
 

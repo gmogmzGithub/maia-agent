@@ -64,7 +64,10 @@ async def _log_startup_report(app: FastAPI) -> None:
     if hermes.ok:
         logger.info("Hermes Runtime: %s", hermes.detail)
     else:
-        logger.error("Hermes Runtime [%s]: %s", hermes.status.value, hermes.detail)
+        # Product deliberately starts in degraded mode when Hermes is absent.
+        # In Compose, Hermes also starts just after Product because it joins
+        # Product's network namespace, so this can be a harmless startup race.
+        logger.warning("Hermes Runtime [%s]: %s", hermes.status.value, hermes.detail)
 
 
 @asynccontextmanager
@@ -80,8 +83,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         settings.admin_profile,
     )
     logger.debug(
-        "Runtime boundaries: product_env=.venv, hermes_env=.venv-hermes, "
-        "hermes_home=./hermes-home, hermes_transport=json-rpc-websocket"
+        "Runtime boundaries: product=container, hermes=container, "
+        "hermes_transport=loopback-json-rpc-websocket"
     )
 
     app.state.database = Database(settings.database_url)

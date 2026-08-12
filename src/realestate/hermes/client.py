@@ -168,8 +168,8 @@ class HermesClient:
             return HermesHealth(
                 status=HermesStatus.UNAUTHENTICATED,
                 detail=(
-                    "HERMES_DASHBOARD_SESSION_TOKEN is not set. Start `hermes serve` "
-                    "with the same token the product uses."
+                    "HERMES_DASHBOARD_SESSION_TOKEN is not set. Add the shared "
+                    "token to .env and recreate the Compose services."
                 ),
                 pinned_version=self._pinned_version,
             )
@@ -218,7 +218,7 @@ class HermesClient:
                 status=HermesStatus.UNREACHABLE,
                 detail=(
                     f"No Hermes Runtime answered {self.health_url} ({exc.__class__.__name__}). "
-                    "Start it with `scripts/hermes-serve.sh`."
+                    "Start it with `docker compose up hermes`."
                 ),
                 pinned_version=self._pinned_version,
             )
@@ -385,7 +385,7 @@ class _HermesConnection:
             raise
         return self
 
-    async def __aexit__(self, *exc_info: object) -> None:
+    async def __aexit__(self, *_exc_info: object) -> None:
         await self.close()
 
     async def close(self) -> None:

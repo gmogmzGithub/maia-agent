@@ -42,16 +42,9 @@ Recommended GitHub settings for `main`:
 For solo development, one approval can be relaxed later, but status checks and
 force-push protection should stay on.
 
-After authenticating the GitHub CLI, the repository owner can apply the
-description and branch protection with:
-
-```bash
-gh auth login
-scripts/configure-github-repo.sh
-```
-
-This script does not make private notes private. It protects `main` from
-accidental direct pushes, force pushes, and unreviewed merges.
+Repository settings are intentionally configured in GitHub's branch-protection
+UI. Runtime code should not carry a one-off script with owner-specific GitHub
+mutations.
 
 ## Public-Safety Checklist
 
@@ -83,5 +76,5 @@ Before opening or merging a PR:
 - Private GitHub strategy notes beyond this public governance file.
 - Real customer or lead data.
 - Real property documents unless intentionally synthetic and clearly labeled.
-- Local `hermes-home` state.
+- Docker volumes containing Hermes or PostgreSQL runtime state.
 - Generated DB files, coverage files, caches, and virtual environments.

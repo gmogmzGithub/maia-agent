@@ -154,7 +154,7 @@ class WhatsAppClient:
                 "status": "invalid",
                 "detail": (
                     "Meta rejected META_ACCESS_TOKEN. Generate a new one on the app's "
-                    "API Setup page and run scripts/set-meta-token.sh."
+                    "API Setup page, update .env, and recreate the Product container."
                 ),
             }
 
@@ -169,7 +169,7 @@ class WhatsAppClient:
                 "status": "expired",
                 "detail": (
                     f"META_ACCESS_TOKEN expired at {expiry.isoformat()}. "
-                    "Run scripts/set-meta-token.sh with a fresh one."
+                    "Generate a fresh token, update .env, and recreate the Product container."
                 ),
             }
         return {

@@ -63,7 +63,7 @@ async def test_absent_runtime_is_reported_as_unreachable() -> None:
     health = await client(base_url="http://127.0.0.1:9").check_health()
 
     assert health.status is HermesStatus.UNREACHABLE
-    assert "scripts/hermes-serve.sh" in health.detail
+    assert "docker compose up hermes" in health.detail
 
 
 # --- Live -------------------------------------------------------------------

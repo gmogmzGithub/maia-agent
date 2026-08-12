@@ -14,6 +14,12 @@ from fastapi import APIRouter, Request, Response, status
 router = APIRouter(tags=["health"])
 
 
+@router.get("/live", include_in_schema=False)
+async def live() -> dict[str, str]:
+    """Cheap container liveness probe with no external network calls."""
+    return {"status": "ok"}
+
+
 @router.get("/health")
 async def health(request: Request, response: Response) -> dict[str, object]:
     state = request.app.state

@@ -262,7 +262,7 @@ async def test_an_unreachable_hermes_is_a_warning_not_a_refusal_to_start(
         Report(False, "nothing answered", status=HermesStatus.UNREACHABLE)
     )
 
-    with caplog.at_level(logging.ERROR, logger="realestate.app"):
+    with caplog.at_level(logging.WARNING, logger="realestate.app"):
         await _log_startup_report(app)
 
     assert "PostgreSQL is not reachable" in caplog.text
@@ -330,7 +330,7 @@ async def test_every_teardown_failure_is_reported(
 
 
 def test_the_factory_registers_every_route_group() -> None:
-    paths = {route.path for route in create_app(settings()).routes}  # type: ignore[attr-defined]
+    paths = set(create_app(settings()).openapi()["paths"])
 
     assert {"/health", "/upload", "/webhooks/whatsapp", "/internal/plugin/health"} <= paths
 

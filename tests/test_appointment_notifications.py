@@ -47,7 +47,6 @@ from realestate.domain.inbox import InboxService
 from realestate.domain.notifications import (
     BOOKED,
     DIGEST,
-    NEEDS_REVIEW,
     REMINDER,
     BrokerNotificationService,
 )

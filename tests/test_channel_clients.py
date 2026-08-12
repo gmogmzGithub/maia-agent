@@ -380,7 +380,7 @@ async def test_an_expired_token_is_named_as_the_cause() -> None:
         await client.aclose()
 
     assert report["status"] == "expired"
-    assert "scripts/set-meta-token.sh" in report["detail"]
+    assert "update .env" in report["detail"]
 
 
 async def test_a_token_inside_its_last_hour_is_reported_as_expiring() -> None:
