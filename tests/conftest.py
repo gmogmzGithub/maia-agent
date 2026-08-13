@@ -196,3 +196,24 @@ async def reset_property_inventory(session) -> None:  # noqa: ANN001
 
     for table in ("appointments", "availability_snapshots", "properties"):
         await session.execute(text(f"DELETE FROM {table}"))
+
+
+async def age_pending_inbox(database) -> None:  # noqa: ANN001
+    """Age pending messages past the two-second collection window.
+
+    Shifts each timestamp by a constant so relative arrival order — the FIFO
+    guarantee under test elsewhere — is preserved. Spelled once here because
+    every worker suite has to step over that window before it can tick.
+    """
+    from datetime import timedelta
+
+    from sqlalchemy import select
+
+    from realestate.db.models import InboxMessage, InboxStatus
+
+    async with database.session_scope() as session:
+        for row in (await session.execute(select(InboxMessage))).scalars():
+            if row.status == InboxStatus.PENDING.value:
+                row.persisted_at = row.persisted_at - timedelta(seconds=10)
+                row.next_attempt_at = None
+        await session.commit()

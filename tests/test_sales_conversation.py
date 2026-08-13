@@ -42,6 +42,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 V1 = (FIXTURES / "casa-roble.md").read_bytes()
 
 pytestmark = [
+    pytest.mark.live_provider,
     requires_hermes,
     pytest.mark.skipif(
         os.environ.get("RUN_CONVERSATION_TESTS") != "1",
@@ -172,13 +173,7 @@ async def test_the_documented_price_survives_varied_phrasing(sales, question) ->
 
 
 async def test_the_agent_actually_consults_the_document(sales) -> None:
-    """The first documented answer must come from the tool, not model memory.
-
-    Asserted on a *fresh* session. Within one Conversation, Hermes legitimately
-    reuses a document it already retrieved — the architecture explicitly does
-    not revalidate before every ordinary reply — so counting tool calls on the
-    shared session would test the wrong thing.
-    """
+    """A documented answer must come from the tool, not model memory."""
     client, _, database = sales
     settings = get_settings()
     seen: dict[str, str] = {}
@@ -338,6 +333,9 @@ async def test_an_inactive_property_discloses_nothing(sales) -> None:
     from realestate.db.models import PropertyStatus as _Status
 
     _, _, database = sales
+    priming_reply = await ask(sales, "cuánto cuesta Casa Roble y tiene alberca?")
+    assert mentions_price(priming_reply), priming_reply
+    calls_before = len(await tool_calls(sales))
     async with database.session_scope() as db:
         prop = (
             await db.execute(
@@ -360,6 +358,9 @@ async def test_an_inactive_property_discloses_nothing(sales) -> None:
             await db.commit()
 
     lowered = reply.lower()
+    assert len(await tool_calls(sales)) > calls_before, (
+        "the turn must revalidate Product state instead of reusing session facts"
+    )
     # No promotional fact survives.
     assert "3,000,000" not in reply and "3000000" not in re.sub(r"[^\d]", "", reply)
     assert "alberca" not in lowered

@@ -39,6 +39,22 @@ logger = logging.getLogger(__name__)
 # ceiling, not a product policy.
 TURN_TIMEOUT_SECONDS = 240.0
 
+SALES_FRESHNESS_CONTEXT = (
+    "[Contexto obligatorio del producto para este turno: si el mensaje pide "
+    "cualquier dato de una propiedad, llama a get_property_information antes "
+    "de responder. Los datos de turnos anteriores no están vigentes hasta "
+    "revalidarlos con esa herramienta en este turno.]"
+)
+
+# What the Product restates to a Role on every turn, keyed by Role so adding one
+# is data rather than a branch. A Role absent here gets the Lead's text unchanged.
+#
+# Sales carries the freshness contract because its SOUL.md copy ships in the
+# Hermes image while this one ships in Product's: change the rule and both need
+# recreating. roles/sales/SOUL.md keeps the prose the Model is trained on; this
+# is the per-turn restatement, which SOUL.md alone cannot provide.
+ROLE_TURN_CONTEXT: dict[AgentRole, str] = {AgentRole.SALES: SALES_FRESHNESS_CONTEXT}
+
 
 class SessionError(RuntimeError):
     """A Hermes session operation failed."""
@@ -113,6 +129,19 @@ def dated_prompt(text: str, *, today: date) -> str:
     """
     stamp = f"{SPANISH_DAYS[today.weekday()]} {today.strftime('%d/%m/%Y')} ({today.isoformat()})"
     return f"[Contexto del producto — hoy es {stamp}]\n{text}"
+
+
+def role_prompt(text: str, *, role: AgentRole) -> str:
+    """Prefix one turn with the Role's standing Product context, if it has one.
+
+    Repeated every turn rather than stated once: a Property Document or status
+    can change while a durable session stays open, and an instruction that
+    appears only in SOUL.md loses salience behind facts already retrieved
+    earlier in a long conversation. The Lead's own words are untouched below it.
+    """
+    if context := ROLE_TURN_CONTEXT.get(role):
+        return f"{context}\n{text}"
+    return text
 
 
 async def _attach(
@@ -356,6 +385,7 @@ async def run_turn(
     next poll. That ordering matters: without it the same still-pending message
     would be seen again on the following poll and injected twice.
     """
+    prompt_text = role_prompt(text, role=session.role)
     async with client.session() as rpc:
         logger.info(
             "Starting Hermes turn "
@@ -363,7 +393,7 @@ async def run_turn(
             session.role.value,
             profile,
             session.hermes_session_id or "<new>",
-            len(text),
+            len(prompt_text),
             window_seconds,
         )
         # Attach on this connection: the handle is only valid here.
@@ -390,9 +420,11 @@ async def run_turn(
             "Submitting prompt to Hermes (gateway=%s, durable=%s, text_chars=%d)",
             sid,
             durable,
-            len(text),
+            len(prompt_text),
         )
-        frame = await rpc.call("prompt.submit", {"session_id": sid, "text": text})
+        frame = await rpc.call(
+            "prompt.submit", {"session_id": sid, "text": prompt_text}
+        )
         if error := frame.get("error"):
             logger.error("Hermes prompt.submit failed (gateway=%s, error=%s)", sid, error)
             raise SessionError(f"prompt.submit failed: {error}")

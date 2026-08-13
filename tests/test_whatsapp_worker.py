@@ -30,23 +30,17 @@ from realestate.db.models import (
     OutboxMessage,
     OutboxStatus,
 )
-from realestate.domain.availability import WeeklySchedule
 from realestate.domain.copy import SPANISH_DAYS
 from realestate.domain.inbox import MAX_ATTEMPTS, InboxService
 from realestate.domain.outbox import PROCESSING_FAILURE_BODY
 from realestate.hermes.sessions import TurnResult
 from realestate.worker import whatsapp as worker_module
 from realestate.worker.whatsapp import WhatsAppWorker
-from tests.conftest import DATABASE_URL, requires_postgres
+from tests.conftest import DATABASE_URL, age_pending_inbox, requires_postgres
 from tests.fixtures import webhooks
+from tests.fixtures.stubs import SCHEDULE
 
 pytestmark = requires_postgres
-
-SCHEDULE = WeeklySchedule.parse(
-    "mon=09:00-17:00;tue=09:00-17:00;wed=09:00-17:00;thu=09:00-17:00;"
-    "fri=09:00-17:00;sat=10:00-17:00;sun=10:00-17:00",
-    "America/Mexico_City",
-)
 
 
 class StubWhatsApp:
@@ -160,18 +154,7 @@ def inbound(wamid: str, body: str, *, seconds_ago: int = 0, from_wa_id: str | No
     return parse_webhook(payload).messages[0]
 
 
-async def clear_collection_window(database) -> None:
-    """Age pending messages past the two-second window.
-
-    Shifts each timestamp by a constant so relative arrival order — the FIFO
-    guarantee under test elsewhere — is preserved.
-    """
-    async with database.session_scope() as session:
-        for row in (await session.execute(select(InboxMessage))).scalars():
-            if row.status == InboxStatus.PENDING.value:
-                row.persisted_at = row.persisted_at - timedelta(seconds=10)
-                row.next_attempt_at = None
-        await session.commit()
+clear_collection_window = age_pending_inbox
 
 
 async def accept(database, *messages) -> None:

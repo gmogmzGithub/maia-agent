@@ -35,6 +35,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
 V1 = (FIXTURES / "casa-roble.md").read_bytes()
 
 pytestmark = [
+    pytest.mark.live_provider,
     requires_hermes,
     pytest.mark.skipif(
         os.environ.get("RUN_CONVERSATION_TESTS") != "1",
