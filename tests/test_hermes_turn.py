@@ -25,6 +25,7 @@ from realestate.hermes.sessions import (
     RoleSession,
     _inject,
     dated_prompt,
+    role_prompt,
     run_turn,
     submit_prompt,
 )
@@ -165,7 +166,17 @@ async def test_the_prompt_carries_the_gateway_handle_not_the_durable_id() -> Non
 
     await run_turn(client, unbound(), "hola", profile="sales")
 
-    assert dict(rpc.calls)["prompt.submit"] == {"session_id": "handle-1", "text": "hola"}
+    submitted = dict(rpc.calls)["prompt.submit"]
+    assert submitted["session_id"] == "handle-1"
+    assert submitted["text"] == role_prompt("hola", role=AgentRole.SALES)
+
+
+def test_only_sales_turns_receive_the_property_freshness_context() -> None:
+    sales = role_prompt("hola", role=AgentRole.SALES)
+
+    assert "get_property_information" in sales
+    assert sales.endswith("\nhola")
+    assert role_prompt("hola", role=AgentRole.ADMINISTRATIVE) == "hola"
 
 
 async def test_events_for_another_session_on_the_socket_are_ignored() -> None:

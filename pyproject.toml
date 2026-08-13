@@ -42,6 +42,9 @@ include = ["realestate*"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 filterwarnings = ["error::DeprecationWarning:realestate.*"]
+markers = [
+    "live_provider: calls a real model provider and is excluded from token-free CI",
+]
 
 [tool.coverage.run]
 # SQLAlchemy's asyncio layer runs domain code inside greenlets, which the C

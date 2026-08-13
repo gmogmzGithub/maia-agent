@@ -11,10 +11,13 @@ import json
 import time
 from typing import Any
 
-PHONE_NUMBER_ID = "1257310757465762"
-DISPLAY_NUMBER = "+1 555-671-0559"
-LEAD_WA_ID = "523318923936"
-WABA_ID = "2102414207379718"
+# Deliberately synthetic provider and recipient identifiers. This repository is
+# public; fixtures must preserve Meta's payload shapes without publishing the
+# local test app's real asset IDs or an allowlisted person's phone number.
+PHONE_NUMBER_ID = "123456789012345"
+DISPLAY_NUMBER = "+1 555-010-0100"
+LEAD_WA_ID = "15550100100"
+WABA_ID = "987654321098765"
 
 
 def text_message(

@@ -159,44 +159,6 @@ docker compose logs -f              # follow every service
 docker compose exec product pytest  # run the complete test suite in Docker
 ```
 
-Do not create local Python virtual environments to run Maia. The images contain
-the Product and Hermes dependencies. The Hermes image fetches the exact reviewed
-upstream commit pinned in `docker/hermes.Dockerfile`; a sibling Hermes checkout
-is not required.
-
-## Repository Layout
-
-```text
-src/realestate/       FastAPI backend, domain logic, workers, channels, Hermes client
-plugin/               Standalone Hermes plugin exposing Maia tools
-roles/                Source prompts for Hermes sales/admin profiles
-tests/                Offline and integration-oriented pytest suite
-migrations/           Alembic migrations for PostgreSQL product state
-docs/                 Public architecture notes and repository governance
-docker/               Product and Hermes container definitions
-```
-
-## Public Repo Policy
-
-This repo is public-facing by design. Keep implementation evidence visible, but
-do not commit private operating notes, raw Codex memories, local Hermes runtime
-state, real leads, credentials, tokens, transcripts, or property documents that
-were not created for public demonstration.
-
-The curated project memory for future agents lives in `PROJECT_MEMORY.md`.
-Private working notes should live outside pushed public branches: use ignored
-local notes, local-only branches, or a separate private repository.
-
-See `docs/repository-governance.md` for the branch and protection strategy.
-
-## Recruiter Notes
-
-Maia is useful to review as backend/platform work around AI agents:
-
-- it separates agent reasoning from deterministic authority;
-- it uses typed tools and auditable state instead of letting the model mutate
-  business systems directly;
-- it treats delivery, retries, identity, credentials, and operational recovery
-  as first-class product concerns;
-- it shows practical integration work across FastAPI, PostgreSQL, Alembic,
-  Docker, WhatsApp, Telegram, Google Calendar, and a Hermes plugin boundary.
+The required CI gate runs without Meta, Anthropic, Google, or Telegram
+credentials. See [Testing Maia without provider credentials](docs/testing.md)
+for the exact coverage, commands, and optional live-provider layer.

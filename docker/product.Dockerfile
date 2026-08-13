@@ -21,6 +21,8 @@ COPY alembic.ini ./
 RUN python -m pip install --no-cache-dir ".[dev]"
 
 COPY plugin ./plugin
+COPY roles ./roles
+COPY docker/hermes-entrypoint.sh ./docker/hermes-entrypoint.sh
 COPY tests ./tests
 
 CMD ["sh", "-c", "alembic upgrade head && exec uvicorn realestate.app:app --host 0.0.0.0 --port 8080"]

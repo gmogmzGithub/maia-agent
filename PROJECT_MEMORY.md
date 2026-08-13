@@ -41,6 +41,8 @@ Implemented locally:
 - Telegram administrative role;
 - deterministic lead follow-up worker;
 - Docker Compose single-host topology;
+- credential-free CI for every push and pull request, including a vertical
+  WhatsApp-to-booking-to-Telegram scenario;
 - pytest suite for domain, API, worker, plugin, and channel behavior.
 
 Not yet proven or claimed:
@@ -76,6 +78,16 @@ Maia owns:
 
 This boundary is the central design decision. Do not let the model directly own
 business truth or side effects.
+
+## Channel Direction
+
+The primary customer flow starts on WhatsApp: a Lead messages the Meta business
+number, Maia persists the signed webhook, Hermes handles the Sales turn through
+typed Product tools, and Maia releases the settled reply through the WhatsApp
+Outbox. Telegram is the private Broker/Administrator channel, never the Lead
+channel. Maia sends appointment notifications there after the corresponding
+Product state is resolved; Telegram's inbound Administrative Role is a separate
+operator capability.
 
 ## Public Repository Positioning
 
@@ -120,7 +132,6 @@ private repository.
 - Rename Python package and plugin identifiers from the original
   `realestate`/`realestate-hermes-plugin` naming to Maia-specific names if the
   project moves beyond this port.
-- Add GitHub Actions once the public repo has its first stable commit.
 - Decide whether the first public demo should use synthetic property fixtures,
   screenshots, or a short architecture walkthrough.
 - Add deployment documentation only after a live target exists and has been

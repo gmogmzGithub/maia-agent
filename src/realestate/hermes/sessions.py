@@ -39,6 +39,13 @@ logger = logging.getLogger(__name__)
 # ceiling, not a product policy.
 TURN_TIMEOUT_SECONDS = 240.0
 
+SALES_FRESHNESS_CONTEXT = (
+    "[Contexto obligatorio del producto para este turno: si el mensaje pide "
+    "cualquier dato de una propiedad, llama a get_property_information antes "
+    "de responder. Los datos de turnos anteriores no están vigentes hasta "
+    "revalidarlos con esa herramienta en este turno.]"
+)
+
 
 class SessionError(RuntimeError):
     """A Hermes session operation failed."""
@@ -113,6 +120,20 @@ def dated_prompt(text: str, *, today: date) -> str:
     """
     stamp = f"{SPANISH_DAYS[today.weekday()]} {today.strftime('%d/%m/%Y')} ({today.isoformat()})"
     return f"[Contexto del producto — hoy es {stamp}]\n{text}"
+
+
+def role_prompt(text: str, *, role: AgentRole) -> str:
+    """Attach repeatable Product safety context without replacing Lead text.
+
+    Hermes keeps the complete conversation and still decides whether a message
+    asks about a Property. The Product repeats the freshness contract on every
+    Sales turn because a Property Document or status may change while that
+    durable session remains open. An instruction that appears only in SOUL.md
+    can lose salience behind already-retrieved facts in a long conversation.
+    """
+    if role is AgentRole.SALES:
+        return f"{SALES_FRESHNESS_CONTEXT}\n{text}"
+    return text
 
 
 async def _attach(
@@ -356,6 +377,7 @@ async def run_turn(
     next poll. That ordering matters: without it the same still-pending message
     would be seen again on the following poll and injected twice.
     """
+    prompt_text = role_prompt(text, role=session.role)
     async with client.session() as rpc:
         logger.info(
             "Starting Hermes turn "
@@ -363,7 +385,7 @@ async def run_turn(
             session.role.value,
             profile,
             session.hermes_session_id or "<new>",
-            len(text),
+            len(prompt_text),
             window_seconds,
         )
         # Attach on this connection: the handle is only valid here.
@@ -390,9 +412,11 @@ async def run_turn(
             "Submitting prompt to Hermes (gateway=%s, durable=%s, text_chars=%d)",
             sid,
             durable,
-            len(text),
+            len(prompt_text),
         )
-        frame = await rpc.call("prompt.submit", {"session_id": sid, "text": text})
+        frame = await rpc.call(
+            "prompt.submit", {"session_id": sid, "text": prompt_text}
+        )
         if error := frame.get("error"):
             logger.error("Hermes prompt.submit failed (gateway=%s, error=%s)", sid, error)
             raise SessionError(f"prompt.submit failed: {error}")

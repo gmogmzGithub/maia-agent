@@ -22,6 +22,7 @@ sequenceDiagram
     participant Hermes as Hermes Runtime
     participant Plugin as Maia Plugin
     participant Calendar as Google Calendar
+    participant Telegram as Broker on Telegram
 
     Lead->>Meta: Message
     Meta->>Backend: Signed webhook
@@ -32,7 +33,16 @@ sequenceDiagram
     Backend->>DB: Validate and record outcome
     Backend->>Calendar: Read or write appointment state
     Backend->>Meta: Enqueue/send reply
+    Backend->>Telegram: Send appointment notice when owed
 ```
+
+The customer channel is WhatsApp. Telegram is not the customer entry point: it
+is the private Broker/Administrator channel. Its inbound administrative role is
+an additional operator surface, while its outbound notices are Product-owned
+effects caused by appointment state (immediate booking or review notice,
+morning digest, and pre-visit reminder). Hermes composes the natural customer
+conversation; Maia decides when a Telegram notice is owed and performs the
+send.
 
 ## Why the Model Is Not the Authority
 
