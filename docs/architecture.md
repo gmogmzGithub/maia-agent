@@ -58,6 +58,15 @@ truth. Maia keeps the risky operations below the model:
 This allows natural conversation without giving the model unchecked access to
 database credentials, Calendar credentials, or WhatsApp delivery state.
 
+One consequence is a freshness rule. A property document or status can change
+while a durable session stays open, so a turn that repeats a property fact must
+re-read it through `get_property_information` rather than reuse a fact retrieved
+earlier in the same conversation. Product restates that contract on every Sales
+turn, because an instruction given only once loses salience behind facts the
+model already has. This reverses an earlier position that revalidating before
+every ordinary reply was unnecessary; the cost is one extra tool call on turns
+that discuss a property.
+
 ## Tool Boundary
 
 The standalone Hermes plugin is deliberately thin. It exposes typed tools to

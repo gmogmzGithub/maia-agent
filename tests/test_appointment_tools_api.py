@@ -24,7 +24,6 @@ from sqlalchemy import delete, select
 
 from realestate.api.plugin import SESSION_HEADER
 from realestate.app import create_app
-from realestate.channels.google.calendar import BusyResult, CalendarOutcome, EventResult
 from realestate.channels.whatsapp.payload import parse_webhook
 from realestate.config import get_settings
 from realestate.db.engine import Database
@@ -39,21 +38,17 @@ from realestate.db.models import (
     Property,
 )
 from realestate.domain.appointments import AppointmentPolicy
-from realestate.domain.availability import Interval, WeeklySchedule
 from realestate.domain.inbox import InboxService
 from realestate.domain.properties import ArtifactStore, PropertyService
 from tests.conftest import DATABASE_URL, env, requires_postgres
 from tests.fixtures import webhooks
+from tests.fixtures.stubs import SCHEDULE, StubCalendar
 
 FIXTURES = Path(__file__).parent / "fixtures"
 V1 = (FIXTURES / "casa-roble.md").read_bytes()
 
 pytestmark = requires_postgres
 
-SPEC = (
-    "mon=09:00-17:00;tue=09:00-17:00;wed=09:00-17:00;thu=09:00-17:00;"
-    "fri=09:00-17:00;sat=10:00-17:00;sun=10:00-17:00"
-)
 SALES_SESSION = "sess-sales-slots"
 ADMIN_SESSION = "sess-admin-slots"
 UNBOUND_SALES_SESSION = "sess-sales-no-cycle"
@@ -61,37 +56,6 @@ UNBOUND_SALES_SESSION = "sess-sales-no-cycle"
 SLOTS_PATH = "/internal/plugin/tools/get_available_slots"
 BOOK_PATH = "/internal/plugin/tools/book_appointment"
 CANCEL_PATH = "/internal/plugin/tools/cancel_appointment"
-
-
-class StubCalendar:
-    """Answers each test controls; nothing here reaches Google."""
-
-    def __init__(self) -> None:
-        self.busy: list[Interval] = []
-        self.created: list[str] = []
-        self.deleted: list[str] = []
-
-    async def busy_between(self, start, end) -> BusyResult:  # noqa: ANN001
-        return BusyResult(CalendarOutcome.OK, list(self.busy))
-
-    async def is_free(self, slot: Interval) -> BusyResult:
-        result = await self.busy_between(slot.start, slot.end)
-        if any(slot.overlaps(b) for b in result.busy):
-            return BusyResult(CalendarOutcome.CONFLICT, result.busy)
-        return result
-
-    async def create_event(self, *, slot, summary, description, reference) -> EventResult:  # noqa: ANN001
-        self.created.append(reference)
-        return EventResult(CalendarOutcome.OK, event_id=f"evt-{reference}")
-
-    async def find_by_reference(self, reference) -> EventResult:  # noqa: ANN001
-        if reference in self.created:
-            return EventResult(CalendarOutcome.OK, event_id=f"evt-{reference}")
-        return EventResult(CalendarOutcome.OK)
-
-    async def delete_event(self, event_id) -> EventResult:  # noqa: ANN001
-        self.deleted.append(event_id)
-        return EventResult(CalendarOutcome.OK, event_id=event_id)
 
 
 @pytest.fixture
@@ -116,7 +80,7 @@ async def wired(tmp_path: Path):
     app.state.artifacts = ArtifactStore(tmp_path / "artifacts")
     app.state.calendar = StubCalendar()
     app.state.appointment_policy = AppointmentPolicy(
-        schedule=WeeklySchedule.parse(SPEC, "America/Mexico_City"),
+        schedule=SCHEDULE,
         visit_minutes=90,
         horizon_days=8,
         max_candidates=6,

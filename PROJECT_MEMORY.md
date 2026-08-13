@@ -81,13 +81,10 @@ business truth or side effects.
 
 ## Channel Direction
 
-The primary customer flow starts on WhatsApp: a Lead messages the Meta business
-number, Maia persists the signed webhook, Hermes handles the Sales turn through
-typed Product tools, and Maia releases the settled reply through the WhatsApp
-Outbox. Telegram is the private Broker/Administrator channel, never the Lead
-channel. Maia sends appointment notifications there after the corresponding
-Product state is resolved; Telegram's inbound Administrative Role is a separate
-operator capability.
+WhatsApp is the customer channel; Telegram is the private Broker/Administrator
+channel and never the Lead entry point. `docs/architecture.md` states the full
+boundary, including which Telegram notices Product owns — read it there rather
+than restating it here.
 
 ## Public Repository Positioning
 

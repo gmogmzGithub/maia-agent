@@ -156,9 +156,11 @@ Common operations:
 ```bash
 docker compose down                 # stop; preserve data
 docker compose logs -f              # follow every service
-docker compose exec product pytest  # run the complete test suite in Docker
+docker compose exec product pytest  # run the token-free test suite in Docker
 ```
 
 The required CI gate runs without Meta, Anthropic, Google, or Telegram
 credentials. See [Testing Maia without provider credentials](docs/testing.md)
-for the exact coverage, commands, and optional live-provider layer.
+for the exact coverage, commands, and optional live-provider layer, and
+[repository governance](docs/repository-governance.md) for the branch and
+protection strategy.

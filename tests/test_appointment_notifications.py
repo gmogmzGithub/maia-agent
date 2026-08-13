@@ -19,12 +19,10 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import delete, select
 
-from realestate.channels.whatsapp.client import SendOutcome, SendResult
 from realestate.channels.whatsapp.payload import parse_webhook
 from realestate.db.engine import Database
 from realestate.db.models import (
@@ -42,7 +40,6 @@ from realestate.db.models import (
     Property,
 )
 from realestate.domain.appointments import NEEDS_REVIEW_MESSAGE
-from realestate.domain.availability import WeeklySchedule
 from realestate.domain.inbox import InboxService
 from realestate.domain.notifications import (
     BOOKED,
@@ -57,46 +54,18 @@ from realestate.worker.broker import BrokerNotifier
 from realestate.worker.whatsapp import WhatsAppWorker
 from tests.conftest import DATABASE_URL, requires_postgres
 from tests.fixtures import webhooks
+from tests.fixtures.stubs import SCHEDULE, ZONE, StubTelegram, StubWhatsApp
 
 FIXTURES = Path(__file__).parent / "fixtures"
 CASA_ROBLE = (FIXTURES / "casa-roble.md").read_bytes()
 
 pytestmark = requires_postgres
 
-SPEC = (
-    "mon=09:00-17:00;tue=09:00-17:00;wed=09:00-17:00;thu=09:00-17:00;"
-    "fri=09:00-17:00;sat=10:00-17:00;sun=10:00-17:00"
-)
-SCHEDULE = WeeklySchedule.parse(SPEC, "America/Mexico_City")
-ZONE = ZoneInfo("America/Mexico_City")
-
 DIGEST_HOUR = 8
 REMINDER_MINUTES = 90
 
 
 # --- Fixtures -----------------------------------------------------------------
-
-
-class StubTelegram:
-    """Records every send; ``accepts`` decides whether Telegram takes them."""
-
-    def __init__(self, *, accepts: bool = True) -> None:
-        self.sent: list[tuple[str, str]] = []
-        self.accepts = accepts
-        self.configured = True
-
-    async def send_message(self, chat_id: str, text: str) -> bool:
-        self.sent.append((chat_id, text))
-        return self.accepts
-
-
-class StubWhatsApp:
-    def __init__(self) -> None:
-        self.sent: list[tuple[str, str]] = []
-
-    async def send_text(self, to_wa_id: str, body: str) -> SendResult:
-        self.sent.append((to_wa_id, body))
-        return SendResult(SendOutcome.SENT, provider_message_id=f"wamid.{len(self.sent)}")
 
 
 @pytest.fixture
@@ -244,7 +213,7 @@ async def test_a_confirmed_booking_replaces_the_draft_with_the_confirmation(
     await build_worker(database, whatsapp).tick()
 
     assert len(whatsapp.sent) == 1
-    _, body = whatsapp.sent[0]
+    body = whatsapp.sent[0].body
     # Rendered from the persisted row, in the Broker's zone.
     assert body == (
         "Tu cita para visitar Casa Roble quedó confirmada para el 14/08/2026 "
@@ -295,7 +264,7 @@ async def test_an_inconclusive_booking_is_never_described_as_confirmed(
     whatsapp = StubWhatsApp()
     await build_worker(database, whatsapp).tick()
 
-    assert [body for _, body in whatsapp.sent] == [NEEDS_REVIEW_MESSAGE]
+    assert [sent.body for sent in whatsapp.sent] == [NEEDS_REVIEW_MESSAGE]
 
 
 async def test_a_notice_whose_visit_already_passed_is_retired_not_released(
@@ -310,7 +279,7 @@ async def test_a_notice_whose_visit_already_passed_is_retired_not_released(
     whatsapp = StubWhatsApp()
     await build_worker(database, whatsapp).tick()
 
-    assert [body for _, body in whatsapp.sent] == [stub_hermes["reply"]]
+    assert [sent.body for sent in whatsapp.sent] == [stub_hermes["reply"]]
     # Retired, so it cannot displace the reply to every future message either.
     assert (await reload(database, stale.id)).lead_notice_at is not None
 
@@ -327,7 +296,7 @@ async def test_a_pending_attempt_says_nothing_to_the_lead(database, stub_hermes)
     whatsapp = StubWhatsApp()
     await build_worker(database, whatsapp).tick()
 
-    assert [body for _, body in whatsapp.sent] == [stub_hermes["reply"]]
+    assert [sent.body for sent in whatsapp.sent] == [stub_hermes["reply"]]
 
 
 # --- What the Broker receives -------------------------------------------------

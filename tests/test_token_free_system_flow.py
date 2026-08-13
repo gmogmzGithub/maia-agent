@@ -15,20 +15,17 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
 from httpx import ASGITransport
-from sqlalchemy import select, text
+from sqlalchemy import Select, select, text
 from sqlalchemy.engine import make_url
 
 from realestate.api import plugin as plugin_api
 from realestate.api import webhooks as webhook_api
 from realestate.api.plugin import SESSION_HEADER
 from realestate.app import create_app
-from realestate.channels.google.calendar import BusyResult, CalendarOutcome, EventResult
-from realestate.channels.whatsapp.client import SendOutcome, SendResult
 from realestate.channels.whatsapp.signature import SIGNATURE_HEADER, compute_signature
 from realestate.config import Settings
 from realestate.db.engine import Base, Database
@@ -47,14 +44,20 @@ from realestate.db.models import (
     OutboxStatus,
 )
 from realestate.domain.appointments import AppointmentPolicy
-from realestate.domain.availability import Interval, WeeklySchedule
 from realestate.domain.properties import ArtifactStore, PropertyService
 from realestate.hermes.sessions import TurnResult
 from realestate.worker import whatsapp as worker_module
 from realestate.worker.broker import BrokerNotifier
 from realestate.worker.whatsapp import WhatsAppWorker
-from tests.conftest import DATABASE_URL, requires_postgres
+from tests.conftest import DATABASE_URL, age_pending_inbox, requires_postgres
 from tests.fixtures import webhooks
+from tests.fixtures.stubs import (
+    SCHEDULE,
+    ZONE,
+    StubCalendar,
+    StubTelegram,
+    StubWhatsApp,
+)
 
 pytestmark = requires_postgres
 
@@ -63,56 +66,6 @@ CASA_ROBLE = (FIXTURES / "casa-roble.md").read_bytes()
 APP_SECRET = "offline-meta-app-secret"
 PLUGIN_TOKEN = "offline-plugin-token"
 DURABLE_SESSION = "offline-sales-session"
-ZONE = ZoneInfo("America/Mexico_City")
-SPEC = (
-    "mon=09:00-17:00;tue=09:00-17:00;wed=09:00-17:00;thu=09:00-17:00;"
-    "fri=09:00-17:00;sat=10:00-17:00;sun=10:00-17:00"
-)
-SCHEDULE = WeeklySchedule.parse(SPEC, "America/Mexico_City")
-
-
-class FakeCalendar:
-    """A conclusive empty Calendar which records the event Maia creates."""
-
-    def __init__(self) -> None:
-        self.created: list[str] = []
-
-    async def busy_between(self, start, end) -> BusyResult:  # noqa: ANN001
-        return BusyResult(CalendarOutcome.OK, [])
-
-    async def is_free(self, slot: Interval) -> BusyResult:
-        return BusyResult(CalendarOutcome.OK, [])
-
-    async def create_event(
-        self, *, slot, summary, description, reference  # noqa: ANN001
-    ) -> EventResult:
-        self.created.append(reference)
-        return EventResult(CalendarOutcome.OK, event_id=f"evt-{reference}")
-
-
-class FakeWhatsApp:
-    """Accepts Product Outbox sends without contacting Meta."""
-
-    def __init__(self) -> None:
-        self.sent: list[tuple[str, str, str]] = []
-
-    async def send_text(self, to_wa_id: str, body: str) -> SendResult:
-        provider_id = f"wamid.OFFLINE.{len(self.sent) + 1}"
-        self.sent.append((to_wa_id, body, provider_id))
-        return SendResult(SendOutcome.SENT, provider_message_id=provider_id)
-
-
-class FakeTelegram:
-    """Accepts Broker notices without contacting Telegram."""
-
-    configured = True
-
-    def __init__(self) -> None:
-        self.sent: list[tuple[str, str]] = []
-
-    async def send_message(self, chat_id: str, body: str) -> bool:
-        self.sent.append((chat_id, body))
-        return True
 
 
 async def _truncate(database: Database) -> None:
@@ -125,17 +78,6 @@ async def _truncate(database: Database) -> None:
         await session.commit()
 
 
-async def _age_pending(database: Database) -> None:
-    """Move new webhook rows beyond the real reconciliation window."""
-    async with database.session_scope() as session:
-        rows = (await session.execute(select(InboxMessage))).scalars().all()
-        for row in rows:
-            if row.status == InboxStatus.PENDING.value:
-                row.persisted_at -= timedelta(seconds=10)
-                row.next_attempt_at = None
-        await session.commit()
-
-
 async def _post_signed(client: httpx.AsyncClient, payload: dict) -> httpx.Response:
     raw = webhooks.encode(payload)
     return await client.post(
@@ -145,6 +87,70 @@ async def _post_signed(client: httpx.AsyncClient, payload: dict) -> httpx.Respon
             SIGNATURE_HEADER: compute_signature(APP_SECRET, raw),
             "Content-Type": "application/json",
         },
+    )
+
+
+async def _tool(
+    client: httpx.AsyncClient, headers: dict[str, str], name: str, payload: dict
+) -> dict:
+    """Call one typed Product tool the way the Hermes plugin would."""
+    response = await client.post(
+        f"/internal/plugin/tools/{name}", headers=headers, json=payload
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+async def _rows(session, statement: Select) -> list:  # noqa: ANN001
+    return list((await session.execute(statement)).scalars().all())
+
+
+async def _answer_property_question(client: httpx.AsyncClient, headers) -> TurnResult:  # noqa: ANN001
+    """Turn one: the Model consults the document before quoting it."""
+    result = await _tool(
+        client, headers, "get_property_information", {"reference": "Casa Roble"}
+    )
+    assert result["result"] == "found"
+    assert result["name"] == "Casa Roble"
+    return TurnResult(
+        text=(
+            "Casa Roble está en Zapopan, tiene 4 recámaras y cuesta "
+            "$3,000,000 MXN. ¿Quieres agendar una visita?"
+        ),
+        tools_used=["get_property_information"],
+    )
+
+
+async def _book_a_visit(client: httpx.AsyncClient, headers) -> TurnResult:  # noqa: ANN001
+    """Turn two: the Model reads availability, then books through Product."""
+    target = datetime.now(tz=ZONE).date() + timedelta(days=2)
+    slots = await _tool(
+        client,
+        headers,
+        "get_available_slots",
+        {
+            "reference": "Casa Roble",
+            "date_from": target.isoformat(),
+            "date_to": target.isoformat(),
+        },
+    )
+    assert slots["result"] == "available"
+    assert slots["candidates"]
+
+    booking = await _tool(
+        client,
+        headers,
+        "book_appointment",
+        {
+            "reference": "Casa Roble",
+            "start": slots["candidates"][0]["start"],
+            "attendee_name": "Cliente Demo",
+        },
+    )
+    assert booking["result"] == "confirmed"
+    return TurnResult(
+        text="Hermes draft: la cita quedó lista.",
+        tools_used=["get_available_slots", "book_appointment"],
     )
 
 
@@ -184,9 +190,9 @@ async def test_whatsapp_lead_booking_reaches_telegram_without_provider_tokens(
     monkeypatch.setattr(plugin_api, "get_settings", lambda: settings)
 
     app = create_app(settings)
-    calendar = FakeCalendar()
-    whatsapp = FakeWhatsApp()
-    telegram = FakeTelegram()
+    calendar = StubCalendar()
+    whatsapp = StubWhatsApp()
+    telegram = StubTelegram()
     app.state.database = database
     app.state.artifacts = ArtifactStore(tmp_path / "artifacts")
     app.state.calendar = calendar
@@ -221,12 +227,12 @@ async def test_whatsapp_lead_booking_reaches_telegram_without_provider_tokens(
     async with httpx.AsyncClient(
         transport=ASGITransport(app=app), base_url="http://product.test"
     ) as client:
-        calls = 0
+        # Each scripted turn replaces only the Model's judgment; the tools it
+        # calls are the real authenticated Product tools. Exhausting the script
+        # is a clearer failure than an unexpected extra turn silently passing.
+        turns = iter((_answer_property_question, _book_a_visit))
 
         async def scripted_turn(hermes, role_session, prompt, **kwargs):  # noqa: ANN001
-            """Replace only model judgment; exercise its real typed tools."""
-            nonlocal calls
-            calls += 1
             durable = role_session.hermes_session_id or DURABLE_SESSION
             if not role_session.hermes_session_id:
                 await kwargs["on_attached"](durable)
@@ -234,59 +240,9 @@ async def test_whatsapp_lead_booking_reaches_telegram_without_provider_tokens(
                 "Authorization": f"Bearer {PLUGIN_TOKEN}",
                 SESSION_HEADER: durable,
             }
-
-            if calls == 1:
-                response = await client.post(
-                    "/internal/plugin/tools/get_property_information",
-                    headers=headers,
-                    json={"reference": "Casa Roble"},
-                )
-                result = response.json()
-                assert response.status_code == 200
-                assert result["result"] == "found"
-                assert result["name"] == "Casa Roble"
-                return TurnResult(
-                    text=(
-                        "Casa Roble está en Zapopan, tiene 4 recámaras y cuesta "
-                        "$3,000,000 MXN. ¿Quieres agendar una visita?"
-                    ),
-                    tools_used=["get_property_information"],
-                    hermes_session_id=durable,
-                )
-
-            assert calls == 2
-            target = datetime.now(tz=ZONE).date() + timedelta(days=2)
-            response = await client.post(
-                "/internal/plugin/tools/get_available_slots",
-                headers=headers,
-                json={
-                    "reference": "Casa Roble",
-                    "date_from": target.isoformat(),
-                    "date_to": target.isoformat(),
-                },
-            )
-            slots = response.json()
-            assert response.status_code == 200
-            assert slots["result"] == "available"
-            assert slots["candidates"]
-
-            response = await client.post(
-                "/internal/plugin/tools/book_appointment",
-                headers=headers,
-                json={
-                    "reference": "Casa Roble",
-                    "start": slots["candidates"][0]["start"],
-                    "attendee_name": "Cliente Demo",
-                },
-            )
-            booking = response.json()
-            assert response.status_code == 200
-            assert booking["result"] == "confirmed"
-            return TurnResult(
-                text="Hermes draft: la cita quedó lista.",
-                tools_used=["get_available_slots", "book_appointment"],
-                hermes_session_id=durable,
-            )
+            result = await next(turns)(client, headers)
+            result.hermes_session_id = durable
+            return result
 
         monkeypatch.setattr(worker_module, "run_turn", scripted_turn)
 
@@ -304,48 +260,45 @@ async def test_whatsapp_lead_booking_reaches_telegram_without_provider_tokens(
         duplicate = await _post_signed(client, first)
         assert duplicate.json()["duplicates"] == 1
 
-        await _age_pending(database)
+        await age_pending_inbox(database)
         await worker.tick()
         assert len(whatsapp.sent) == 1
-        assert "4 recámaras" in whatsapp.sent[0][1]
+        assert "4 recámaras" in whatsapp.sent[0].body
 
         second = webhooks.text_message(
             wamid="wamid.OFFLINE.LEAD.2",
             body="Sí, quiero agendar una visita",
         )
         assert (await _post_signed(client, second)).json()["accepted"] == 1
-        await _age_pending(database)
+        await age_pending_inbox(database)
         await worker.tick()
 
         assert len(whatsapp.sent) == 2
-        assert "quedó confirmada" in whatsapp.sent[1][1]
-        assert "Hermes draft" not in whatsapp.sent[1][1]
+        confirmation = whatsapp.sent[1]
+        assert "quedó confirmada" in confirmation.body
+        assert "Hermes draft" not in confirmation.body
 
         await notifier.tick()
         assert len(telegram.sent) == 1
-        assert telegram.sent[0][0] == "offline-admin"
-        assert "Nueva visita agendada" in telegram.sent[0][1]
-        assert "Casa Roble" in telegram.sent[0][1]
+        assert telegram.sent[0].chat_id == "offline-admin"
+        assert "Nueva visita agendada" in telegram.sent[0].body
+        assert "Casa Roble" in telegram.sent[0].body
 
         delivered = webhooks.status_update(
-            provider_message_id=whatsapp.sent[1][2], status="delivered"
+            provider_message_id=confirmation.provider_message_id, status="delivered"
         )
         response = await _post_signed(client, delivered)
         assert response.json()["statuses"] == 1
 
     async with database.session_scope() as session:
-        inbox = (await session.execute(select(InboxMessage))).scalars().all()
-        groups = (await session.execute(select(InboxGroup))).scalars().all()
-        outbox = (
-            (await session.execute(select(OutboxMessage).order_by(OutboxMessage.created_at)))
-            .scalars()
-            .all()
-        )
-        appointments = (await session.execute(select(Appointment))).scalars().all()
-        deliveries = (await session.execute(select(DeliveryStatus))).scalars().all()
-        sessions = (await session.execute(select(AgentSession))).scalars().all()
-        snapshots = (await session.execute(select(AvailabilitySnapshot))).scalars().all()
-        audit_actions = (await session.execute(select(AuditEvent.action))).scalars().all()
+        inbox = await _rows(session, select(InboxMessage))
+        groups = await _rows(session, select(InboxGroup))
+        outbox = await _rows(session, select(OutboxMessage).order_by(OutboxMessage.created_at))
+        appointments = await _rows(session, select(Appointment))
+        deliveries = await _rows(session, select(DeliveryStatus))
+        sessions = await _rows(session, select(AgentSession))
+        snapshots = await _rows(session, select(AvailabilitySnapshot))
+        audit_actions = await _rows(session, select(AuditEvent.action))
 
         assert [row.status for row in inbox] == [
             InboxStatus.PROCESSED.value,

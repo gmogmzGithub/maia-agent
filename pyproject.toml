@@ -59,6 +59,10 @@ source = ["src/realestate", "plugin/realestate_hermes_plugin"]
 
 [tool.coverage.report]
 show_missing = true
+skip_covered = true
+# The required gate's floor. Kept here rather than on the CI command line so
+# the workflow and docs/testing.md cannot disagree about the threshold.
+fail_under = 97
 exclude_also = [
     "if TYPE_CHECKING:",
     "raise NotImplementedError",

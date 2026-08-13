@@ -46,6 +46,15 @@ SALES_FRESHNESS_CONTEXT = (
     "revalidarlos con esa herramienta en este turno.]"
 )
 
+# What the Product restates to a Role on every turn, keyed by Role so adding one
+# is data rather than a branch. A Role absent here gets the Lead's text unchanged.
+#
+# Sales carries the freshness contract because its SOUL.md copy ships in the
+# Hermes image while this one ships in Product's: change the rule and both need
+# recreating. roles/sales/SOUL.md keeps the prose the Model is trained on; this
+# is the per-turn restatement, which SOUL.md alone cannot provide.
+ROLE_TURN_CONTEXT: dict[AgentRole, str] = {AgentRole.SALES: SALES_FRESHNESS_CONTEXT}
+
 
 class SessionError(RuntimeError):
     """A Hermes session operation failed."""
@@ -123,16 +132,15 @@ def dated_prompt(text: str, *, today: date) -> str:
 
 
 def role_prompt(text: str, *, role: AgentRole) -> str:
-    """Attach repeatable Product safety context without replacing Lead text.
+    """Prefix one turn with the Role's standing Product context, if it has one.
 
-    Hermes keeps the complete conversation and still decides whether a message
-    asks about a Property. The Product repeats the freshness contract on every
-    Sales turn because a Property Document or status may change while that
-    durable session remains open. An instruction that appears only in SOUL.md
-    can lose salience behind already-retrieved facts in a long conversation.
+    Repeated every turn rather than stated once: a Property Document or status
+    can change while a durable session stays open, and an instruction that
+    appears only in SOUL.md loses salience behind facts already retrieved
+    earlier in a long conversation. The Lead's own words are untouched below it.
     """
-    if role is AgentRole.SALES:
-        return f"{SALES_FRESHNESS_CONTEXT}\n{text}"
+    if context := ROLE_TURN_CONTEXT.get(role):
+        return f"{context}\n{text}"
     return text
 
 

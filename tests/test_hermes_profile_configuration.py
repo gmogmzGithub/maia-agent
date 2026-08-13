@@ -1,3 +1,9 @@
+"""The entrypoint must hand Hermes Maia's fixed tool surface, not a searchable one.
+
+Asserts the whole emitted document rather than individual keys, so a stray or
+renamed key fails here instead of silently changing how Hermes exposes tools.
+"""
+
 from __future__ import annotations
 
 import os
@@ -5,6 +11,19 @@ import subprocess
 from pathlib import Path
 
 import yaml
+
+from tests.conftest import REPO_ROOT
+
+ROLES = REPO_ROOT / "roles"
+EXPECTED_MODELS = {
+    "config.yaml": "test-admin-model",
+    "profiles/sales/config.yaml": "test-sales-model",
+    "profiles/admin/config.yaml": "test-admin-model",
+}
+
+
+def read(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
 
 
 def test_entrypoint_pins_product_sessions_to_eager_maia_tools(tmp_path: Path) -> None:
@@ -25,41 +44,25 @@ def test_entrypoint_pins_product_sessions_to_eager_maia_tools(tmp_path: Path) ->
             "MODEL_PROVIDER": "anthropic",
             "SALES_MODEL": "test-sales-model",
             "ADMIN_MODEL": "test-admin-model",
-            "MAIA_ROLES_ROOT": str(Path("roles").resolve()),
+            "MAIA_ROLES_ROOT": str(ROLES),
         }
     )
 
+    # Output is left on the terminal: check=True reports only an exit code, so
+    # capturing it would hide whichever required variable the script rejected.
     subprocess.run(
-        ["bash", "docker/hermes-entrypoint.sh"],
-        cwd=Path.cwd(),
+        ["bash", str(REPO_ROOT / "docker" / "hermes-entrypoint.sh")],
         env=env,
         check=True,
-        capture_output=True,
-        text=True,
     )
 
-    for profile, expected_model in (
-        ("sales", "test-sales-model"),
-        ("admin", "test-admin-model"),
-    ):
-        config = yaml.safe_load(
-            (home / "profiles" / profile / "config.yaml").read_text(
-                encoding="utf-8"
-            )
-        )
-        assert config["model"] == {
-            "default": expected_model,
-            "provider": "anthropic",
-        }
-        assert config["plugins"]["enabled"] == ["realestate"]
-        assert config["tools"]["tool_search"] is False
-        assert config["platform_toolsets"] == {"product": ["realestate"]}
-        assert (home / "profiles" / profile / "SOUL.md").read_text(
-            encoding="utf-8"
-        ) == (Path("roles") / profile / "SOUL.md").read_text(encoding="utf-8")
+    for relative, expected_model in EXPECTED_MODELS.items():
+        assert yaml.safe_load(read(home / relative)) == {
+            "model": {"default": expected_model, "provider": "anthropic"},
+            "plugins": {"enabled": ["realestate"]},
+            "tools": {"tool_search": False},
+            "platform_toolsets": {"product": ["realestate"]},
+        }, relative
 
-    root_config = yaml.safe_load(
-        (home / "config.yaml").read_text(encoding="utf-8")
-    )
-    assert root_config["tools"]["tool_search"] is False
-    assert root_config["platform_toolsets"] == {"product": ["realestate"]}
+    for role in ("sales", "admin"):
+        assert read(home / "profiles" / role / "SOUL.md") == read(ROLES / role / "SOUL.md")

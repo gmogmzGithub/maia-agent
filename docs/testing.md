@@ -7,18 +7,18 @@ state transitions remain real.
 
 ## The required gate
 
-GitHub Actions runs `.github/workflows/tests.yml` for every pushed commit and
-every pull request. The job:
+GitHub Actions runs `.github/workflows/tests.yml` for every pull request and
+every push to `main`. The job:
 
 1. creates an environment in which every provider credential is blank;
 2. builds and starts the complete Product, Hermes, and PostgreSQL Compose
-   topology;
-3. proves that Product can reach the loopback-only Hermes health endpoint;
-4. runs Ruff and every test except those marked `live_provider`;
-5. fails below 97 percent source coverage;
-6. fails if any selected test is skipped, so a missing service cannot silently
+   topology, waiting on the healthchecks that prove Product can reach the
+   loopback-only Hermes endpoint;
+3. runs Ruff and every test except those marked `live_provider`;
+4. fails below the coverage floor set in `pyproject.toml`;
+5. fails if any selected test is skipped, so a missing service cannot silently
    turn a required integration scenario green;
-7. retains JUnit and coverage XML reports as workflow artifacts.
+6. retains JUnit and coverage XML reports as workflow artifacts.
 
 The vertical scenario in `tests/test_token_free_system_flow.py` covers the
 customer path discussed during the first live rehearsal:
@@ -47,14 +47,11 @@ With the Compose runtime running:
 ```bash
 docker compose up --build -d
 docker compose exec product ruff check src plugin tests migrations
-docker compose exec product pytest \
-  -m 'not live_provider' \
-  --strict-markers \
-  --cov=src/realestate \
-  --cov=plugin/realestate_hermes_plugin \
-  --cov-report=term-missing:skip-covered \
-  --cov-fail-under=97
+docker compose exec product pytest -m 'not live_provider' --strict-markers --cov
 ```
+
+The measured packages, the report format, and the coverage floor come from
+`pyproject.toml`, so this is the same gate CI applies.
 
 The tests selected by that command do not call Meta, Anthropic, Google, or
 Telegram. CI additionally blanks those credentials and disables the background
