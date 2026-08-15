@@ -82,6 +82,7 @@ async def set_inactive(app) -> None:
     async with app.state.database.session_scope() as session:
         prop = (await session.execute(select(Property))).scalar_one()
         prop.status = PropertyStatus.INACTIVE.value
+        prop.inactive_reason = "Unspecified"
         await session.commit()
 
 
@@ -159,7 +160,7 @@ async def test_the_found_result_matches_the_contract(wired) -> None:
     assert body["name"] == "Casa Roble"
     assert body["status"] == "Active"
     assert body["document_version"] == 1
-    assert body["document_markdown"].startswith("---\nproperty_id: casa-roble")
+    assert body["document_markdown"].startswith("---\nschema_version: 1\nproperty_id: casa-roble")
     # The complete document, not a chunk or summary (P-053).
     assert body["document_markdown"].encode("utf-8") == V1
 
@@ -219,7 +220,7 @@ async def test_a_replacement_is_visible_without_restarting_anything(wired) -> No
 
     assert before["document_version"] == 1
     assert after["document_version"] == 2
-    assert "$2,850,000 MXN" in after["document_markdown"]
+    assert "price_amount: 3200000" in after["document_markdown"]
     # Nothing about the tool schema, the session, or the system prompt changed.
 
 

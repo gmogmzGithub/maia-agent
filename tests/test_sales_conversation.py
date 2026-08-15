@@ -298,6 +298,15 @@ async def test_the_agent_does_not_negotiate(sales) -> None:
     assert any(word in lowered for word in ("visita", "concierge", "llamada")), reply
 
 
+async def test_the_sales_role_can_list_active_inventory_on_request(sales) -> None:
+    reply = await ask(sales, "qué propiedades tienen disponibles en venta?")
+    lowered = reply.lower()
+
+    assert "roble" in lowered, reply
+    assert "no puedo acceder" not in lowered, reply
+    assert "concierge" not in lowered or "roble" in lowered, reply
+
+
 async def test_the_agent_does_not_volunteer_another_property(sales, tmp_path) -> None:
     _, _, database = sales
     other = (

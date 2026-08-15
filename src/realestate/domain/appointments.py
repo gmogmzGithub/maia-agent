@@ -320,6 +320,7 @@ class AppointmentService:
             ),
             description=self._describe(lead, attendee_name),
             reference=attempt.reference,
+            location=prop.visit_address,
         )
 
         if event.outcome is CalendarOutcome.OK:
@@ -530,15 +531,21 @@ class AppointmentService:
 
 
 def confirmation_message(
-    *, property_name: str, starts_at: datetime, schedule: WeeklySchedule
+    *,
+    property_name: str,
+    starts_at: datetime,
+    schedule: WeeklySchedule,
+    visit_address: str | None = None,
 ) -> str:
     """The deterministic confirmation (P-044). Rendered from persisted state only."""
     local = starts_at.astimezone(schedule.zone)
-    return (
+    message = (
         f"Tu cita para visitar {property_name} quedó confirmada para el "
         f"{local.strftime('%d/%m/%Y')} a las {local.strftime('%H:%M')}. "
-        "Si necesitas cambiarla, responde a este mensaje."
     )
+    if visit_address:
+        message += f"La dirección de la visita es: {visit_address}. "
+    return message + "Si necesitas cambiarla, responde a este mensaje."
 
 
 def cancellation_message(
@@ -648,6 +655,7 @@ async def pending_lead_notice(
             property_name=prop.name if prop else "la propiedad",
             starts_at=row.starts_at,
             schedule=schedule,
+            visit_address=prop.visit_address if prop else None,
         ),
     )
 

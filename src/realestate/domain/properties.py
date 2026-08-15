@@ -21,6 +21,7 @@ from realestate.db.models import (
     AgentRole,
     Property,
     PropertyDocumentVersion,
+    PropertyInactiveReason,
     PropertyStatus,
 )
 from realestate.domain.audit import record_audit
@@ -85,6 +86,51 @@ class ArtifactStore:
         return artifact.read_bytes()
 
 
+class CatalogStore:
+    """Mutable public-safe current copies under ``src/properties``.
+
+    This store is an administrative projection, not runtime truth. Every
+    accepted version is still immutable in ``ArtifactStore`` and selected by
+    PostgreSQL.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self._root = root
+
+    def replace(self, property_key: str, content: bytes) -> bytes | None:
+        self._root.mkdir(parents=True, exist_ok=True)
+        path = self._root / f"{property_key}.md"
+        previous = path.read_bytes() if path.is_file() else None
+        temporary = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
+        temporary.write_bytes(content)
+        temporary.replace(path)
+        return previous
+
+    def restore(self, property_key: str, previous: bytes | None) -> None:
+        path = self._root / f"{property_key}.md"
+        if previous is None:
+            path.unlink(missing_ok=True)
+            return
+        temporary = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
+        temporary.write_bytes(previous)
+        temporary.replace(path)
+
+    def read(self, property_key: str) -> bytes | None:
+        path = self._root / f"{property_key}.md"
+        return path.read_bytes() if path.is_file() else None
+
+
+def customer_availability_message(reason: str | None) -> str:
+    """Customer-safe Spanish response for an unavailable Property."""
+    return {
+        PropertyInactiveReason.SOLD.value: "La propiedad ya fue vendida.",
+        PropertyInactiveReason.RENTED.value: "La propiedad ya fue rentada.",
+        PropertyInactiveReason.RESERVED.value: (
+            "La propiedad está reservada y no está disponible por el momento."
+        ),
+    }.get(reason, "La propiedad no está disponible por el momento.")
+
+
 async def resolve_property(session: AsyncSession, reference: str) -> Property | None:
     """The Property a model-supplied *reference* names, or None.
 
@@ -110,51 +156,117 @@ async def resolve_property(session: AsyncSession, reference: str) -> Property | 
     ).scalar_one_or_none()
 
 
+async def accepted_version(
+    session: AsyncSession, prop: Property
+) -> PropertyDocumentVersion | None:
+    """The document version a Property currently accepts, or None.
+
+    Spelled once here for the same reason as ``resolve_property``: the
+    retrieval, administrative, and manual-editing surfaces all need it, and
+    "``accepted_version_id`` is the pointer" is a domain rule rather than
+    something each caller should re-derive.
+    """
+    if prop.accepted_version_id is None:
+        return None
+    return await session.get(PropertyDocumentVersion, prop.accepted_version_id)
+
+
 class PropertyService:
-    def __init__(self, session: AsyncSession, artifacts: ArtifactStore) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        artifacts: ArtifactStore,
+        catalog: CatalogStore | None = None,
+    ) -> None:
         self._session = session
         self._artifacts = artifacts
+        self._catalog = catalog
 
     # -- Ingestion --------------------------------------------------------
 
     async def accept_upload(
-        self, filename: str, content: bytes, actor_id: str
+        self,
+        filename: str,
+        content: bytes,
+        actor_id: str,
+        *,
+        actor_type: str = "Developer",
+        create_only: bool = False,
+        expected_property_key: str | None = None,
+        visit_address: str | None = None,
     ) -> AcceptedUpload:
         """Validate and atomically accept one Property Document.
 
         Raises ``ValidationError`` without persisting anything if the document
         is invalid or would collide. A valid first upload creates the Property
         as ``Active``; a valid replacement preserves the existing status (P-046).
+
+        ``visit_address`` is private operational data the document never
+        carries. ``None`` means the caller is not speaking about it, so a
+        replacement leaves any stored address untouched; a string sets it, and
+        an empty one clears it.
         """
         document = validate_upload(filename, content)
 
+        if expected_property_key and document.property_key != expected_property_key:
+            raise ValidationError(
+                ["property_id is immutable and cannot be changed while editing."]
+            )
+
         existing = await self._by_key(document.property_key)
+        if create_only and existing is not None:
+            raise ValidationError(
+                [
+                    f"property_id: {document.property_key!r} already exists. "
+                    "Choose a different name/key instead of adding a numeric suffix."
+                ]
+            )
         await self._reject_name_collision(document, existing)
         if existing is None:
             await self._reject_inventory_overflow()
 
         # Artifact first, then the transaction (P-050).
         checksum, artifact_path = self._artifacts.write(document.raw_bytes)
+        previous_catalog: bytes | None = None
+        if self._catalog is not None:
+            previous_catalog = self._catalog.replace(
+                document.property_key, document.raw_bytes
+            )
 
         try:
             if existing is None:
-                accepted = await self._create_property(document, checksum, artifact_path)
+                accepted = await self._create_property(
+                    document,
+                    checksum,
+                    artifact_path,
+                    visit_address=visit_address,
+                )
             else:
                 accepted = await self._add_version(
-                    existing, document, checksum, artifact_path
+                    existing,
+                    document,
+                    checksum,
+                    artifact_path,
+                    visit_address=visit_address,
                 )
             await self._session.commit()
-        except IntegrityError as exc:
+        except Exception as exc:
+            # One compensation for every failure: the catalog copy is written
+            # before the transaction, so whatever went wrong it has to go back.
             await self._session.rollback()
-            raise ValidationError(
-                [
-                    "The upload conflicted with an existing Property and was rejected. "
-                    "No accepted document or status was changed."
-                ]
-            ) from exc
+            if self._catalog is not None:
+                self._catalog.restore(document.property_key, previous_catalog)
+            if isinstance(exc, IntegrityError):
+                raise ValidationError(
+                    [
+                        "The upload conflicted with an existing Property and was "
+                        "rejected. No accepted document or status was changed."
+                    ]
+                ) from exc
+            raise
 
         await self._audit(
-            actor_type="Developer",
+            actor_type=actor_type,
             actor_id=actor_id,
             action="PropertyDocumentAccepted",
             subject_id=accepted.property_key,
@@ -203,7 +315,12 @@ class PropertyService:
             )
 
     async def _create_property(
-        self, document: PropertyDocument, checksum: str, artifact_path: Path
+        self,
+        document: PropertyDocument,
+        checksum: str,
+        artifact_path: Path,
+        *,
+        visit_address: str | None,
     ) -> AcceptedUpload:
         prop = Property(
             property_key=document.property_key,
@@ -211,6 +328,8 @@ class PropertyService:
             normalized_name=document.normalized_name,
             # A valid first upload creates the Property as Active (P-045).
             status=PropertyStatus.ACTIVE.value,
+            inactive_reason=None,
+            visit_address=(visit_address or "").strip() or None,
         )
         self._session.add(prop)
         await self._session.flush()  # INSERT ... RETURNING id
@@ -235,6 +354,8 @@ class PropertyService:
         document: PropertyDocument,
         checksum: str,
         artifact_path: Path,
+        *,
+        visit_address: str | None,
     ) -> AcceptedUpload:
         latest = (
             await self._session.execute(
@@ -255,6 +376,8 @@ class PropertyService:
         prop.accepted_version_id = version.id
         prop.name = document.name
         prop.normalized_name = document.normalized_name
+        if visit_address is not None:
+            prop.visit_address = visit_address.strip() or None
 
         return AcceptedUpload(
             property_key=prop.property_key,
@@ -339,6 +462,9 @@ class PropertyService:
                 "property_id": prop.property_key,
                 "name": prop.name,
                 "status": prop.status,
+                "customer_message": customer_availability_message(
+                    prop.inactive_reason
+                ),
             }
 
         version = await self._accepted_version(prop)
@@ -358,6 +484,7 @@ class PropertyService:
             "property_id": prop.property_key,
             "name": prop.name,
             "status": prop.status,
+            "inactive_reason": prop.inactive_reason,
             "document_version": version.version,
             "document_markdown": markdown.decode("utf-8"),
         }
@@ -366,6 +493,4 @@ class PropertyService:
         return await resolve_property(self._session, reference)
 
     async def _accepted_version(self, prop: Property) -> PropertyDocumentVersion | None:
-        if prop.accepted_version_id is None:
-            return None
-        return await self._session.get(PropertyDocumentVersion, prop.accepted_version_id)
+        return await accepted_version(self._session, prop)

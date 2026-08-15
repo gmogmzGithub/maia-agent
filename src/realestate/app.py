@@ -16,6 +16,7 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from realestate.api import health as health_api
+from realestate.api import admin as admin_api
 from realestate.api import plugin as plugin_api
 from realestate.api import upload as upload_api
 from realestate.api import webhooks as webhooks_api
@@ -27,7 +28,7 @@ from realestate.db.engine import Database
 from realestate.domain.appointments import AppointmentPolicy
 from realestate.domain.admin_work import AdminWorkService
 from realestate.domain.availability import WeeklySchedule
-from realestate.domain.properties import ArtifactStore
+from realestate.domain.properties import ArtifactStore, CatalogStore
 from realestate.hermes import HermesClient
 from realestate.worker.broker import BrokerNotifier
 from realestate.worker.followups import LeadFollowUpWorker
@@ -89,6 +90,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.database = Database(settings.database_url)
     app.state.artifacts = ArtifactStore(Path(settings.artifact_root))
+    app.state.property_catalog = CatalogStore(Path(settings.property_catalog_root))
     app.state.hermes = HermesClient.from_settings(settings)
     app.state.whatsapp = WhatsAppClient(
         access_token=settings.meta_access_token,
@@ -224,6 +226,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # CORS stays disabled (P-051): no browser origin may reach this application.
     app.state.settings = settings
     app.include_router(health_api.router)
+    app.include_router(admin_api.router)
     app.include_router(plugin_api.router)
     app.include_router(upload_api.router)
     app.include_router(webhooks_api.router)

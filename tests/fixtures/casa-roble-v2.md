@@ -1,32 +1,55 @@
 ---
+schema_version: 1
 property_id: casa-roble
-name: Casa Roble
-location: Zapopan
-Tipo de inmueble: Casa
-Venta o Renta: En Venta
-Colonia: Los Robles
-Price: $2,850,000 MXN
-Cuartos: 4
-Baños: 2.5
-En Coto: Sí
-Amenidades: Gym, Alberca, Cancha de padel
-Mantenimiento: $1,500 MXN
+name: Casa Roble Renovada
+property_type: House
+operation: Sale
+price_amount: 3200000
+price_currency: MXN
+state: Jalisco
+city: Zapopan
+neighborhood: Los Robles
+half_bathrooms: 1
+parking_spaces: 2
+maintenance_status: Fee
+maintenance_description: Cuota mensual de mantenimiento y vigilancia.
+in_development: true
+bedrooms: 4
+full_bathrooms: 2
+maintenance_amount: 1500
+maintenance_currency: MXN
+private_characteristics:
+- Jardín privado
+- Estacionamiento techado
+community_amenities:
+- Alberca
+- Gimnasio
+- Seguridad 24 horas
 ---
 
-# Casa Roble
+# Casa Roble Renovada
 
-Casa de dos plantas en el coto Los Robles, en Zapopan. El precio fue ajustado.
+Casa sintética renovada para probar versiones inmutables.
 
-## Distribución
+## Distribución y espacios
 
-- 4 recámaras, la principal con vestidor.
-- 2 baños completos y medio baño en planta baja.
-- Sala, comedor y cocina integral equipada.
+Cuenta con cuatro recámaras, dos baños completos, medio baño y dos lugares de estacionamiento.
+
+## Características de la propiedad
+
+- Jardín privado
+- Estacionamiento techado
 
 ## Amenidades del coto
 
-Gimnasio, alberca y una cancha de padel de reciente construcción.
+- Alberca
+- Gimnasio
+- Seguridad 24 horas
 
 ## Mantenimiento
 
-La cuota de mantenimiento es de $1,500 MXN mensuales.
+Cuota de mantenimiento: $1,500 MXN. Cuota mensual de mantenimiento y vigilancia.
+
+## Ubicación
+
+Los Robles, Zapopan, Jalisco

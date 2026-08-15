@@ -51,6 +51,7 @@ from realestate.domain.outbox import (
     OutboxKind,
     OutboxService,
 )
+from realestate.channels.whatsapp.formatting import to_whatsapp_markup
 from realestate.hermes.client import HermesClient
 from realestate.hermes.sessions import (
     bind_cycle_session,
@@ -336,7 +337,7 @@ class WhatsAppWorker:
                 conversation.id,
                 reply.strip()[:120],
             )
-            return notice.body, notice.kind
+            return to_whatsapp_markup(notice.body), notice.kind
 
         # Restore the approved wording of any accepted message the Model
         # reworded. Canonicalisation only rewrites copy it already emitted; it
@@ -348,7 +349,7 @@ class WhatsAppWorker:
                 conversation.id,
                 "; ".join(m[:40] for m in canonical.replaced),
             )
-        return canonical.text, OutboxKind.AGENT_REPLY
+        return to_whatsapp_markup(canonical.text), OutboxKind.AGENT_REPLY
 
     async def _handle_failure(
         self,

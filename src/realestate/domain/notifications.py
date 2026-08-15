@@ -58,6 +58,7 @@ class _Visit:
 
     appointment: Appointment
     property_name: str
+    visit_address: str | None
     lead: Lead | None
 
     @property
@@ -265,6 +266,7 @@ class BrokerNotificationService:
         return _Visit(
             appointment=row,
             property_name=prop.name if prop else "propiedad desconocida",
+            visit_address=prop.visit_address if prop else None,
             lead=lead,
         )
 
@@ -301,6 +303,16 @@ def _stamp(moment: datetime, schedule: WeeklySchedule) -> str:
     return f"{_DAYS[local.weekday()]} {local.strftime('%d/%m')} a las {local.strftime('%H:%M')}"
 
 
+def _tail(visit: _Visit) -> list[str]:
+    """The private Visit Address, when there is one, then the reference to quote.
+
+    Both single-visit notices end this way; ``needs_review_body`` deliberately
+    withholds the address because the visit is not confirmed.
+    """
+    address = [f"Dirección: {visit.visit_address}"] if visit.visit_address else []
+    return [*address, f"Ref: {visit.appointment.reference}"]
+
+
 def booked_body(visit: _Visit, schedule: WeeklySchedule) -> str:
     return "\n".join(
         [
@@ -308,7 +320,7 @@ def booked_body(visit: _Visit, schedule: WeeklySchedule) -> str:
             visit.property_name,
             _stamp(visit.appointment.starts_at, schedule),
             f"{visit.who} — {visit.phone}",
-            f"Ref: {visit.appointment.reference}",
+            *_tail(visit),
         ]
     )
 
@@ -344,6 +356,8 @@ def digest_body(
             f"• {local.strftime('%H:%M')} — {visit.property_name} — "
             f"{visit.who} ({visit.phone})"
         )
+        if visit.visit_address:
+            lines.append(f"  Dirección: {visit.visit_address}")
     return "\n".join(lines)
 
 
@@ -355,6 +369,6 @@ def reminder_body(visit: _Visit, now: datetime, schedule: WeeklySchedule) -> str
             f"⏰ Visita en {minutes} min — {local.strftime('%H:%M')}",
             visit.property_name,
             f"{visit.who} — {visit.phone}",
-            f"Ref: {visit.appointment.reference}",
+            *_tail(visit),
         ]
     )

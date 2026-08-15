@@ -38,23 +38,9 @@ from realestate.worker import whatsapp as worker_module
 from realestate.worker.whatsapp import WhatsAppWorker
 from tests.conftest import DATABASE_URL, age_pending_inbox, requires_postgres
 from tests.fixtures import webhooks
-from tests.fixtures.stubs import SCHEDULE
+from tests.fixtures.stubs import SCHEDULE, StubWhatsApp
 
 pytestmark = requires_postgres
-
-
-class StubWhatsApp:
-    """Records every send and answers with a configurable outcome."""
-
-    def __init__(self, result: SendResult | None = None) -> None:
-        self.sent: list[tuple[str, str]] = []
-        self._result = result or SendResult(
-            SendOutcome.SENT, provider_message_id="wamid.STUB"
-        )
-
-    async def send_text(self, to_wa_id: str, body: str) -> SendResult:
-        self.sent.append((to_wa_id, body))
-        return self._result
 
 
 @pytest.fixture
@@ -154,15 +140,12 @@ def inbound(wamid: str, body: str, *, seconds_ago: int = 0, from_wa_id: str | No
     return parse_webhook(payload).messages[0]
 
 
-clear_collection_window = age_pending_inbox
-
-
 async def accept(database, *messages) -> None:
     async with database.session_scope() as session:
         service = InboxService(session)
         for message in messages:
             await service.accept(message)
-    await clear_collection_window(database)
+    await age_pending_inbox(database)
 
 
 async def rows(database, model) -> list:
@@ -182,14 +165,37 @@ async def test_one_message_produces_one_delivered_reply(
     await build_worker(database, whatsapp).tick()
 
     assert len(whatsapp.sent) == 1
-    to, body = whatsapp.sent[0]
-    assert to == webhooks.LEAD_WA_ID
-    assert body == stub_hermes["reply"]
+    assert whatsapp.sent[0].to_wa_id == webhooks.LEAD_WA_ID
+    assert whatsapp.sent[0].body == stub_hermes["reply"]
 
     outbox = await rows(database, OutboxMessage)
     assert len(outbox) == 1
     assert outbox[0].status == OutboxStatus.SENT.value
-    assert outbox[0].provider_message_id == "wamid.STUB"
+    assert outbox[0].provider_message_id == "wamid.1"
+
+
+async def test_model_markdown_is_converted_before_the_whatsapp_send(
+    database, stub_hermes
+) -> None:
+    """Regression for the real catalog reply that showed leftover asterisks."""
+    stub_hermes["reply"] = (
+        "¡Claro! Tenemos **4 opciones disponibles en venta**:\n\n"
+        "🏠 **Casas:**\n\n"
+        "1. **Casa Roble** - $3,000,000 MXN\n"
+        "_Consulta disponibilidad_"
+    )
+    whatsapp = StubWhatsApp()
+    await accept(database, inbound("w-format", "qué propiedades tienen disponibles?"))
+
+    await build_worker(database, whatsapp).tick()
+
+    assert whatsapp.sent[0].body == (
+        "¡Claro! Tenemos *4 opciones disponibles en venta*:\n\n"
+        "🏠 *Casas:*\n\n"
+        "1. *Casa Roble* - $3,000,000 MXN\n"
+        "_Consulta disponibilidad_"
+    )
+    assert "**" not in whatsapp.sent[0].body
 
 
 async def test_rapid_fragments_produce_one_coherent_reply(database, stub_hermes) -> None:
@@ -347,7 +353,7 @@ async def test_a_withheld_draft_is_answered_together_on_the_next_cycle(
 
     await worker.tick()  # withheld
     stub_hermes["during_turn"] = None
-    await clear_collection_window(database)
+    await age_pending_inbox(database)
     await worker.tick()  # both together
 
     assert lead_words(stub_hermes["prompts"])[-1] == "hola\nespera, mejor otra cosa"
@@ -369,7 +375,7 @@ async def test_a_failing_turn_retries_and_then_speaks_honestly(
     worker = build_worker(database, whatsapp)
 
     for _ in range(MAX_ATTEMPTS):
-        await clear_collection_window(database)
+        await age_pending_inbox(database)
         await worker.tick()
 
     inbox = await rows(database, InboxMessage)
@@ -626,7 +632,7 @@ async def test_a_lease_lost_during_the_turn_leaves_the_outbox_row_standing(
             await session.commit()
         async with database.session_scope() as session:
             await InboxService(session).recover_expired_claims()
-        await clear_collection_window(database)
+        await age_pending_inbox(database)
         # A second worker picks the recovered work up, so nothing is left
         # Pending — this worker's *only* problem is that its lease is gone.
         async with database.session_scope() as session:
@@ -654,7 +660,7 @@ async def test_polling_with_nothing_pending_offers_no_text(database, stub_hermes
 
     await build_worker(database, whatsapp).tick()
 
-    assert [body for _, body in whatsapp.sent] == [stub_hermes["reply"]]
+    assert [record.body for record in whatsapp.sent] == [stub_hermes["reply"]]
     assert len(await rows(database, OutboxMessage)) == 1
 
 
@@ -696,8 +702,8 @@ async def test_a_pending_confirmation_replaces_the_models_draft(
     with caplog.at_level(logging.INFO, logger="realestate.worker.whatsapp"):
         await worker.tick()
 
-    assert [body for _, body in whatsapp.sent] == [notice.body]
-    assert "creo" not in whatsapp.sent[0][1]
+    assert [record.body for record in whatsapp.sent] == [notice.body]
+    assert "creo" not in whatsapp.sent[0].body
     assert "the Model's draft is discarded" in caplog.text
     # Persisted immediately, or the next turn would release it again under a
     # different group key.
@@ -735,7 +741,7 @@ async def test_an_empty_draft_still_releases_an_owed_confirmation(
 
     await build_worker(database, whatsapp).tick()
 
-    assert [body for _, body in whatsapp.sent] == [notice.body]
+    assert [record.body for record in whatsapp.sent] == [notice.body]
 
 
 async def test_a_reworded_approved_message_is_restored_before_release(
@@ -755,5 +761,5 @@ async def test_a_reworded_approved_message_is_restored_before_release(
     with caplog.at_level(logging.INFO, logger="realestate.worker.whatsapp"):
         await build_worker(database, whatsapp).tick()
 
-    assert [body for _, body in whatsapp.sent] == [PROPERTY_CLARIFICATION]
+    assert [record.body for record in whatsapp.sent] == [PROPERTY_CLARIFICATION]
     assert "Restored approved copy" in caplog.text

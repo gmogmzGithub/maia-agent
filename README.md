@@ -161,6 +161,7 @@ docker compose exec product pytest  # run the token-free test suite in Docker
 
 The required CI gate runs without Meta, Anthropic, Google, or Telegram
 credentials. See [Testing Maia without provider credentials](docs/testing.md)
-for the exact coverage, commands, and optional live-provider layer, and
-[repository governance](docs/repository-governance.md) for the branch and
-protection strategy.
+for the exact coverage, commands, and optional live-provider layer. See the
+[Stage 0 release checklist](docs/stage-0-release-checklist.md) for the final
+local acceptance and recovery rehearsal, and [repository governance](docs/repository-governance.md)
+for the branch and protection strategy.
