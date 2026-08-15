@@ -160,12 +160,12 @@ async def transitions(database) -> list[AuditEvent]:
 @pytest.mark.parametrize(
     "instruction",
     [
-        "desactiva Casa Roble",
-        "pon Casa Roble como inactiva",
-        "ya no muestres Casa Roble",
+        "Casa Roble se vendió",
+        "Casa Roble se rentó",
+        "retira Casa Roble del inventario",
     ],
 )
-async def test_a_clear_deactivation_executes_immediately(admin, instruction) -> None:
+async def test_a_clear_inactivation_executes_immediately(admin, instruction) -> None:
     ask, database = admin
 
     await ask(instruction)
@@ -178,7 +178,7 @@ async def test_a_clear_deactivation_executes_immediately(admin, instruction) -> 
 async def test_the_transition_is_audited_with_the_trusted_actor(admin) -> None:
     ask, database = admin
 
-    await ask("desactiva Casa Roble")
+    await ask("Casa Roble se vendió")
 
     events = await transitions(database)
     assert len(events) == 1
@@ -191,7 +191,7 @@ async def test_the_transition_is_audited_with_the_trusted_actor(admin) -> None:
 
 async def test_reactivation_also_works(admin) -> None:
     ask, database = admin
-    await ask("desactiva Casa Roble")
+    await ask("Casa Roble se vendió")
 
     await ask("ok, actívala de nuevo")
 
@@ -205,6 +205,16 @@ async def test_repeating_the_current_status_is_reported_as_no_change(admin) -> N
 
     lowered = reply.lower()
     assert any(word in lowered for word in ("ya", "sin cambio", "no hubo", "sigue"))
+    assert await transitions(database) == []
+
+
+async def test_an_inactivation_without_a_reason_asks_before_mutating(admin) -> None:
+    ask, database = admin
+
+    reply = await ask("desactiva Casa Roble")
+
+    assert "?" in reply, reply
+    assert await status_of(database, "casa-roble") == PropertyStatus.ACTIVE.value
     assert await transitions(database) == []
 
 
