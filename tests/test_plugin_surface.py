@@ -1,8 +1,8 @@
 """The standalone plugin's model-facing surface stays frozen (P-069, ADR-0009).
 
 These assertions are the automated guard against the single most likely way this
-project drifts: quietly adding an unreviewed product tool, or letting the Sales Role
-see an Administrative one.
+project drifts: quietly adding an unreviewed product tool, or letting a Role see
+data outside its approved view.
 """
 
 from __future__ import annotations

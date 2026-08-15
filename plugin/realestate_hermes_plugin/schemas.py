@@ -106,12 +106,14 @@ SET_PROPERTY_STATUS = {
 LIST_PROPERTIES = {
     "name": "list_properties",
     "description": (
-        "List every property with its current status, accepted document version, "
-        "and confirmed-appointment count. Administrative use only. Takes no "
-        "arguments.\n\n"
-        "Use it to answer 'what do we have?' and to resolve an ambiguous "
-        "instruction by showing the options and asking which one is meant. "
-        "It returns no document text — use get_property_information for that."
+        "List properties for the current role. In Sales, returns only Active "
+        "properties with customer-safe summaries. In Administrative, returns "
+        "every property with its current status, accepted document version, and "
+        "confirmed-appointment count. Takes no arguments.\n\n"
+        "Use it in Sales when the person explicitly asks what options are "
+        "available, and use get_property_information for the full facts of a "
+        "named property. Use it in Administrative to answer 'what do we have?' "
+        "or resolve an ambiguous instruction. It returns no document prose."
     ),
     "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
 }

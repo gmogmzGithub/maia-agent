@@ -278,13 +278,13 @@ async def list_properties(
     payload: NoArguments,
     hermes_session_id: str = Header(default="", alias=SESSION_HEADER),
 ) -> dict[str, object]:
-    binding = await resolve_admin(request, hermes_session_id)
+    role = await resolve_role(request, hermes_session_id)
     logger.info(
-        "Plugin tool request: list_properties (durable=%s, admin=%s)",
+        "Plugin tool request: list_properties (durable=%s, role=%s)",
         hermes_session_id or "<none>",
-        binding is not None,
+        role.value if role else None,
     )
-    if binding is None:
+    if role not in {AgentRole.ADMINISTRATIVE, AgentRole.SALES}:
         logger.warning(
             "Plugin tool forbidden: list_properties (durable=%s)",
             hermes_session_id or "<none>",
@@ -292,7 +292,12 @@ async def list_properties(
         return {"result": "forbidden"}
 
     async with request.app.state.database.session_scope() as session:
-        result = await AdministrationService(session).list_properties()
+        service = AdministrationService(session)
+        result = (
+            await service.list_active_properties_for_sales()
+            if role is AgentRole.SALES
+            else await service.list_properties()
+        )
         logger.debug(
             "Plugin tool result: list_properties (durable=%s, result=%s)",
             hermes_session_id or "<none>",

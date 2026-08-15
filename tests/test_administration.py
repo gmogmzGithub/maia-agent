@@ -129,12 +129,18 @@ async def test_a_sales_session_cannot_change_status(wired) -> None:
     assert prop.status == PropertyStatus.ACTIVE.value
 
 
-async def test_a_sales_session_cannot_list_the_inventory(wired) -> None:
+async def test_a_sales_session_lists_only_active_customer_safe_inventory(wired) -> None:
     client, _ = wired
+
+    await set_status(client, "casa-roble", "Inactive")
 
     response = await client.post(LIST_PATH, headers=headers(SALES_SESSION), json={})
 
-    assert response.json() == {"result": "forbidden"}
+    body = response.json()
+    assert body["result"] == "found"
+    assert [item["property_id"] for item in body["properties"]] == ["casa-encino"]
+    assert all("status" not in item for item in body["properties"])
+    assert all("confirmed_appointments" not in item for item in body["properties"])
 
 
 async def test_an_unbound_session_cannot_change_status(wired) -> None:

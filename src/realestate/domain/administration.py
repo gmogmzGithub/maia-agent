@@ -169,6 +169,39 @@ class AdministrationService:
             )
         return {"result": "found", "properties": properties}
 
+    async def list_active_properties_for_sales(self) -> dict:
+        """Active, customer-safe inventory summaries for the Sales Role.
+
+        Sales may answer an explicit request for available options, but must not
+        see inactive inventory or operational details such as appointment counts.
+        Full facts still require the role-aware ``get_property_information``
+        operation for a named Property.
+        """
+        rows = (
+            await self._session.execute(
+                select(Property)
+                .where(Property.status == PropertyStatus.ACTIVE.value)
+                .order_by(Property.property_key)
+                .limit(MAX_PROPERTIES)
+            )
+        ).scalars().all()
+
+        properties = []
+        for prop in rows:
+            record = await accepted_version(self._session, prop)
+            metadata: dict = record.document_metadata if record else {}
+            properties.append(
+                {
+                    "property_id": prop.property_key,
+                    "name": prop.name,
+                    "property_type": metadata.get("property_type"),
+                    "operation": metadata.get("operation"),
+                    "price_amount": metadata.get("price_amount"),
+                    "price_currency": metadata.get("price_currency"),
+                }
+            )
+        return {"result": "found", "properties": properties}
+
     async def confirmed_appointments(self, prop: Property) -> int:
         """Count future Confirmed Appointments affected by deactivation."""
         return int(
