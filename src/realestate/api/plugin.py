@@ -25,6 +25,7 @@ from realestate.db.models import (
     AgentRole,
     AgentSession,
     Conversation,
+    PropertyInactiveReason,
     PropertyStatus,
 )
 from realestate.domain.administration import AdministrationService, Administrator
@@ -207,8 +208,13 @@ async def get_property_information(
 class SetPropertyStatusRequest(BaseModel):
     """`set_property_status` model arguments (TOOL-CONTRACTS.md).
 
-    No UUID, actor identity, Lead identity, SQL, file path, reason, or arbitrary
-    status text. The actor comes from the trusted Telegram session (P-065).
+    No UUID, actor identity, Lead identity, SQL, file path, or arbitrary status
+    text. The actor comes from the trusted Telegram session (P-065).
+
+    Shape only. Whether a reason is required for the requested status is a
+    policy question, and ``AdministrationService.set_property_status`` answers
+    it with ``ambiguous`` plus the detail the Agent can act on — which a 422
+    here would flatten into the plugin's ``temporarily_unavailable``.
     """
 
     # ``use_enum_values`` keeps the validated field a plain string, so the
@@ -218,6 +224,7 @@ class SetPropertyStatusRequest(BaseModel):
 
     reference: str = Field(min_length=1, max_length=200)
     status: PropertyStatus
+    inactive_reason: PropertyInactiveReason | None = None
 
 
 @router.post("/tools/set_property_status", dependencies=[Depends(require_plugin_token)])
@@ -251,6 +258,7 @@ async def set_property_status(
                 actor_id=binding.channel_key or hermes_session_id,
                 origin_message_id=request.headers.get(ORIGIN_HEADER) or None,
             ),
+            payload.inactive_reason,
         )
         logger.debug(
             "Plugin tool result: set_property_status (durable=%s, result=%s)",
@@ -270,13 +278,13 @@ async def list_properties(
     payload: NoArguments,
     hermes_session_id: str = Header(default="", alias=SESSION_HEADER),
 ) -> dict[str, object]:
-    binding = await resolve_admin(request, hermes_session_id)
+    role = await resolve_role(request, hermes_session_id)
     logger.info(
-        "Plugin tool request: list_properties (durable=%s, admin=%s)",
+        "Plugin tool request: list_properties (durable=%s, role=%s)",
         hermes_session_id or "<none>",
-        binding is not None,
+        role.value if role else None,
     )
-    if binding is None:
+    if role not in {AgentRole.ADMINISTRATIVE, AgentRole.SALES}:
         logger.warning(
             "Plugin tool forbidden: list_properties (durable=%s)",
             hermes_session_id or "<none>",
@@ -284,7 +292,12 @@ async def list_properties(
         return {"result": "forbidden"}
 
     async with request.app.state.database.session_scope() as session:
-        result = await AdministrationService(session).list_properties()
+        service = AdministrationService(session)
+        result = (
+            await service.list_active_properties_for_sales()
+            if role is AgentRole.SALES
+            else await service.list_properties()
+        )
         logger.debug(
             "Plugin tool result: list_properties (durable=%s, result=%s)",
             hermes_session_id or "<none>",

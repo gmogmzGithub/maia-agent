@@ -92,6 +92,9 @@ async def database(tmp_path: Path):
         await PropertyService(session, artifacts).accept_upload(
             "casa-roble.md", CASA_ROBLE, actor_id="developer"
         )
+        prop = (await session.execute(select(Property))).scalar_one()
+        prop.visit_address = "Calle Privada 123, Zapopan"
+        await session.commit()
     yield db
     await db.dispose()
 
@@ -206,7 +209,7 @@ async def test_a_confirmed_booking_replaces_the_draft_with_the_confirmation(
 ) -> None:
     """The Lead is told about the appointment by the product, not by the Model."""
     await a_conversation(database)
-    start = datetime(2026, 8, 14, 13, 0, tzinfo=ZONE)
+    start = datetime(2027, 8, 14, 13, 0, tzinfo=ZONE)
     await an_appointment(database, starts_at=start)
 
     whatsapp = StubWhatsApp()
@@ -216,8 +219,9 @@ async def test_a_confirmed_booking_replaces_the_draft_with_the_confirmation(
     body = whatsapp.sent[0].body
     # Rendered from the persisted row, in the Broker's zone.
     assert body == (
-        "Tu cita para visitar Casa Roble quedó confirmada para el 14/08/2026 "
-        "a las 13:00. Si necesitas cambiarla, responde a este mensaje."
+        "Tu cita para visitar Casa Roble quedó confirmada para el 14/08/2027 "
+        "a las 13:00. La dirección de la visita es: Calle Privada 123, "
+        "Zapopan. Si necesitas cambiarla, responde a este mensaje."
     )
     # And the Model's own account of the booking never left the process.
     assert stub_hermes["reply"] not in body
@@ -230,7 +234,7 @@ async def test_a_confirmed_booking_replaces_the_draft_with_the_confirmation(
 async def test_the_confirmation_is_released_exactly_once(database, stub_hermes) -> None:
     await a_conversation(database)
     appointment = await an_appointment(
-        database, starts_at=datetime(2026, 8, 14, 13, 0, tzinfo=ZONE)
+        database, starts_at=datetime(2027, 8, 14, 13, 0, tzinfo=ZONE)
     )
 
     whatsapp = StubWhatsApp()
@@ -256,7 +260,7 @@ async def test_an_inconclusive_booking_is_never_described_as_confirmed(
     await a_conversation(database)
     await an_appointment(
         database,
-        starts_at=datetime(2026, 8, 14, 13, 0, tzinfo=ZONE),
+        starts_at=datetime(2027, 8, 14, 13, 0, tzinfo=ZONE),
         status=AppointmentStatus.NEEDS_REVIEW.value,
     )
     stub_hermes["reply"] = "¡Listo! Tu visita quedó agendada para el viernes."
@@ -289,7 +293,7 @@ async def test_a_pending_attempt_says_nothing_to_the_lead(database, stub_hermes)
     await a_conversation(database)
     await an_appointment(
         database,
-        starts_at=datetime(2026, 8, 14, 13, 0, tzinfo=ZONE),
+        starts_at=datetime(2027, 8, 14, 13, 0, tzinfo=ZONE),
         status=AppointmentStatus.PENDING.value,
     )
 
@@ -305,7 +309,7 @@ async def test_a_pending_attempt_says_nothing_to_the_lead(database, stub_hermes)
 async def test_a_booking_notifies_the_broker_immediately_and_once(database) -> None:
     await a_conversation(database)
     appointment = await an_appointment(
-        database, starts_at=datetime(2026, 8, 14, 13, 0, tzinfo=ZONE)
+        database, starts_at=datetime(2027, 8, 14, 13, 0, tzinfo=ZONE)
     )
 
     telegram = StubTelegram()
@@ -318,7 +322,8 @@ async def test_a_booking_notifies_the_broker_immediately_and_once(database) -> N
     assert chat_id == "111"
     assert "Nueva visita agendada" in body
     assert "Casa Roble" in body
-    assert "viernes 14/08 a las 13:00" in body
+    assert "Dirección: Calle Privada 123, Zapopan" in body
+    assert "sábado 14/08 a las 13:00" in body
     assert "Juan Pérez" in body
     assert f"+{webhooks.LEAD_WA_ID}" in body
     assert appointment.reference in body
@@ -331,7 +336,7 @@ async def test_an_inconclusive_booking_asks_the_broker_to_check_calendar(
     await a_conversation(database)
     await an_appointment(
         database,
-        starts_at=datetime(2026, 8, 14, 13, 0, tzinfo=ZONE),
+        starts_at=datetime(2027, 8, 14, 13, 0, tzinfo=ZONE),
         status=AppointmentStatus.NEEDS_REVIEW.value,
     )
 
@@ -450,7 +455,7 @@ async def test_a_reminder_whose_visit_started_is_dropped_not_sent_late(
 async def test_a_rejected_telegram_send_leaves_the_notice_owed(database) -> None:
     await a_conversation(database)
     appointment = await an_appointment(
-        database, starts_at=datetime(2026, 8, 14, 13, 0, tzinfo=ZONE)
+        database, starts_at=datetime(2027, 8, 14, 13, 0, tzinfo=ZONE)
     )
 
     telegram = StubTelegram(accepts=False)
@@ -481,7 +486,7 @@ async def test_one_unreachable_administrator_does_not_block_the_others(
     """
     await a_conversation(database)
     appointment = await an_appointment(
-        database, starts_at=datetime(2026, 8, 14, 13, 0, tzinfo=ZONE)
+        database, starts_at=datetime(2027, 8, 14, 13, 0, tzinfo=ZONE)
     )
 
     class OneDeadChat(StubTelegram):
@@ -500,7 +505,7 @@ async def test_one_unreachable_administrator_does_not_block_the_others(
 
 async def test_nothing_is_sent_without_an_allowlisted_administrator(database) -> None:
     await a_conversation(database)
-    await an_appointment(database, starts_at=datetime(2026, 8, 14, 13, 0, tzinfo=ZONE))
+    await an_appointment(database, starts_at=datetime(2027, 8, 14, 13, 0, tzinfo=ZONE))
 
     telegram = StubTelegram()
     await build_notifier(database, telegram, chat_ids=frozenset()).tick()

@@ -10,6 +10,14 @@ worse, change the authority surface underneath a live turn.
 # handler's argument check in ``tools.py`` read this same tuple, so the plugin
 # states the policy once.
 PROPERTY_STATUSES = ("Active", "Inactive")
+PROPERTY_INACTIVE_REASONS = (
+    "Sold",
+    "Rented",
+    "Reserved",
+    "TemporarilyUnavailable",
+    "Withdrawn",
+    "Unspecified",
+)
 
 GET_PROPERTY_INFORMATION = {
     "name": "get_property_information",
@@ -54,8 +62,9 @@ SET_PROPERTY_STATUS = {
         "discuss it and book visits) and 'Inactive' (it may not). "
         "Administrative use only.\n\n"
         "Call this ONLY when the instruction names exactly one property and "
-        "exactly one target state. If either is unclear — 'activate it', "
-        "'deactivate that one', 'change the status' — ask which, do not guess. "
+        "exactly one target state and, for Inactive, exactly one reason. If "
+        "anything is unclear — 'activate it', 'deactivate that one', 'change "
+        "the status' — ask, do not guess. "
         "A wrong status change makes a real property invisible to real "
         "customers.\n\n"
         "Results:\n"
@@ -79,6 +88,15 @@ SET_PROPERTY_STATUS = {
                 "enum": list(PROPERTY_STATUSES),
                 "description": "The target state. Exactly 'Active' or 'Inactive'.",
             },
+            "inactive_reason": {
+                "type": "string",
+                "enum": list(PROPERTY_INACTIVE_REASONS),
+                "description": (
+                    "Required only for Inactive: Sold, Rented, Reserved, "
+                    "TemporarilyUnavailable, Withdrawn, or Unspecified. Omit "
+                    "when status is Active."
+                ),
+            },
         },
         "required": ["reference", "status"],
         "additionalProperties": False,
@@ -88,12 +106,14 @@ SET_PROPERTY_STATUS = {
 LIST_PROPERTIES = {
     "name": "list_properties",
     "description": (
-        "List every property with its current status, accepted document version, "
-        "and confirmed-appointment count. Administrative use only. Takes no "
-        "arguments.\n\n"
-        "Use it to answer 'what do we have?' and to resolve an ambiguous "
-        "instruction by showing the options and asking which one is meant. "
-        "It returns no document text — use get_property_information for that."
+        "List properties for the current role. In Sales, returns only Active "
+        "properties with customer-safe summaries. In Administrative, returns "
+        "every property with its current status, accepted document version, and "
+        "confirmed-appointment count. Takes no arguments.\n\n"
+        "Use it in Sales when the person explicitly asks what options are "
+        "available, and use get_property_information for the full facts of a "
+        "named property. Use it in Administrative to answer 'what do we have?' "
+        "or resolve an ambiguous instruction. It returns no document prose."
     ),
     "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
 }

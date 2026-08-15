@@ -74,16 +74,36 @@ def test_the_inventory_tool_forwards_an_empty_body(forwarded) -> None:
     assert forwarded[0]["path"] == "/internal/plugin/tools/list_properties"
 
 
-def test_a_status_change_forwards_the_reference_and_status(forwarded) -> None:
+def test_a_status_change_forwards_the_reference_status_and_reason(forwarded) -> None:
     decoded(
         tools.set_property_status(
-            {"reference": "casa-roble", "status": "Inactive"}, session_id="hermes-1"
+            {
+                "reference": "casa-roble",
+                "status": "Inactive",
+                "inactive_reason": "Sold",
+            },
+            session_id="hermes-1",
         )
     )
 
     assert forwarded[0]["json_body"] == {
         "reference": "casa-roble",
         "status": "Inactive",
+        "inactive_reason": "Sold",
+    }
+
+
+def test_reactivation_omits_the_inactive_reason(forwarded) -> None:
+    decoded(
+        tools.set_property_status(
+            {"reference": "casa-roble", "status": "Active"},
+            session_id="hermes-1",
+        )
+    )
+
+    assert forwarded[0]["json_body"] == {
+        "reference": "casa-roble",
+        "status": "Active",
     }
 
 
@@ -192,6 +212,56 @@ def test_only_the_two_accepted_states_are_forwarded(forwarded, status: object) -
     assert result["result"] == "ambiguous"
     assert "Active" in result["detail"] and "Inactive" in result["detail"]
     assert forwarded == []
+
+
+def test_inactive_requires_an_accepted_reason(forwarded) -> None:
+    result = decoded(
+        tools.set_property_status(
+            {"reference": "casa-roble", "status": "Inactive"}
+        )
+    )
+
+    assert result["result"] == "ambiguous"
+    assert "inactive_reason" in result["detail"]
+    assert forwarded == []
+
+
+def test_active_rejects_an_inactive_reason(forwarded) -> None:
+    result = decoded(
+        tools.set_property_status(
+            {
+                "reference": "casa-roble",
+                "status": "Active",
+                "inactive_reason": "Sold",
+            }
+        )
+    )
+
+    assert result["result"] == "ambiguous"
+    assert forwarded == []
+
+
+def test_pending_admin_tools_validate_and_forward(forwarded) -> None:
+    decoded(tools.list_pending_admin_work({"ignored": True}, session_id="hermes-1"))
+    assert forwarded[-1]["path"].endswith("/list_pending_admin_work")
+
+    assert decoded(tools.resolve_pending_admin_work({}))["result"] == "not_found"
+    assert decoded(
+        tools.resolve_pending_admin_work(
+            {"reference": "APT-1", "action": "DeleteEverything"}
+        )
+    )["result"] == "invalid_action"
+
+    decoded(
+        tools.resolve_pending_admin_work(
+            {"reference": "APT-1", "action": "Confirm"},
+            session_id="hermes-1",
+        )
+    )
+    assert forwarded[-1]["json_body"] == {
+        "reference": "APT-1",
+        "action": "Confirm",
+    }
 
 
 def test_a_slot_query_without_a_property_is_refused(forwarded) -> None:

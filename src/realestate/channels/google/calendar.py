@@ -133,7 +133,13 @@ class GoogleCalendar:
         return result
 
     async def create_event(
-        self, *, slot: Interval, summary: str, description: str, reference: str
+        self,
+        *,
+        slot: Interval,
+        summary: str,
+        description: str,
+        reference: str,
+        location: str | None = None,
     ) -> EventResult:
         """Create the visit, carrying a deterministic reference to the attempt.
 
@@ -152,6 +158,8 @@ class GoogleCalendar:
                 "end": {"dateTime": slot.end.isoformat()},
                 "extendedProperties": {"private": {"appointmentReference": reference}},
             }
+            if location:
+                body["location"] = location
             created = (
                 self._client()
                 .events()

@@ -13,7 +13,7 @@ from realestate.app import create_app
 from realestate.config import get_settings
 from realestate.db.engine import Database
 from realestate.db.models import AgentRole, AuditEvent, Property
-from realestate.domain.properties import ArtifactStore, PropertyService
+from realestate.domain.properties import ArtifactStore, CatalogStore, PropertyService
 from tests.conftest import DATABASE_URL, env, requires_postgres, reset_property_inventory
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -38,6 +38,7 @@ async def wired(tmp_path: Path):
     app = create_app(get_settings())
     app.state.database = database
     app.state.artifacts = ArtifactStore(tmp_path / "artifacts")
+    app.state.property_catalog = CatalogStore(tmp_path / "catalog")
 
     async with httpx.AsyncClient(
         transport=ASGITransport(app=app), base_url="http://product.test"
@@ -106,19 +107,19 @@ async def test_a_valid_upload_is_accepted_and_reported(app_client) -> None:
 
 
 async def test_a_malformed_upload_reports_field_level_errors(app_client) -> None:
-    malformed = V1.replace(b"Price: $3,000,000 MXN", b"Price: $1,5000 MXN")
+    malformed = V1.replace(b"price_amount: 3000000", b"price_amount: not-a-number")
 
     response = await app_client.post("/upload", auth=DEVELOPER, **upload(malformed))
 
     assert response.status_code == 422
-    assert "Price" in response.text
+    assert "price_amount" in response.text
     assert "Nothing was changed" in response.text
 
 
 async def test_a_malformed_replacement_leaves_the_accepted_version_intact(wired) -> None:
     client, app = wired
     await client.post("/upload", auth=DEVELOPER, **upload(V1))
-    malformed = V2.replace(b"Cuartos: 4", b"Cuartos: cuatro")
+    malformed = V2.replace(b"bedrooms: 4", b"bedrooms: cuatro")
 
     rejected = await client.post("/upload", auth=DEVELOPER, **upload(malformed))
 
@@ -129,7 +130,7 @@ async def test_a_malformed_replacement_leaves_the_accepted_version_intact(wired)
         current = await service.get_property_information("casa-roble", AgentRole.SALES)
 
     assert current["document_version"] == 1
-    assert "$3,000,000 MXN" in current["document_markdown"]
+    assert "price_amount: 3000000" in current["document_markdown"]
 
 
 async def test_a_valid_replacement_becomes_version_two(app_client) -> None:

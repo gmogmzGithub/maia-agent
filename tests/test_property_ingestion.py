@@ -20,7 +20,7 @@ from realestate.db.models import (
     PropertyStatus,
 )
 from realestate.domain.properties import ArtifactStore, PropertyService
-from realestate.domain.property_document import ValidationError
+from realestate.domain.property_document import ValidationError, validate_upload
 from tests.conftest import DATABASE_URL, requires_postgres, reset_property_inventory
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -57,9 +57,10 @@ async def service(database, artifacts):
 
 def renamed(source: bytes, name: str) -> bytes:
     text = source.decode("utf-8")
+    current = validate_upload("property.md", source).name
     return (
-        text.replace("name: Casa Roble", f"name: {name}", 1)
-        .replace("# Casa Roble", f"# {name}", 1)
+        text.replace(f"name: {current}", f"name: {name}", 1)
+        .replace(f"# {current}", f"# {name}", 1)
         .encode("utf-8")
     )
 
@@ -132,7 +133,7 @@ async def test_a_valid_replacement_adds_a_version_and_becomes_current(service) -
 
     result = await service.get_property_information("casa-roble", AgentRole.SALES)
     assert result["document_version"] == 2
-    assert "$2,850,000 MXN" in result["document_markdown"]
+    assert "price_amount: 3200000" in result["document_markdown"]
 
 
 async def test_earlier_versions_remain_immutable(service, database) -> None:
@@ -157,6 +158,7 @@ async def test_a_replacement_preserves_an_inactive_status(service, database) -> 
     async with database.session_scope() as session:
         prop = (await session.execute(select(Property))).scalar_one()
         prop.status = PropertyStatus.INACTIVE.value
+        prop.inactive_reason = "Unspecified"
         await session.commit()
 
     accepted = await service.accept_upload("casa-roble.md", V2, actor_id="developer")
@@ -166,14 +168,14 @@ async def test_a_replacement_preserves_an_inactive_status(service, database) -> 
 
 async def test_an_invalid_replacement_changes_nothing(service) -> None:
     await service.accept_upload("casa-roble.md", V1, actor_id="developer")
-    malformed = V2.replace(b"Price: $2,850,000 MXN", b"Price: $1,5000 MXN")
+    malformed = V2.replace(b"price_amount: 3200000", b"price_amount: not-a-number")
 
     with pytest.raises(ValidationError):
         await service.accept_upload("casa-roble.md", malformed, actor_id="developer")
 
     result = await service.get_property_information("casa-roble", AgentRole.SALES)
     assert result["document_version"] == 1
-    assert "$3,000,000 MXN" in result["document_markdown"]
+    assert "price_amount: 3000000" in result["document_markdown"]
 
 
 # --- Identity ---------------------------------------------------------------
@@ -250,6 +252,7 @@ async def test_the_sales_role_gets_no_document_for_an_inactive_property(
     async with database.session_scope() as session:
         prop = (await session.execute(select(Property))).scalar_one()
         prop.status = PropertyStatus.INACTIVE.value
+        prop.inactive_reason = "Unspecified"
         await session.commit()
 
     result = await service.get_property_information("casa-roble", AgentRole.SALES)
@@ -268,6 +271,7 @@ async def test_the_administrative_role_may_inspect_an_inactive_property(
     async with database.session_scope() as session:
         prop = (await session.execute(select(Property))).scalar_one()
         prop.status = PropertyStatus.INACTIVE.value
+        prop.inactive_reason = "Unspecified"
         await session.commit()
 
     result = await service.get_property_information("casa-roble", AgentRole.ADMINISTRATIVE)

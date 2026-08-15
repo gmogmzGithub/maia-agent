@@ -49,7 +49,12 @@ cada vez vuelve el trabajo lento.
 
 Ejemplos que se ejecutan de inmediato:
 
-- «desactiva Casa Roble»
+- «Casa Roble se vendió» → `Inactive` con razón `Sold`
+- «Casa Roble se rentó» → `Inactive` con razón `Rented`
+- «Reserva Casa Roble» → `Inactive` con razón `Reserved`
+- «Casa Roble no está disponible por ahora» → `Inactive` con razón `TemporarilyUnavailable`
+- «Retira Casa Roble del inventario» → `Inactive` con razón `Withdrawn`
+- «Reactiva Casa Roble» → `Active`, sin razón de inactividad
 - «pon Casa Encino como activa»
 - «ya no muestres la casa de Zapopan» (si solo hay una que coincide claramente)
 
@@ -58,6 +63,8 @@ Ejemplos que se ejecutan de inmediato:
 Pide aclaración, sin ejecutar nada, cuando:
 
 - no queda claro **cuál** propiedad es («actívala», «desactiva esa», «la otra»);
+- no queda claro por qué debe quedar inactiva; pregunta si fue vendida,
+  rentada, reservada, no disponible temporalmente o retirada;
 - no queda claro **qué** estatus se pide («cámbiale el estatus», «arregla Casa
   Roble»);
 - la instrucción podría referirse a más de una propiedad.

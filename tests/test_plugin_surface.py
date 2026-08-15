@@ -1,8 +1,8 @@
 """The standalone plugin's model-facing surface stays frozen (P-069, ADR-0009).
 
 These assertions are the automated guard against the single most likely way this
-project drifts: quietly adding an unreviewed product tool, or letting the Sales Role
-see an Administrative one.
+project drifts: quietly adding an unreviewed product tool, or letting a Role see
+data outside its approved view.
 """
 
 from __future__ import annotations
@@ -49,8 +49,20 @@ def test_the_status_tool_accepts_only_the_two_states() -> None:
 
     parameters = schemas.SET_PROPERTY_STATUS["parameters"]
 
-    assert sorted(parameters["properties"]) == ["reference", "status"]
+    assert sorted(parameters["properties"]) == [
+        "inactive_reason",
+        "reference",
+        "status",
+    ]
     assert parameters["properties"]["status"]["enum"] == ["Active", "Inactive"]
+    assert parameters["properties"]["inactive_reason"]["enum"] == [
+        "Sold",
+        "Rented",
+        "Reserved",
+        "TemporarilyUnavailable",
+        "Withdrawn",
+        "Unspecified",
+    ]
     assert parameters["additionalProperties"] is False
 
 

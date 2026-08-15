@@ -33,6 +33,7 @@ services:
       PLUGIN_API_TOKEN: ${PLUGIN_API_TOKEN:?Set PLUGIN_API_TOKEN in .env}
       DEVELOPER_BASIC_PASSWORD: ${DEVELOPER_BASIC_PASSWORD:?Set DEVELOPER_BASIC_PASSWORD in .env}
       ARTIFACT_ROOT: /app/var/property-documents
+      PROPERTY_CATALOG_ROOT: /app/src/properties
     depends_on:
       db:
         condition: service_healthy
@@ -40,6 +41,7 @@ services:
       - "127.0.0.1:8080:8080"
     volumes:
       - property-documents:/app/var/property-documents
+      - ./src/properties:/app/src/properties
       - ./secrets:/run/secrets:ro
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/live"]

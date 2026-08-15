@@ -11,6 +11,8 @@ import json
 import time
 from typing import Any
 
+from realestate.channels.whatsapp.signature import SIGNATURE_HEADER, compute_signature
+
 # Deliberately synthetic provider and recipient identifiers. This repository is
 # public; fixtures must preserve Meta's payload shapes without publishing the
 # local test app's real asset IDs or an allowlisted person's phone number.
@@ -119,3 +121,20 @@ SAMPLE_REFERRAL = {
 def encode(body: dict[str, Any]) -> bytes:
     """Serialise exactly as it will be signed and sent."""
     return json.dumps(body, separators=(",", ":")).encode("utf-8")
+
+
+async def post_signed(client, path: str, body: dict[str, Any], secret: str):
+    """Deliver one webhook the way Meta does: signed over the exact bytes sent.
+
+    Spelled here so no suite can drift into signing a different serialisation
+    than the one it posts — the mistake this fixture exists to prevent.
+    """
+    raw = encode(body)
+    return await client.post(
+        path,
+        content=raw,
+        headers={
+            SIGNATURE_HEADER: compute_signature(secret, raw),
+            "Content-Type": "application/json",
+        },
+    )

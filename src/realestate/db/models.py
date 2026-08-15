@@ -44,6 +44,17 @@ class PropertyStatus(str, enum.Enum):
     INACTIVE = "Inactive"
 
 
+class PropertyInactiveReason(str, enum.Enum):
+    """Why an Inactive Property cannot be offered to a new Lead."""
+
+    SOLD = "Sold"
+    RENTED = "Rented"
+    RESERVED = "Reserved"
+    TEMPORARILY_UNAVAILABLE = "TemporarilyUnavailable"
+    WITHDRAWN = "Withdrawn"
+    UNSPECIFIED = "Unspecified"
+
+
 class AgentRole(str, enum.Enum):
     """Separate conversational roles with separate authority (ADR-0001)."""
 
@@ -67,6 +78,10 @@ class Property(Base):
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default=PropertyStatus.ACTIVE.value
     )
+    inactive_reason: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # Private operational data. It is never stored in the Property Document or
+    # returned by the ordinary property-information tool.
+    visit_address: Mapped[str | None] = mapped_column(Text, nullable=True)
     accepted_version_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("property_document_versions.id", use_alter=True, name="fk_accepted_version"),
@@ -86,6 +101,13 @@ class Property(Base):
     __table_args__ = (
         CheckConstraint(
             "status IN ('Active', 'Inactive')", name="ck_properties_status"
+        ),
+        CheckConstraint(
+            "(status = 'Active' AND inactive_reason IS NULL) OR "
+            "(status = 'Inactive' AND inactive_reason IN "
+            "('Sold', 'Rented', 'Reserved', 'TemporarilyUnavailable', "
+            "'Withdrawn', 'Unspecified'))",
+            name="ck_properties_inactive_reason",
         ),
     )
 

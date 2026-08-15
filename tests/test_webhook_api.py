@@ -63,12 +63,8 @@ async def wired(tmp_path: Path):
 
 
 async def post(client, body: dict, *, secret: str | None = None):
-    raw = webhooks.encode(body)
-    signature = compute_signature(secret if secret is not None else SECRET, raw)
-    return await client.post(
-        WEBHOOK_PATH,
-        content=raw,
-        headers={SIGNATURE_HEADER: signature, "Content-Type": "application/json"},
+    return await webhooks.post_signed(
+        client, WEBHOOK_PATH, body, SECRET if secret is None else secret
     )
 
 

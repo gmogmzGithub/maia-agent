@@ -16,7 +16,10 @@ import logging
 from typing import Any
 
 from realestate_hermes_plugin.backend import call_backend
-from realestate_hermes_plugin.schemas import PROPERTY_STATUSES
+from realestate_hermes_plugin.schemas import (
+    PROPERTY_INACTIVE_REASONS,
+    PROPERTY_STATUSES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +100,7 @@ def get_property_information(args: dict, **kwargs: Any) -> str:
 def set_property_status(args: dict, **kwargs: Any) -> str:
     reference = _text(args, "reference")
     status = args.get("status")
+    inactive_reason = args.get("inactive_reason")
     if reference is None:
         logger.warning("Tool call rejected locally: set_property_status missing reference")
         return _result(
@@ -110,8 +114,25 @@ def set_property_status(args: dict, **kwargs: Any) -> str:
                 "detail": "status must be exactly 'Active' or 'Inactive'.",
             }
         )
+    if status == "Inactive" and inactive_reason not in PROPERTY_INACTIVE_REASONS:
+        return _result(
+            {
+                "result": "ambiguous",
+                "detail": "inactive_reason is required for an Inactive property.",
+            }
+        )
+    if status == "Active" and inactive_reason is not None:
+        return _result(
+            {
+                "result": "ambiguous",
+                "detail": "inactive_reason must be omitted for an Active property.",
+            }
+        )
+    body = {"reference": reference, "status": status}
+    if inactive_reason is not None:
+        body["inactive_reason"] = inactive_reason
     return _forward(
-        "set_property_status", {"reference": reference, "status": status}, kwargs
+        "set_property_status", body, kwargs
     )
 
 

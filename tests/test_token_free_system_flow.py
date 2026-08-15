@@ -26,7 +26,6 @@ from realestate.api import plugin as plugin_api
 from realestate.api import webhooks as webhook_api
 from realestate.api.plugin import SESSION_HEADER
 from realestate.app import create_app
-from realestate.channels.whatsapp.signature import SIGNATURE_HEADER, compute_signature
 from realestate.config import Settings
 from realestate.db.engine import Base, Database
 from realestate.db.models import (
@@ -79,14 +78,9 @@ async def _truncate(database: Database) -> None:
 
 
 async def _post_signed(client: httpx.AsyncClient, payload: dict) -> httpx.Response:
-    raw = webhooks.encode(payload)
-    return await client.post(
-        webhook_api.WEBHOOK_PATH,
-        content=raw,
-        headers={
-            SIGNATURE_HEADER: compute_signature(APP_SECRET, raw),
-            "Content-Type": "application/json",
-        },
+    """This suite's webhook path and app secret, bound to the shared signer."""
+    return await webhooks.post_signed(
+        client, webhook_api.WEBHOOK_PATH, payload, APP_SECRET
     )
 
 
@@ -114,7 +108,7 @@ async def _answer_property_question(client: httpx.AsyncClient, headers) -> TurnR
     assert result["name"] == "Casa Roble"
     return TurnResult(
         text=(
-            "Casa Roble está en Zapopan, tiene 4 recámaras y cuesta "
+            "**Casa Roble** está en Zapopan, tiene **4 recámaras** y cuesta "
             "$3,000,000 MXN. ¿Quieres agendar una visita?"
         ),
         tools_used=["get_property_information"],
@@ -263,7 +257,9 @@ async def test_whatsapp_lead_booking_reaches_telegram_without_provider_tokens(
         await age_pending_inbox(database)
         await worker.tick()
         assert len(whatsapp.sent) == 1
-        assert "4 recámaras" in whatsapp.sent[0].body
+        assert "*Casa Roble*" in whatsapp.sent[0].body
+        assert "*4 recámaras*" in whatsapp.sent[0].body
+        assert "**" not in whatsapp.sent[0].body
 
         second = webhooks.text_message(
             wamid="wamid.OFFLINE.LEAD.2",

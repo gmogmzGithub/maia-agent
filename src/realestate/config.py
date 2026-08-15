@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     developer_basic_password: str = Field(default="", alias="DEVELOPER_BASIC_PASSWORD")
     # Immutable content-addressed artifacts for accepted documents (P-050).
     artifact_root: str = Field(default="var/property-documents", alias="ARTIFACT_ROOT")
+    # Public-safe, source-controlled current copies for human editing.
+    property_catalog_root: str = Field(
+        default="src/properties", alias="PROPERTY_CATALOG_ROOT"
+    )
 
     # --- Meta WhatsApp Cloud API (P-021, TC-003) -----------------------------
     meta_app_secret: str = Field(default="", alias="META_APP_SECRET")
