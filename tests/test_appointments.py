@@ -71,7 +71,9 @@ class StubCalendar:
             return BusyResult(CalendarOutcome.CONFLICT, result.busy)
         return result
 
-    async def create_event(self, *, slot, summary, description, reference) -> EventResult:  # noqa: ANN001
+    async def create_event(
+        self, *, slot, summary, description, reference, location=None
+    ) -> EventResult:  # noqa: ANN001
         if self.create_outcome is not CalendarOutcome.OK:
             return EventResult(self.create_outcome, detail="stubbed")
         self.created.append(reference)
@@ -222,6 +224,7 @@ async def test_an_inactive_property_offers_no_times(booking) -> None:
     async with database.session_scope() as session:
         prop = (await session.execute(select(Property))).scalar_one()
         prop.status = PropertyStatus.INACTIVE.value
+        prop.inactive_reason = "Unspecified"
         await session.commit()
 
     assert (await offer(database, service))["result"] == "property_inactive"
@@ -340,6 +343,7 @@ async def test_a_property_deactivated_after_the_offer_blocks_the_booking(booking
     async with database.session_scope() as session:
         prop = (await session.execute(select(Property))).scalar_one()
         prop.status = PropertyStatus.INACTIVE.value
+        prop.inactive_reason = "Unspecified"
         await session.commit()
 
     result = await book(database, service, candidate["start"])
@@ -467,6 +471,19 @@ def test_the_confirmation_is_rendered_from_persisted_state() -> None:
         "Tu cita para visitar Casa Roble quedó confirmada para el 10/08/2026 "
         "a las 09:00. Si necesitas cambiarla, responde a este mensaje."
     )
+
+
+def test_private_visit_address_is_disclosed_in_the_confirmation() -> None:
+    from realestate.domain.appointments import confirmation_message
+
+    message = confirmation_message(
+        property_name="Casa Roble",
+        starts_at=datetime.fromisoformat("2026-08-10T09:00:00-06:00"),
+        schedule=WeeklySchedule.parse(SPEC, "America/Mexico_City"),
+        visit_address="Calle Privada 123, Zapopan",
+    )
+
+    assert "La dirección de la visita es: Calle Privada 123, Zapopan." in message
 
 
 # --- Snapshots that can no longer be answered from ----------------------------

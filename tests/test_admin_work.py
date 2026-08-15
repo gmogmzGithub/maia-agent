@@ -197,7 +197,10 @@ async def test_deactivation_opens_review_and_manual_completion_requires_event_ab
     row = await appointment(database, status=AppointmentStatus.CONFIRMED.value)
     async with database.session_scope() as session:
         changed = await AdministrationService(session).set_property_status(
-            "casa-roble", "Inactive", Administrator("telegram:1")
+            "casa-roble",
+            "Inactive",
+            Administrator("telegram:1"),
+            "Unspecified",
         )
     assert changed["affected_confirmed_appointments"] == 1
 

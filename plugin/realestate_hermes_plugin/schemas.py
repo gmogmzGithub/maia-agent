@@ -10,6 +10,14 @@ worse, change the authority surface underneath a live turn.
 # handler's argument check in ``tools.py`` read this same tuple, so the plugin
 # states the policy once.
 PROPERTY_STATUSES = ("Active", "Inactive")
+PROPERTY_INACTIVE_REASONS = (
+    "Sold",
+    "Rented",
+    "Reserved",
+    "TemporarilyUnavailable",
+    "Withdrawn",
+    "Unspecified",
+)
 
 GET_PROPERTY_INFORMATION = {
     "name": "get_property_information",
@@ -54,8 +62,9 @@ SET_PROPERTY_STATUS = {
         "discuss it and book visits) and 'Inactive' (it may not). "
         "Administrative use only.\n\n"
         "Call this ONLY when the instruction names exactly one property and "
-        "exactly one target state. If either is unclear — 'activate it', "
-        "'deactivate that one', 'change the status' — ask which, do not guess. "
+        "exactly one target state and, for Inactive, exactly one reason. If "
+        "anything is unclear — 'activate it', 'deactivate that one', 'change "
+        "the status' — ask, do not guess. "
         "A wrong status change makes a real property invisible to real "
         "customers.\n\n"
         "Results:\n"
@@ -78,6 +87,15 @@ SET_PROPERTY_STATUS = {
                 "type": "string",
                 "enum": list(PROPERTY_STATUSES),
                 "description": "The target state. Exactly 'Active' or 'Inactive'.",
+            },
+            "inactive_reason": {
+                "type": "string",
+                "enum": list(PROPERTY_INACTIVE_REASONS),
+                "description": (
+                    "Required only for Inactive: Sold, Rented, Reserved, "
+                    "TemporarilyUnavailable, Withdrawn, or Unspecified. Omit "
+                    "when status is Active."
+                ),
             },
         },
         "required": ["reference", "status"],

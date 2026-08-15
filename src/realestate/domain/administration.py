@@ -24,12 +24,14 @@ from realestate.db.models import (
     InactiveReviewStatus,
     Property,
     PropertyDocumentVersion,
+    PropertyInactiveReason,
     PropertyStatus,
 )
 from realestate.domain.audit import record_audit
 from realestate.domain.properties import MAX_PROPERTIES, resolve_property
 
 VALID_STATUSES = (PropertyStatus.ACTIVE.value, PropertyStatus.INACTIVE.value)
+VALID_INACTIVE_REASONS = tuple(reason.value for reason in PropertyInactiveReason)
 
 
 @dataclass(frozen=True)
@@ -45,7 +47,11 @@ class AdministrationService:
         self._session = session
 
     async def set_property_status(
-        self, reference: str, status: str, actor: Administrator
+        self,
+        reference: str,
+        status: str,
+        actor: Administrator,
+        inactive_reason: str | None = None,
     ) -> dict:
         """Move one Property between `Active` and `Inactive`.
 
@@ -55,29 +61,54 @@ class AdministrationService:
         if status not in VALID_STATUSES:
             # The schema constrains this too; this is the backstop.
             return {"result": "ambiguous", "detail": "status must be Active or Inactive"}
+        if status == PropertyStatus.INACTIVE.value:
+            if inactive_reason not in VALID_INACTIVE_REASONS:
+                return {
+                    "result": "ambiguous",
+                    "detail": (
+                        "inactive_reason is required for Inactive and must be one of "
+                        + ", ".join(VALID_INACTIVE_REASONS)
+                    ),
+                }
+        elif inactive_reason is not None:
+            return {
+                "result": "ambiguous",
+                "detail": "inactive_reason must be omitted when status is Active",
+            }
 
         prop = await resolve_property(self._session, reference)
         if prop is None:
             return {"result": "not_found"}
 
         previous = prop.status
-        if previous == status:
+        previous_reason = prop.inactive_reason
+        target_reason = (
+            inactive_reason if status == PropertyStatus.INACTIVE.value else None
+        )
+        if previous == status and previous_reason == target_reason:
             await self._audit(
                 actor,
                 action="PropertyStatusUnchanged",
                 property_key=prop.property_key,
-                details={"requested_status": status, "result": "unchanged"},
+                details={
+                    "requested_status": status,
+                    "requested_inactive_reason": target_reason,
+                    "result": "unchanged",
+                },
             )
             return {
                 "result": "unchanged",
                 "property_id": prop.property_key,
                 "name": prop.name,
                 "previous_status": previous,
+                "previous_inactive_reason": previous_reason,
                 "current_status": prop.status,
+                "current_inactive_reason": prop.inactive_reason,
                 "affected_confirmed_appointments": 0,
             }
 
         prop.status = status
+        prop.inactive_reason = target_reason
         affected = await self._confirmed_appointments(prop)
         if status == PropertyStatus.INACTIVE.value:
             await self._open_inactive_reviews(prop)
@@ -87,7 +118,9 @@ class AdministrationService:
             property_key=prop.property_key,
             details={
                 "previous_status": previous,
+                "previous_inactive_reason": previous_reason,
                 "requested_status": status,
+                "requested_inactive_reason": target_reason,
                 "result": "updated",
                 "affected_confirmed_appointments": affected,
             },
@@ -98,7 +131,9 @@ class AdministrationService:
             "property_id": prop.property_key,
             "name": prop.name,
             "previous_status": previous,
+            "previous_inactive_reason": previous_reason,
             "current_status": prop.status,
+            "current_inactive_reason": prop.inactive_reason,
             # Deactivation starts administrative review; it never cancels (P-017).
             "affected_confirmed_appointments": affected,
         }
@@ -114,17 +149,25 @@ class AdministrationService:
         properties = []
         for prop in rows:
             version = 0
+            metadata: dict = {}
             if prop.accepted_version_id is not None:
                 record = await self._session.get(
                     PropertyDocumentVersion, prop.accepted_version_id
                 )
                 version = record.version if record else 0
+                metadata = record.document_metadata if record else {}
             properties.append(
                 {
                     "property_id": prop.property_key,
                     "name": prop.name,
                     "status": prop.status,
+                    "inactive_reason": prop.inactive_reason,
                     "document_version": version,
+                    "property_type": metadata.get("property_type"),
+                    "operation": metadata.get("operation"),
+                    "price_amount": metadata.get("price_amount"),
+                    "price_currency": metadata.get("price_currency"),
+                    "updated_at": prop.updated_at.isoformat(),
                     "confirmed_appointments": await self._confirmed_appointments(prop),
                 }
             )

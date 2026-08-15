@@ -346,6 +346,7 @@ async def test_the_created_event_carries_the_attempt_reference_privately() -> No
         summary="Visita Casa Roble",
         description="Nombre: Cliente Demo",
         reference="apt-abc",
+        location="Calle Privada 123, Zapopan",
     )
 
     assert result.outcome is CalendarOutcome.OK
@@ -356,6 +357,7 @@ async def test_the_created_event_carries_the_attempt_reference_privately() -> No
     assert body["extendedProperties"]["private"]["appointmentReference"] == "apt-abc"
     assert body["summary"] == "Visita Casa Roble"
     assert body["description"] == "Nombre: Cliente Demo"
+    assert body["location"] == "Calle Privada 123, Zapopan"
     assert body["start"] == {"dateTime": slot(10).start.isoformat()}
     assert body["end"] == {"dateTime": slot(10).end.isoformat()}
 

@@ -118,7 +118,11 @@ async def upload_document(
     content = await file.read()
 
     async with request.app.state.database.session_scope() as session:
-        service = PropertyService(session, request.app.state.artifacts)
+        service = PropertyService(
+            session,
+            request.app.state.artifacts,
+            getattr(request.app.state, "property_catalog", None),
+        )
         try:
             accepted: AcceptedUpload = await service.accept_upload(
                 filename=file.filename or "", content=content, actor_id=developer

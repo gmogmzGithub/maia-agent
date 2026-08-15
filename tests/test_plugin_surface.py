@@ -49,8 +49,20 @@ def test_the_status_tool_accepts_only_the_two_states() -> None:
 
     parameters = schemas.SET_PROPERTY_STATUS["parameters"]
 
-    assert sorted(parameters["properties"]) == ["reference", "status"]
+    assert sorted(parameters["properties"]) == [
+        "inactive_reason",
+        "reference",
+        "status",
+    ]
     assert parameters["properties"]["status"]["enum"] == ["Active", "Inactive"]
+    assert parameters["properties"]["inactive_reason"]["enum"] == [
+        "Sold",
+        "Rented",
+        "Reserved",
+        "TemporarilyUnavailable",
+        "Withdrawn",
+        "Unspecified",
+    ]
     assert parameters["additionalProperties"] is False
 
 

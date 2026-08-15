@@ -58,6 +58,7 @@ class _Visit:
 
     appointment: Appointment
     property_name: str
+    visit_address: str | None
     lead: Lead | None
 
     @property
@@ -265,6 +266,7 @@ class BrokerNotificationService:
         return _Visit(
             appointment=row,
             property_name=prop.name if prop else "propiedad desconocida",
+            visit_address=prop.visit_address if prop else None,
             lead=lead,
         )
 
@@ -302,15 +304,16 @@ def _stamp(moment: datetime, schedule: WeeklySchedule) -> str:
 
 
 def booked_body(visit: _Visit, schedule: WeeklySchedule) -> str:
-    return "\n".join(
-        [
+    lines = [
             "🗓️ Nueva visita agendada",
             visit.property_name,
             _stamp(visit.appointment.starts_at, schedule),
             f"{visit.who} — {visit.phone}",
-            f"Ref: {visit.appointment.reference}",
         ]
-    )
+    if visit.visit_address:
+        lines.append(f"Dirección: {visit.visit_address}")
+    lines.append(f"Ref: {visit.appointment.reference}")
+    return "\n".join(lines)
 
 
 def needs_review_body(visit: _Visit, schedule: WeeklySchedule) -> str:
@@ -344,17 +347,20 @@ def digest_body(
             f"• {local.strftime('%H:%M')} — {visit.property_name} — "
             f"{visit.who} ({visit.phone})"
         )
+        if visit.visit_address:
+            lines.append(f"  Dirección: {visit.visit_address}")
     return "\n".join(lines)
 
 
 def reminder_body(visit: _Visit, now: datetime, schedule: WeeklySchedule) -> str:
     local = visit.appointment.starts_at.astimezone(schedule.zone)
     minutes = max(0, int((visit.appointment.starts_at - now).total_seconds() // 60))
-    return "\n".join(
-        [
+    lines = [
             f"⏰ Visita en {minutes} min — {local.strftime('%H:%M')}",
             visit.property_name,
             f"{visit.who} — {visit.phone}",
-            f"Ref: {visit.appointment.reference}",
         ]
-    )
+    if visit.visit_address:
+        lines.append(f"Dirección: {visit.visit_address}")
+    lines.append(f"Ref: {visit.appointment.reference}")
+    return "\n".join(lines)

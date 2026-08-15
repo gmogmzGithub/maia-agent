@@ -17,7 +17,7 @@ import logging
 from datetime import date, datetime, time
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 
 from realestate.config import get_settings
@@ -25,6 +25,7 @@ from realestate.db.models import (
     AgentRole,
     AgentSession,
     Conversation,
+    PropertyInactiveReason,
     PropertyStatus,
 )
 from realestate.domain.administration import AdministrationService, Administrator
@@ -207,8 +208,8 @@ async def get_property_information(
 class SetPropertyStatusRequest(BaseModel):
     """`set_property_status` model arguments (TOOL-CONTRACTS.md).
 
-    No UUID, actor identity, Lead identity, SQL, file path, reason, or arbitrary
-    status text. The actor comes from the trusted Telegram session (P-065).
+    No UUID, actor identity, Lead identity, SQL, file path, or arbitrary status
+    text. The actor comes from the trusted Telegram session (P-065).
     """
 
     # ``use_enum_values`` keeps the validated field a plain string, so the
@@ -218,6 +219,15 @@ class SetPropertyStatusRequest(BaseModel):
 
     reference: str = Field(min_length=1, max_length=200)
     status: PropertyStatus
+    inactive_reason: PropertyInactiveReason | None = None
+
+    @model_validator(mode="after")
+    def validate_reason(self) -> SetPropertyStatusRequest:
+        if self.status == PropertyStatus.INACTIVE.value and self.inactive_reason is None:
+            raise ValueError("inactive_reason is required when status is Inactive")
+        if self.status == PropertyStatus.ACTIVE.value and self.inactive_reason is not None:
+            raise ValueError("inactive_reason must be omitted when status is Active")
+        return self
 
 
 @router.post("/tools/set_property_status", dependencies=[Depends(require_plugin_token)])
@@ -251,6 +261,7 @@ async def set_property_status(
                 actor_id=binding.channel_key or hermes_session_id,
                 origin_message_id=request.headers.get(ORIGIN_HEADER) or None,
             ),
+            payload.inactive_reason,
         )
         logger.debug(
             "Plugin tool result: set_property_status (durable=%s, result=%s)",

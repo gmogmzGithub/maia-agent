@@ -64,7 +64,9 @@ class StubCalendar:
             return BusyResult(CalendarOutcome.CONFLICT, result.busy)
         return result
 
-    async def create_event(self, *, slot, summary, description, reference) -> EventResult:  # noqa: ANN001
+    async def create_event(
+        self, *, slot, summary, description, reference, location=None
+    ) -> EventResult:  # noqa: ANN001
         self.created.append(reference)
         return EventResult(CalendarOutcome.OK, event_id=f"evt-{reference}")
 

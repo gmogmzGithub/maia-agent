@@ -274,6 +274,7 @@ class AdminWorkService:
                 property_name=prop.name,
                 starts_at=row.starts_at,
                 schedule=self._schedule,
+                visit_address=prop.visit_address,
             )
             if row.status == AppointmentStatus.CONFIRMED.value
             else rejection_message(

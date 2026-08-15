@@ -12,7 +12,7 @@ neighborhood: Los Robles
 half_bathrooms: 1
 parking_spaces: 2
 maintenance_status: Fee
-maintenance_description: Cuota mensual de mantenimiento y vigilancia.
+maintenance_description: Cuota mensual que incluye vigilancia y mantenimiento de áreas comunes.
 in_development: true
 bedrooms: 4
 full_bathrooms: 1
@@ -28,11 +28,11 @@ community_amenities:
 
 # Casa Roble
 
-Casa sintética de dos plantas para pruebas automatizadas.
+Casa de dos plantas dentro del coto Los Robles, en Zapopan.
 
 ## Distribución y espacios
 
-Cuenta con cuatro recámaras, un baño completo, medio baño y dos lugares de estacionamiento.
+Cuenta con cuatro recámaras, sala, comedor, cocina integral, un baño completo, medio baño, patio de servicio y estacionamiento para dos autos.
 
 ## Características de la propiedad
 
@@ -46,7 +46,7 @@ Cuenta con cuatro recámaras, un baño completo, medio baño y dos lugares de es
 
 ## Mantenimiento
 
-Cuota de mantenimiento: $1,500 MXN. Cuota mensual de mantenimiento y vigilancia.
+Cuota de mantenimiento: $1,500 MXN. Cuota mensual que incluye vigilancia y mantenimiento de áreas comunes.
 
 ## Ubicación
 

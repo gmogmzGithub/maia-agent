@@ -102,6 +102,8 @@ def headers(session_id: str = ADMIN_SESSION, origin: str | None = None) -> dict[
 
 
 async def set_status(client, reference, status, session_id=ADMIN_SESSION, **extra):
+    if status == "Inactive" and "inactive_reason" not in extra:
+        extra["inactive_reason"] = "Unspecified"
     return await client.post(
         STATUS_PATH,
         headers=headers(session_id),
@@ -149,7 +151,11 @@ async def test_the_plugin_credential_is_still_required(wired) -> None:
     response = await client.post(
         STATUS_PATH,
         headers={SESSION_HEADER: ADMIN_SESSION},
-        json={"reference": "casa-roble", "status": "Inactive"},
+        json={
+            "reference": "casa-roble",
+            "status": "Inactive",
+            "inactive_reason": "Sold",
+        },
     )
 
     assert response.status_code == 401
@@ -200,6 +206,7 @@ async def test_a_real_transition_is_persisted_and_reported(wired) -> None:
     assert body["result"] == "updated"
     assert body["previous_status"] == "Active"
     assert body["current_status"] == "Inactive"
+    assert body["current_inactive_reason"] == "Unspecified"
     assert body["property_id"] == "casa-roble"
     assert body["name"] == "Casa Roble"
 
@@ -210,6 +217,7 @@ async def test_a_real_transition_is_persisted_and_reported(wired) -> None:
             )
         ).scalar_one()
     assert prop.status == PropertyStatus.INACTIVE.value
+    assert prop.inactive_reason == "Unspecified"
 
 
 async def test_repeating_the_current_status_is_unchanged_not_updated(wired) -> None:
@@ -252,9 +260,7 @@ async def test_deactivation_reports_appointments_without_cancelling(wired) -> No
 async def test_a_transition_is_audited_with_the_trusted_actor(wired) -> None:
     client, app = wired
 
-    await set_status(
-        client, "casa-roble", "Inactive"
-    )
+    await set_status(client, "casa-roble", "Inactive", inactive_reason="Sold")
 
     async with app.state.database.session_scope() as session:
         event = (
@@ -269,6 +275,7 @@ async def test_a_transition_is_audited_with_the_trusted_actor(wired) -> None:
     assert event.subject_id == "casa-roble"
     assert event.details["previous_status"] == "Active"
     assert event.details["requested_status"] == "Inactive"
+    assert event.details["requested_inactive_reason"] == "Sold"
 
 
 async def test_the_originating_message_is_recorded(wired) -> None:
@@ -277,7 +284,11 @@ async def test_the_originating_message_is_recorded(wired) -> None:
     await client.post(
         STATUS_PATH,
         headers=headers(origin="admin-message-abc"),
-        json={"reference": "casa-roble", "status": "Inactive"},
+        json={
+            "reference": "casa-roble",
+            "status": "Inactive",
+            "inactive_reason": "Reserved",
+        },
     )
 
     async with app.state.database.session_scope() as session:
@@ -304,6 +315,7 @@ async def test_after_deactivation_the_sales_role_gets_no_document(wired) -> None
     ).json()
 
     assert body["result"] == "unavailable"
+    assert body["customer_message"] == "La propiedad no está disponible por el momento."
     assert "document_markdown" not in body
     # No promotional fact leaks through any field.
     assert "Alberca" not in str(body)
@@ -356,6 +368,12 @@ async def test_the_inventory_is_compact_and_complete(wired) -> None:
             "status",
             "document_version",
             "confirmed_appointments",
+            "inactive_reason",
+            "property_type",
+            "operation",
+            "price_amount",
+            "price_currency",
+            "updated_at",
         }
         # No document prose in the overview (P-066).
         assert "Alberca" not in str(entry)
