@@ -102,6 +102,14 @@ property documents as a separate privacy/business decision.
 
 ## External final check
 
+The local Product port is not publicly reachable by Meta. Before a real
+WhatsApp rehearsal, start an HTTPS tunnel to port 8080 and set the Meta app's
+WhatsApp webhook callback to the tunnel URL plus `/webhooks/whatsapp`. Verify
+the callback challenge returns HTTP 200 before sending a message. A temporary
+tunnel URL changes when the tunnel restarts; a stale URL produces no Inbox row
+and therefore no reply, even when Product, Hermes, and the Meta token are
+healthy.
+
 Provider health proves reachability and credentials, not message delivery. The
 final manual check must use a consenting test recipient and verify one real
 WhatsApp conversation, one real outbound reply, one real Calendar booking or
