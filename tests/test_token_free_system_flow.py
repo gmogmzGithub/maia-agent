@@ -108,7 +108,7 @@ async def _answer_property_question(client: httpx.AsyncClient, headers) -> TurnR
     assert result["name"] == "Casa Roble"
     return TurnResult(
         text=(
-            "Casa Roble está en Zapopan, tiene 4 recámaras y cuesta "
+            "**Casa Roble** está en Zapopan, tiene **4 recámaras** y cuesta "
             "$3,000,000 MXN. ¿Quieres agendar una visita?"
         ),
         tools_used=["get_property_information"],
@@ -257,7 +257,9 @@ async def test_whatsapp_lead_booking_reaches_telegram_without_provider_tokens(
         await age_pending_inbox(database)
         await worker.tick()
         assert len(whatsapp.sent) == 1
-        assert "4 recámaras" in whatsapp.sent[0].body
+        assert "*Casa Roble*" in whatsapp.sent[0].body
+        assert "*4 recámaras*" in whatsapp.sent[0].body
+        assert "**" not in whatsapp.sent[0].body
 
         second = webhooks.text_message(
             wamid="wamid.OFFLINE.LEAD.2",

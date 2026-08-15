@@ -174,6 +174,30 @@ async def test_one_message_produces_one_delivered_reply(
     assert outbox[0].provider_message_id == "wamid.1"
 
 
+async def test_model_markdown_is_converted_before_the_whatsapp_send(
+    database, stub_hermes
+) -> None:
+    """Regression for the real catalog reply that showed leftover asterisks."""
+    stub_hermes["reply"] = (
+        "¡Claro! Tenemos **4 opciones disponibles en venta**:\n\n"
+        "🏠 **Casas:**\n\n"
+        "1. **Casa Roble** - $3,000,000 MXN\n"
+        "_Consulta disponibilidad_"
+    )
+    whatsapp = StubWhatsApp()
+    await accept(database, inbound("w-format", "qué propiedades tienen disponibles?"))
+
+    await build_worker(database, whatsapp).tick()
+
+    assert whatsapp.sent[0].body == (
+        "¡Claro! Tenemos *4 opciones disponibles en venta*:\n\n"
+        "🏠 *Casas:*\n\n"
+        "1. *Casa Roble* - $3,000,000 MXN\n"
+        "_Consulta disponibilidad_"
+    )
+    assert "**" not in whatsapp.sent[0].body
+
+
 async def test_rapid_fragments_produce_one_coherent_reply(database, stub_hermes) -> None:
     whatsapp = StubWhatsApp()
     await accept(
