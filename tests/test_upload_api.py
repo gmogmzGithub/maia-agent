@@ -13,7 +13,7 @@ from realestate.app import create_app
 from realestate.config import get_settings
 from realestate.db.engine import Database
 from realestate.db.models import AgentRole, AuditEvent, Property
-from realestate.domain.properties import ArtifactStore, PropertyService
+from realestate.domain.properties import ArtifactStore, CatalogStore, PropertyService
 from tests.conftest import DATABASE_URL, env, requires_postgres, reset_property_inventory
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -38,6 +38,7 @@ async def wired(tmp_path: Path):
     app = create_app(get_settings())
     app.state.database = database
     app.state.artifacts = ArtifactStore(tmp_path / "artifacts")
+    app.state.property_catalog = CatalogStore(tmp_path / "catalog")
 
     async with httpx.AsyncClient(
         transport=ASGITransport(app=app), base_url="http://product.test"

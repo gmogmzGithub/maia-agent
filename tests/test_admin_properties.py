@@ -52,6 +52,47 @@ def property_form(**overrides: object) -> dict[str, object]:
     return values
 
 
+def land_property_form(**overrides: object) -> dict[str, object]:
+    values = property_form(
+        name="Terreno Manual",
+        property_type="Land",
+        price_amount="2161350",
+        city="Zapopan",
+        neighborhood="Valle Imperial",
+        general_description="Terreno en venta en Valle Imperial coto Maple.",
+        distribution="Frente regular y fondo aprovechable dentro del coto.",
+        in_development="true",
+        community_amenities=[
+            "Alberca",
+            "Área de juegos infantiles",
+            "Salón de usos múltiples",
+            "Seguridad 24 horas",
+        ],
+        maintenance_status="Unknown",
+        land_m2="160.1",
+        land_front_m="8.01",
+        land_depth_m="20.01",
+        visit_address="Coto Maple, Valle Imperial, Zapopan, Jalisco",
+    )
+    for key in (
+        "bedrooms",
+        "full_bathrooms",
+        "half_bathrooms",
+        "parking_spaces",
+        "construction_m2",
+        "floors",
+        "year_built",
+        "private_characteristics",
+        "other_private_characteristic",
+        "maintenance_amount",
+        "maintenance_currency",
+        "maintenance_description",
+    ):
+        values.pop(key, None)
+    values.update(overrides)
+    return values
+
+
 @pytest.fixture
 async def wired(tmp_path: Path):
     get_settings.cache_clear()
@@ -97,6 +138,9 @@ async def test_new_property_form_has_the_approved_controls_and_no_images(wired) 
         "Seguridad 24 horas",
         "Otra amenidad",
         "Descripción del mantenimiento",
+        "Superficie de terreno",
+        "Frente en metros",
+        "Fondo en metros",
     ):
         assert label in response.text
     assert 'type="file"' not in response.text
@@ -104,7 +148,16 @@ async def test_new_property_form_has_the_approved_controls_and_no_images(wired) 
     assert 'id="property-name"' in response.text
     assert 'id="property-id"' in response.text
     assert "propertyName.addEventListener('input',updatePropertyId)" in response.text
-    assert "maintenanceAmount.required=maintenance.value==='Fee'" in response.text
+    assert "[hidden] { display:none !important }" in response.text
+    assert "fee.style.display=hasFee?'grid':'none'" in response.text
+    assert "maintenanceDescription.required=hasFee" in response.text
+    assert "maintenanceAmount.disabled=!hasFee" in response.text
+    assert "maintenanceCurrency.disabled=!hasFee" in response.text
+    assert "maintenanceDescription.disabled=!hasFee" in response.text
+    assert "propertyType.addEventListener('change',toggle)" in response.text
+    assert "setBlock(residentialMeasures,!isLand,'grid')" in response.text
+    assert "setBlock(landMeasures,isLand,'grid')" in response.text
+    assert "setBlock(privateCharacteristics,!isLand,'block')" in response.text
 
 
 async def test_preview_generates_markdown_without_mutating_any_store(wired) -> None:
@@ -151,6 +204,31 @@ async def test_create_accepts_version_one_active_and_writes_the_catalog(wired) -
     assert prop.inactive_reason is None
     assert prop.visit_address == "Calle Privada 123, Zapopan, Jalisco"
     assert version.version == 1
+
+
+async def test_create_land_hides_residential_fields_from_the_document(wired) -> None:
+    client, app, tmp_path = wired
+
+    response = await client.post(
+        "/admin/properties", auth=DEVELOPER, data=land_property_form()
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/admin/properties/terreno-manual?saved=1"
+    catalog = (tmp_path / "catalog" / "terreno-manual.md").read_text()
+    assert "property_type: Land" in catalog
+    assert "land_m2: 160.1" in catalog
+    assert "land_front_m: 8.01" in catalog
+    assert "land_depth_m: 20.01" in catalog
+    assert "## Medidas del terreno" in catalog
+    assert "half_bathrooms:" not in catalog
+    assert "parking_spaces:" not in catalog
+    assert "bedrooms:" not in catalog
+    assert "full_bathrooms:" not in catalog
+    assert "Características de la propiedad" not in catalog
+    async with app.state.database.session_scope() as session:
+        prop = (await session.execute(select(Property))).scalar_one()
+    assert prop.property_key == "terreno-manual"
 
 
 async def test_duplicate_create_is_rejected_without_a_numeric_suffix(wired) -> None:
@@ -292,6 +370,29 @@ async def test_non_development_submission_ignores_hidden_community_fields(wired)
     markdown = (tmp_path / "catalog" / "casa-manual.md").read_text()
     assert "Amenidades del coto" not in markdown
     assert "Cancha oculta" not in markdown
+
+
+@pytest.mark.parametrize("status", ["None", "Unknown"])
+async def test_non_fee_submission_ignores_hidden_maintenance_fields(wired, status: str) -> None:
+    client, _, tmp_path = wired
+
+    response = await client.post(
+        "/admin/properties",
+        auth=DEVELOPER,
+        data=property_form(
+            maintenance_status=status,
+            maintenance_amount="",
+            maintenance_currency="MXN",
+            maintenance_description="",
+        ),
+    )
+
+    assert response.status_code == 303
+    markdown = (tmp_path / "catalog" / "casa-manual.md").read_text()
+    assert f"maintenance_status: {status}" in markdown
+    assert "maintenance_amount:" not in markdown
+    assert "maintenance_currency:" not in markdown
+    assert "maintenance_description:" not in markdown
 
 
 async def test_edit_reports_missing_version_and_missing_artifact(wired) -> None:

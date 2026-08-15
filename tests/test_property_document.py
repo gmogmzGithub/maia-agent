@@ -83,8 +83,8 @@ def test_malformed_yaml_and_duplicate_keys_are_rejected() -> None:
 
 
 def test_required_and_unexpected_keys_are_reported() -> None:
-    missing = without_line("parking_spaces:")
-    assert "parking_spaces" in " ".join(errors_for(missing))
+    missing = without_line("price_amount:")
+    assert "price_amount" in " ".join(errors_for(missing))
     extra = replace(b"name: Casa Roble", b"name: Casa Roble\nsource_url: https://example.com")
     assert "source_url" in errors_for(extra)[0]
 
@@ -133,23 +133,39 @@ def test_house_requires_bedrooms_and_full_bathrooms() -> None:
     assert "bedrooms" in errors and "full_bathrooms" in errors
 
 
-def test_land_requires_land_area_and_omits_residential_counts() -> None:
+def test_land_requires_land_measurements_and_omits_residential_counts() -> None:
     changed = replace(b"property_type: House", b"property_type: Land")
     errors = " ".join(errors_for(changed))
-    assert "land_m2" in errors and "bedrooms" in errors and "full_bathrooms" in errors
+    assert "land_m2" in errors
+    assert "land_front_m" in errors
+    assert "land_depth_m" in errors
+    assert "bedrooms, full_bathrooms, half_bathrooms, parking_spaces" in errors
 
 
 def test_a_valid_land_document_is_accepted() -> None:
     changed = replace(b"property_type: House", b"property_type: Land")
     changed = without_line("bedrooms:", changed)
     changed = without_line("full_bathrooms:", changed)
-    changed = replace(b"half_bathrooms: 1", b"half_bathrooms: 0", changed)
-    changed = replace(b"parking_spaces: 2", b"parking_spaces: 0", changed)
+    changed = without_line("half_bathrooms:", changed)
+    changed = without_line("parking_spaces:", changed)
+    changed = without_line("construction_m2:", changed)
+    changed = without_line("private_characteristics:", changed)
+    changed = without_line("- Estacionamiento techado", changed)
     changed = replace(b"maintenance_status: Fee", b"maintenance_status: Unknown", changed)
     changed = without_line("maintenance_amount:", changed)
     changed = without_line("maintenance_currency:", changed)
-    changed = replace(b"in_development: true", b"land_m2: 500\nin_development: true", changed)
-    assert validate_upload("land.md", changed).metadata["land_m2"] == 500
+    changed = without_line("maintenance_description:", changed)
+    changed = replace(
+        b"in_development: true",
+        b"land_m2: 160.1\nland_front_m: 8.01\nland_depth_m: 20.01\nin_development: true",
+        changed,
+    )
+    document = validate_upload("land.md", changed)
+    assert document.metadata["land_m2"] == 160.1
+    assert document.metadata["land_front_m"] == 8.01
+    assert document.metadata["land_depth_m"] == 20.01
+    assert "half_bathrooms" not in document.metadata
+    assert "parking_spaces" not in document.metadata
 
 
 def test_fee_requires_amount_and_currency() -> None:
@@ -160,17 +176,19 @@ def test_fee_requires_amount_and_currency() -> None:
 
 
 @pytest.mark.parametrize("status", ["None", "Unknown"])
-def test_non_fee_maintenance_omits_amount_but_keeps_required_description(status: str) -> None:
+def test_non_fee_maintenance_omits_fee_only_fields(status: str) -> None:
     changed = replace(b"maintenance_status: Fee", f"maintenance_status: {status}".encode())
     changed = without_line("maintenance_amount:", changed)
     changed = without_line("maintenance_currency:", changed)
+    changed = without_line("maintenance_description:", changed)
     assert validate_upload("maintenance.md", changed).metadata["maintenance_status"] == status
-    assert "maintenance_description" in " ".join(errors_for(without_line("maintenance_description:", changed)))
 
 
-def test_non_fee_rejects_stale_amount_fields() -> None:
+def test_non_fee_rejects_stale_maintenance_fields() -> None:
     changed = replace(b"maintenance_status: Fee", b"maintenance_status: None")
-    assert "must be omitted" in " ".join(errors_for(changed))
+    errors = " ".join(errors_for(changed))
+    assert "maintenance_amount and maintenance_currency must be omitted" in errors
+    assert "maintenance_description must be omitted" in errors
 
 
 def test_community_amenities_require_a_development() -> None:
@@ -215,6 +233,41 @@ def test_render_generates_canonical_sections_and_validates_itself() -> None:
     assert "## Mantenimiento" in rendered
     assert "## Ubicación" in rendered
     assert "source_url" not in rendered and "image" not in rendered.casefold()
+
+
+def test_rendered_land_includes_land_measurements() -> None:
+    changed = replace(b"property_type: House", b"property_type: Land")
+    for prefix in (
+        "bedrooms:",
+        "full_bathrooms:",
+        "half_bathrooms:",
+        "parking_spaces:",
+        "construction_m2:",
+        "maintenance_amount:",
+        "maintenance_currency:",
+        "maintenance_description:",
+        "private_characteristics:",
+        "- Estacionamiento techado",
+    ):
+        changed = without_line(prefix, changed)
+    changed = replace(b"maintenance_status: Fee", b"maintenance_status: Unknown", changed)
+    changed = replace(
+        b"in_development: true",
+        b"land_m2: 160.1\nland_front_m: 8.01\nland_depth_m: 20.01\nin_development: true",
+        changed,
+    )
+    metadata = validate_upload("land.md", changed).metadata
+
+    rendered = render_property_document(
+        metadata,
+        general_description="Terreno en venta en coto.",
+        distribution="Frente y fondo regulares.",
+    ).decode()
+
+    assert "## Medidas del terreno" in rendered
+    assert "- Superficie: 160.1 m²" in rendered
+    assert "- Frente: 8.01 m" in rendered
+    assert "- Fondo: 20.01 m" in rendered
 
 
 def test_render_requires_both_narratives() -> None:
@@ -295,6 +348,7 @@ def test_rendered_non_fee_maintenance_copy(status: str, expected: str) -> None:
     metadata["maintenance_status"] = status
     metadata.pop("maintenance_amount")
     metadata.pop("maintenance_currency")
+    metadata.pop("maintenance_description")
     rendered = render_property_document(
         metadata, general_description="General.", distribution="Espacios."
     ).decode()

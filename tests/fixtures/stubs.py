@@ -46,20 +46,33 @@ class SentNotice(NamedTuple):
 class StubCalendar:
     """Answers each test controls; nothing here reaches Google.
 
-    Default state is a conclusively empty calendar, which is what a suite that
-    only needs booking to succeed wants. Append to ``busy`` to create conflicts.
+    Default state is a conclusively empty calendar that accepts every booking,
+    which is what a suite that only needs booking to succeed wants. The knobs
+    cover what the others need: append to ``busy`` to create conflicts, set
+    ``busy_outcome``/``create_outcome`` to make Google fail or answer
+    inconclusively, read ``busy_reads`` to count availability queries, and set
+    ``find_result`` to pin what a reference lookup reports.
     """
 
     def __init__(self) -> None:
         self.busy: list[Interval] = []
+        self.busy_outcome = CalendarOutcome.OK
+        self.create_outcome = CalendarOutcome.OK
         self.created: list[str] = []
         self.deleted: list[str] = []
+        self.busy_reads = 0
+        self.find_result: EventResult | None = None
 
     async def busy_between(self, start, end) -> BusyResult:  # noqa: ANN001
+        self.busy_reads += 1
+        if self.busy_outcome is not CalendarOutcome.OK:
+            return BusyResult(self.busy_outcome, [], "stubbed failure")
         return BusyResult(CalendarOutcome.OK, list(self.busy))
 
     async def is_free(self, slot: Interval) -> BusyResult:
         result = await self.busy_between(slot.start, slot.end)
+        if not result.ok:
+            return result
         if any(slot.overlaps(b) for b in result.busy):
             return BusyResult(CalendarOutcome.CONFLICT, result.busy)
         return result
@@ -67,10 +80,14 @@ class StubCalendar:
     async def create_event(
         self, *, slot, summary, description, reference, location=None
     ) -> EventResult:  # noqa: ANN001
+        if self.create_outcome is not CalendarOutcome.OK:
+            return EventResult(self.create_outcome, detail="stubbed")
         self.created.append(reference)
         return EventResult(CalendarOutcome.OK, event_id=f"evt-{reference}")
 
     async def find_by_reference(self, reference) -> EventResult:  # noqa: ANN001
+        if self.find_result is not None:
+            return self.find_result
         if reference in self.created:
             return EventResult(CalendarOutcome.OK, event_id=f"evt-{reference}")
         return EventResult(CalendarOutcome.OK)
@@ -81,15 +98,22 @@ class StubCalendar:
 
 
 class StubWhatsApp:
-    """Accepts Product Outbox sends without contacting Meta."""
+    """Accepts Product Outbox sends without contacting Meta.
 
-    def __init__(self) -> None:
+    ``result`` pins the answer Meta gives, for the suites that need a failure or
+    an inconclusive send; the default accepts each send with a fresh id.
+    """
+
+    def __init__(self, result: SendResult | None = None) -> None:
         self.sent: list[SentText] = []
+        self._result = result
 
     async def send_text(self, to_wa_id: str, body: str) -> SendResult:
-        provider_id = f"wamid.{len(self.sent) + 1}"
-        self.sent.append(SentText(to_wa_id, body, provider_id))
-        return SendResult(SendOutcome.SENT, provider_message_id=provider_id)
+        result = self._result or SendResult(
+            SendOutcome.SENT, provider_message_id=f"wamid.{len(self.sent) + 1}"
+        )
+        self.sent.append(SentText(to_wa_id, body, result.provider_message_id or ""))
+        return result
 
 
 class StubTelegram:

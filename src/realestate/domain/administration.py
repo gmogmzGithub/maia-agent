@@ -13,6 +13,7 @@ review (P-017).
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 
 from sqlalchemy import func, select
@@ -23,12 +24,15 @@ from realestate.db.models import (
     AppointmentStatus,
     InactiveReviewStatus,
     Property,
-    PropertyDocumentVersion,
     PropertyInactiveReason,
     PropertyStatus,
 )
 from realestate.domain.audit import record_audit
-from realestate.domain.properties import MAX_PROPERTIES, resolve_property
+from realestate.domain.properties import (
+    MAX_PROPERTIES,
+    accepted_version,
+    resolve_property,
+)
 
 VALID_STATUSES = (PropertyStatus.ACTIVE.value, PropertyStatus.INACTIVE.value)
 VALID_INACTIVE_REASONS = tuple(reason.value for reason in PropertyInactiveReason)
@@ -85,7 +89,29 @@ class AdministrationService:
         target_reason = (
             inactive_reason if status == PropertyStatus.INACTIVE.value else None
         )
-        if previous == status and previous_reason == target_reason:
+        changed = previous != status or previous_reason != target_reason
+
+        if changed:
+            prop.status = status
+            prop.inactive_reason = target_reason
+            affected = await self.confirmed_appointments(prop)
+            if status == PropertyStatus.INACTIVE.value:
+                await self._open_inactive_reviews(prop)
+            await self._audit(
+                actor,
+                action="PropertyStatusChanged",
+                property_key=prop.property_key,
+                details={
+                    "previous_status": previous,
+                    "previous_inactive_reason": previous_reason,
+                    "requested_status": status,
+                    "requested_inactive_reason": target_reason,
+                    "result": "updated",
+                    "affected_confirmed_appointments": affected,
+                },
+            )
+        else:
+            affected = 0
             await self._audit(
                 actor,
                 action="PropertyStatusUnchanged",
@@ -96,38 +122,11 @@ class AdministrationService:
                     "result": "unchanged",
                 },
             )
-            return {
-                "result": "unchanged",
-                "property_id": prop.property_key,
-                "name": prop.name,
-                "previous_status": previous,
-                "previous_inactive_reason": previous_reason,
-                "current_status": prop.status,
-                "current_inactive_reason": prop.inactive_reason,
-                "affected_confirmed_appointments": 0,
-            }
 
-        prop.status = status
-        prop.inactive_reason = target_reason
-        affected = await self._confirmed_appointments(prop)
-        if status == PropertyStatus.INACTIVE.value:
-            await self._open_inactive_reviews(prop)
-        await self._audit(
-            actor,
-            action="PropertyStatusChanged",
-            property_key=prop.property_key,
-            details={
-                "previous_status": previous,
-                "previous_inactive_reason": previous_reason,
-                "requested_status": status,
-                "requested_inactive_reason": target_reason,
-                "result": "updated",
-                "affected_confirmed_appointments": affected,
-            },
-        )
-
+        # One shape for both outcomes: repeating the current status reports the
+        # same fields, with the current values simply equal to the previous ones.
         return {
-            "result": "updated",
+            "result": "updated" if changed else "unchanged",
             "property_id": prop.property_key,
             "name": prop.name,
             "previous_status": previous,
@@ -146,55 +145,65 @@ class AdministrationService:
             )
         ).scalars().all()
 
+        # Counted for the whole inventory in one grouped query rather than once
+        # per row: this runs on every administrative overview and page load.
+        counts = await self._confirmed_appointment_counts()
         properties = []
         for prop in rows:
-            version = 0
-            metadata: dict = {}
-            if prop.accepted_version_id is not None:
-                record = await self._session.get(
-                    PropertyDocumentVersion, prop.accepted_version_id
-                )
-                version = record.version if record else 0
-                metadata = record.document_metadata if record else {}
+            record = await accepted_version(self._session, prop)
+            metadata: dict = record.document_metadata if record else {}
             properties.append(
                 {
                     "property_id": prop.property_key,
                     "name": prop.name,
                     "status": prop.status,
                     "inactive_reason": prop.inactive_reason,
-                    "document_version": version,
+                    "document_version": record.version if record else 0,
                     "property_type": metadata.get("property_type"),
                     "operation": metadata.get("operation"),
                     "price_amount": metadata.get("price_amount"),
                     "price_currency": metadata.get("price_currency"),
                     "updated_at": prop.updated_at.isoformat(),
-                    "confirmed_appointments": await self._confirmed_appointments(prop),
+                    "confirmed_appointments": counts.get(prop.id, 0),
                 }
             )
         return {"result": "found", "properties": properties}
 
-    async def _confirmed_appointments(self, prop: Property) -> int:
+    async def confirmed_appointments(self, prop: Property) -> int:
         """Count future Confirmed Appointments affected by deactivation."""
         return int(
             (
                 await self._session.execute(
-                    select(func.count(Appointment.id))
-                    .where(Appointment.property_uuid == prop.id)
-                    .where(Appointment.status == AppointmentStatus.CONFIRMED.value)
-                    .where(Appointment.starts_at > func.now())
+                    self._confirmed_query(select(func.count(Appointment.id))).where(
+                        Appointment.property_uuid == prop.id
+                    )
                 )
             ).scalar_one()
         )
+
+    async def _confirmed_appointment_counts(self) -> dict[uuid.UUID, int]:
+        """The same count as ``confirmed_appointments``, for every Property."""
+        rows = await self._session.execute(
+            self._confirmed_query(
+                select(Appointment.property_uuid, func.count(Appointment.id))
+            ).group_by(Appointment.property_uuid)
+        )
+        return {property_uuid: int(total) for property_uuid, total in rows}
+
+    @staticmethod
+    def _confirmed_query(statement):  # noqa: ANN001, ANN205
+        """The one definition of "a future Confirmed Appointment"."""
+        return statement.where(
+            Appointment.status == AppointmentStatus.CONFIRMED.value
+        ).where(Appointment.starts_at > func.now())
 
     async def _open_inactive_reviews(self, prop: Property) -> None:
         """Make every affected visit visible without cancelling it (P-017)."""
         rows = (
             (
                 await self._session.execute(
-                    select(Appointment)
+                    self._confirmed_query(select(Appointment))
                     .where(Appointment.property_uuid == prop.id)
-                    .where(Appointment.status == AppointmentStatus.CONFIRMED.value)
-                    .where(Appointment.starts_at > func.now())
                     .with_for_update()
                 )
             )

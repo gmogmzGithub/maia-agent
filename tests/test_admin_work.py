@@ -32,30 +32,18 @@ from realestate.db.models import (
 from realestate.domain.admin_work import AdminWorkService
 from realestate.domain.administration import AdministrationService, Administrator
 from realestate.domain.appointments import AppointmentPolicy
-from realestate.domain.availability import WeeklySchedule
 from realestate.domain.inbox import InboxService
 from realestate.domain.properties import ArtifactStore, PropertyService
 from realestate.app import create_app
 from realestate.config import get_settings
 from tests.conftest import DATABASE_URL, env, requires_postgres, reset_property_inventory
 from tests.fixtures import webhooks
+from tests.fixtures.stubs import SCHEDULE, StubCalendar
 
 pytestmark = requires_postgres
 
 FIXTURES = Path(__file__).parent / "fixtures"
 V1 = (FIXTURES / "casa-roble.md").read_bytes()
-SPEC = (
-    "mon=09:00-17:00;tue=09:00-17:00;wed=09:00-17:00;thu=09:00-17:00;"
-    "fri=09:00-17:00;sat=10:00-17:00;sun=10:00-17:00"
-)
-
-
-class StubCalendar:
-    def __init__(self) -> None:
-        self.result = EventResult(CalendarOutcome.OK)
-
-    async def find_by_reference(self, reference: str) -> EventResult:
-        return self.result
 
 
 @pytest.fixture
@@ -83,7 +71,7 @@ async def recovery(tmp_path: Path):
         await InboxService(session).accept(message)
 
     calendar = StubCalendar()
-    schedule = WeeklySchedule.parse(SPEC, "America/Mexico_City")
+    schedule = SCHEDULE
     yield database, calendar, schedule
     await database.dispose()
 
@@ -114,7 +102,7 @@ async def test_matching_calendar_evidence_confirms_and_queues_one_lead_notice(
 ) -> None:
     database, calendar, schedule = recovery
     row = await appointment(database, status=AppointmentStatus.NEEDS_REVIEW.value)
-    calendar.result = EventResult(
+    calendar.find_result = EventResult(
         CalendarOutcome.OK,
         event_id="evt-1",
         start=row.starts_at,
@@ -146,14 +134,14 @@ async def test_contradictory_or_unavailable_evidence_preserves_needs_review(
 ) -> None:
     database, calendar, schedule = recovery
     row = await appointment(database, status=AppointmentStatus.NEEDS_REVIEW.value)
-    calendar.result = EventResult(CalendarOutcome.UNKNOWN, detail="timeout")
+    calendar.find_result = EventResult(CalendarOutcome.UNKNOWN, detail="timeout")
     async with database.session_scope() as session:
         ambiguous = await AdminWorkService(session, calendar, schedule).resolve(
             row.reference, "Confirm", Administrator("telegram:1")
         )
     assert ambiguous["result"] == "still_ambiguous"
 
-    calendar.result = EventResult(
+    calendar.find_result = EventResult(
         CalendarOutcome.OK,
         event_id="evt-wrong",
         start=row.starts_at + timedelta(hours=1),
@@ -176,7 +164,7 @@ async def test_closed_customer_window_creates_manual_notification_work(recovery)
         message = (await session.execute(select(InboxMessage))).scalars().one()
         message.persisted_at = datetime.now(tz=UTC) - timedelta(hours=25)
         await session.commit()
-    calendar.result = EventResult(CalendarOutcome.OK)
+    calendar.find_result = EventResult(CalendarOutcome.OK)
 
     async with database.session_scope() as session:
         result = await AdminWorkService(session, calendar, schedule).resolve(
@@ -212,14 +200,14 @@ async def test_deactivation_opens_review_and_manual_completion_requires_event_ab
     assert work["items"][0]["type"] == "InactivePropertyAppointmentReview"
     assert first["result"] == "resolved"
 
-    calendar.result = EventResult(CalendarOutcome.OK, event_id="still-there")
+    calendar.find_result = EventResult(CalendarOutcome.OK, event_id="still-there")
     async with database.session_scope() as session:
         blocked = await AdminWorkService(session, calendar, schedule).resolve(
             row.reference, "MarkComplete", Administrator("telegram:1")
         )
     assert blocked["result"] == "conflict"
 
-    calendar.result = EventResult(CalendarOutcome.OK)
+    calendar.find_result = EventResult(CalendarOutcome.OK)
     async with database.session_scope() as session:
         completed = await AdminWorkService(session, calendar, schedule).resolve(
             row.reference, "MarkComplete", Administrator("telegram:1")

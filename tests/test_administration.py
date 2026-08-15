@@ -402,3 +402,43 @@ async def test_an_invalid_status_is_refused_at_the_service_too(wired) -> None:
         )
 
     assert result["result"] == "ambiguous"
+
+
+async def test_a_missing_reason_is_answered_not_rejected(wired) -> None:
+    """An argument mistake is a result the Agent can act on, not a transport error.
+
+    Deactivation needs a reason. Answering ``ambiguous`` with the accepted values
+    lets the Administrative Role ask which one; a rejected request would reach
+    the plugin as ``temporarily_unavailable`` and be reported as an outage.
+    """
+    client, _ = wired
+
+    body = (
+        await client.post(
+            STATUS_PATH,
+            headers=headers(),
+            json={"reference": "casa-roble", "status": "Inactive"},
+        )
+    ).json()
+
+    assert body["result"] == "ambiguous"
+    assert "inactive_reason" in body["detail"]
+
+
+async def test_a_reason_supplied_for_activation_is_answered_too(wired) -> None:
+    client, _ = wired
+
+    body = (
+        await client.post(
+            STATUS_PATH,
+            headers=headers(),
+            json={
+                "reference": "casa-roble",
+                "status": "Active",
+                "inactive_reason": "Sold",
+            },
+        )
+    ).json()
+
+    assert body["result"] == "ambiguous"
+    assert "omitted" in body["detail"]

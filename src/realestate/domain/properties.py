@@ -156,6 +156,21 @@ async def resolve_property(session: AsyncSession, reference: str) -> Property | 
     ).scalar_one_or_none()
 
 
+async def accepted_version(
+    session: AsyncSession, prop: Property
+) -> PropertyDocumentVersion | None:
+    """The document version a Property currently accepts, or None.
+
+    Spelled once here for the same reason as ``resolve_property``: the
+    retrieval, administrative, and manual-editing surfaces all need it, and
+    "``accepted_version_id`` is the pointer" is a domain rule rather than
+    something each caller should re-derive.
+    """
+    if prop.accepted_version_id is None:
+        return None
+    return await session.get(PropertyDocumentVersion, prop.accepted_version_id)
+
+
 class PropertyService:
     def __init__(
         self,
@@ -179,13 +194,17 @@ class PropertyService:
         create_only: bool = False,
         expected_property_key: str | None = None,
         visit_address: str | None = None,
-        update_visit_address: bool = False,
     ) -> AcceptedUpload:
         """Validate and atomically accept one Property Document.
 
         Raises ``ValidationError`` without persisting anything if the document
         is invalid or would collide. A valid first upload creates the Property
         as ``Active``; a valid replacement preserves the existing status (P-046).
+
+        ``visit_address`` is private operational data the document never
+        carries. ``None`` means the caller is not speaking about it, so a
+        replacement leaves any stored address untouched; a string sets it, and
+        an empty one clears it.
         """
         document = validate_upload(filename, content)
 
@@ -229,23 +248,21 @@ class PropertyService:
                     checksum,
                     artifact_path,
                     visit_address=visit_address,
-                    update_visit_address=update_visit_address,
                 )
             await self._session.commit()
-        except IntegrityError as exc:
+        except Exception as exc:
+            # One compensation for every failure: the catalog copy is written
+            # before the transaction, so whatever went wrong it has to go back.
             await self._session.rollback()
             if self._catalog is not None:
                 self._catalog.restore(document.property_key, previous_catalog)
-            raise ValidationError(
-                [
-                    "The upload conflicted with an existing Property and was rejected. "
-                    "No accepted document or status was changed."
-                ]
-            ) from exc
-        except Exception:
-            await self._session.rollback()
-            if self._catalog is not None:
-                self._catalog.restore(document.property_key, previous_catalog)
+            if isinstance(exc, IntegrityError):
+                raise ValidationError(
+                    [
+                        "The upload conflicted with an existing Property and was "
+                        "rejected. No accepted document or status was changed."
+                    ]
+                ) from exc
             raise
 
         await self._audit(
@@ -339,7 +356,6 @@ class PropertyService:
         artifact_path: Path,
         *,
         visit_address: str | None,
-        update_visit_address: bool,
     ) -> AcceptedUpload:
         latest = (
             await self._session.execute(
@@ -360,8 +376,8 @@ class PropertyService:
         prop.accepted_version_id = version.id
         prop.name = document.name
         prop.normalized_name = document.normalized_name
-        if update_visit_address:
-            prop.visit_address = (visit_address or "").strip() or None
+        if visit_address is not None:
+            prop.visit_address = visit_address.strip() or None
 
         return AcceptedUpload(
             property_key=prop.property_key,
@@ -477,6 +493,4 @@ class PropertyService:
         return await resolve_property(self._session, reference)
 
     async def _accepted_version(self, prop: Property) -> PropertyDocumentVersion | None:
-        if prop.accepted_version_id is None:
-            return None
-        return await self._session.get(PropertyDocumentVersion, prop.accepted_version_id)
+        return await accepted_version(self._session, prop)

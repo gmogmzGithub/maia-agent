@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import delete, select
 
-from realestate.channels.google.calendar import BusyResult, CalendarOutcome, EventResult
+from realestate.channels.google.calendar import BusyResult, CalendarOutcome
 from realestate.channels.whatsapp.payload import parse_webhook
 from realestate.db.engine import Database
 from realestate.db.models import (
@@ -29,69 +29,22 @@ from realestate.db.models import (
     OutboxMessage,
 )
 from realestate.domain.appointments import AppointmentPolicy, AppointmentService
-from realestate.domain.availability import Interval, WeeklySchedule
+from realestate.domain.availability import Interval
 from realestate.domain.inbox import InboxService
 from realestate.domain.properties import ArtifactStore, PropertyService
 from tests.conftest import DATABASE_URL, requires_postgres
 from tests.fixtures import webhooks
+from tests.fixtures.stubs import SCHEDULE, StubCalendar
 
 FIXTURES = Path(__file__).parent / "fixtures"
 V1 = (FIXTURES / "casa-roble.md").read_bytes()
 
 pytestmark = requires_postgres
 
-SPEC = (
-    "mon=09:00-17:00;tue=09:00-17:00;wed=09:00-17:00;thu=09:00-17:00;"
-    "fri=09:00-17:00;sat=10:00-17:00;sun=10:00-17:00"
-)
-
-
-class StubCalendar:
-    """A calendar whose answers each test controls."""
-
-    def __init__(self) -> None:
-        self.busy: list[Interval] = []
-        self.busy_outcome = CalendarOutcome.OK
-        self.create_outcome = CalendarOutcome.OK
-        self.created: list[str] = []
-        self.deleted: list[str] = []
-        self.busy_reads = 0
-
-    async def busy_between(self, start, end) -> BusyResult:  # noqa: ANN001
-        self.busy_reads += 1
-        if self.busy_outcome is not CalendarOutcome.OK:
-            return BusyResult(self.busy_outcome, [], "stubbed failure")
-        return BusyResult(CalendarOutcome.OK, list(self.busy))
-
-    async def is_free(self, slot: Interval) -> BusyResult:
-        result = await self.busy_between(slot.start, slot.end)
-        if not result.ok:
-            return result
-        if any(slot.overlaps(b) for b in result.busy):
-            return BusyResult(CalendarOutcome.CONFLICT, result.busy)
-        return result
-
-    async def create_event(
-        self, *, slot, summary, description, reference, location=None
-    ) -> EventResult:  # noqa: ANN001
-        if self.create_outcome is not CalendarOutcome.OK:
-            return EventResult(self.create_outcome, detail="stubbed")
-        self.created.append(reference)
-        return EventResult(CalendarOutcome.OK, event_id=f"evt-{reference}")
-
-    async def find_by_reference(self, reference) -> EventResult:  # noqa: ANN001
-        if reference in self.created:
-            return EventResult(CalendarOutcome.OK, event_id=f"evt-{reference}")
-        return EventResult(CalendarOutcome.OK)
-
-    async def delete_event(self, event_id) -> EventResult:  # noqa: ANN001
-        self.deleted.append(event_id)
-        return EventResult(CalendarOutcome.OK, event_id=event_id)
-
 
 def policy() -> AppointmentPolicy:
     return AppointmentPolicy(
-        schedule=WeeklySchedule.parse(SPEC, "America/Mexico_City"),
+        schedule=SCHEDULE,
         visit_minutes=90,
         horizon_days=8,
         max_candidates=6,
@@ -464,7 +417,7 @@ def test_the_confirmation_is_rendered_from_persisted_state() -> None:
     message = confirmation_message(
         property_name="Casa Roble",
         starts_at=datetime.fromisoformat("2026-08-10T09:00:00-06:00"),
-        schedule=WeeklySchedule.parse(SPEC, "America/Mexico_City"),
+        schedule=SCHEDULE,
     )
 
     assert message == (
@@ -479,7 +432,7 @@ def test_private_visit_address_is_disclosed_in_the_confirmation() -> None:
     message = confirmation_message(
         property_name="Casa Roble",
         starts_at=datetime.fromisoformat("2026-08-10T09:00:00-06:00"),
-        schedule=WeeklySchedule.parse(SPEC, "America/Mexico_City"),
+        schedule=SCHEDULE,
         visit_address="Calle Privada 123, Zapopan",
     )
 

@@ -17,7 +17,7 @@ import logging
 from datetime import date, datetime, time
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from realestate.config import get_settings
@@ -210,6 +210,11 @@ class SetPropertyStatusRequest(BaseModel):
 
     No UUID, actor identity, Lead identity, SQL, file path, or arbitrary status
     text. The actor comes from the trusted Telegram session (P-065).
+
+    Shape only. Whether a reason is required for the requested status is a
+    policy question, and ``AdministrationService.set_property_status`` answers
+    it with ``ambiguous`` plus the detail the Agent can act on — which a 422
+    here would flatten into the plugin's ``temporarily_unavailable``.
     """
 
     # ``use_enum_values`` keeps the validated field a plain string, so the
@@ -220,14 +225,6 @@ class SetPropertyStatusRequest(BaseModel):
     reference: str = Field(min_length=1, max_length=200)
     status: PropertyStatus
     inactive_reason: PropertyInactiveReason | None = None
-
-    @model_validator(mode="after")
-    def validate_reason(self) -> SetPropertyStatusRequest:
-        if self.status == PropertyStatus.INACTIVE.value and self.inactive_reason is None:
-            raise ValueError("inactive_reason is required when status is Inactive")
-        if self.status == PropertyStatus.ACTIVE.value and self.inactive_reason is not None:
-            raise ValueError("inactive_reason must be omitted when status is Active")
-        return self
 
 
 @router.post("/tools/set_property_status", dependencies=[Depends(require_plugin_token)])

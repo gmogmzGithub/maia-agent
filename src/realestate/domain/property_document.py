@@ -21,6 +21,10 @@ MAX_UPLOAD_BYTES = 100 * 1024
 FRONT_MATTER_DELIMITER = "---"
 SCHEMA_VERSION = 1
 
+# The renderer writes this section and ``narrative_sections`` reads it back, so
+# the heading is spelled once for both directions.
+DISTRIBUTION_HEADING = "Distribución y espacios"
+
 PROPERTY_KEY_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 PROPERTY_TYPES = ("House", "Apartment", "Land")
 OPERATIONS = ("Sale", "Rental")
@@ -61,10 +65,7 @@ REQUIRED_KEYS = (
     "state",
     "city",
     "neighborhood",
-    "half_bathrooms",
-    "parking_spaces",
     "maintenance_status",
-    "maintenance_description",
     "in_development",
 )
 
@@ -72,12 +73,17 @@ OPTIONAL_KEYS = (
     "public_location_notes",
     "bedrooms",
     "full_bathrooms",
+    "half_bathrooms",
+    "parking_spaces",
     "construction_m2",
     "land_m2",
+    "land_front_m",
+    "land_depth_m",
     "floors",
     "year_built",
     "maintenance_amount",
     "maintenance_currency",
+    "maintenance_description",
     "private_characteristics",
     "other_private_characteristic",
     "community_amenities",
@@ -138,14 +144,19 @@ _StrictLoader.add_constructor(
 )
 
 
-def _split_front_matter(text: str) -> tuple[str, str]:
+def split_front_matter(text: str) -> tuple[str, str]:
+    """Separate the YAML front matter from the Markdown body."""
     lines = text.splitlines()
     if not lines or lines[0].strip() != FRONT_MATTER_DELIMITER:
         raise ValidationError(
             ["The document must begin with YAML front matter delimited by ---."]
         )
     closing = next(
-        (index for index in range(1, len(lines)) if lines[index].strip() == "---"),
+        (
+            index
+            for index in range(1, len(lines))
+            if lines[index].strip() == FRONT_MATTER_DELIMITER
+        ),
         None,
     )
     if closing is None:
@@ -264,9 +275,6 @@ def _validate_metadata(metadata: dict[str, Any]) -> tuple[list[str], dict[str, A
     state = _required_text(metadata, "state", errors)
     city = _required_text(metadata, "city", errors)
     neighborhood = _required_text(metadata, "neighborhood", errors)
-    maintenance_description = _required_text(
-        metadata, "maintenance_description", errors
-    )
     public_notes = _optional_text(metadata, "public_location_notes", errors)
     other_private = _optional_text(metadata, "other_private_characteristic", errors)
     other_community = _optional_text(metadata, "other_community_amenity", errors)
@@ -287,19 +295,32 @@ def _validate_metadata(metadata: dict[str, Any]) -> tuple[list[str], dict[str, A
     price_amount = _decimal(
         metadata, "price_amount", errors, required=True, positive=True
     )
-    half_bathrooms = _integer(metadata, "half_bathrooms", errors, required=True)
-    parking_spaces = _integer(metadata, "parking_spaces", errors, required=True)
-
     residential = property_type in {"House", "Apartment"}
     bedrooms = _integer(metadata, "bedrooms", errors, required=residential)
     full_bathrooms = _integer(
         metadata, "full_bathrooms", errors, required=residential
     )
+    half_bathrooms = _integer(
+        metadata, "half_bathrooms", errors, required=residential
+    )
+    parking_spaces = _integer(
+        metadata, "parking_spaces", errors, required=residential
+    )
     if property_type == "Land":
-        if "bedrooms" in metadata:
-            errors.append("bedrooms: must be omitted for Land.")
-        if "full_bathrooms" in metadata:
-            errors.append("full_bathrooms: must be omitted for Land.")
+        land_forbidden = (
+            "bedrooms",
+            "full_bathrooms",
+            "half_bathrooms",
+            "parking_spaces",
+            "construction_m2",
+            "floors",
+            "year_built",
+            "private_characteristics",
+            "other_private_characteristic",
+        )
+        stale = [key for key in land_forbidden if key in metadata]
+        if stale:
+            errors.append(f"{', '.join(stale)}: must be omitted for Land.")
 
     construction_m2 = _decimal(
         metadata, "construction_m2", errors, required=False, positive=True
@@ -311,6 +332,28 @@ def _validate_metadata(metadata: dict[str, Any]) -> tuple[list[str], dict[str, A
         required=property_type == "Land",
         positive=True,
     )
+    land_front_m = _decimal(
+        metadata,
+        "land_front_m",
+        errors,
+        required=property_type == "Land",
+        positive=True,
+    )
+    land_depth_m = _decimal(
+        metadata,
+        "land_depth_m",
+        errors,
+        required=property_type == "Land",
+        positive=True,
+    )
+    if residential:
+        stale_land_edges = [
+            key for key in ("land_front_m", "land_depth_m") if key in metadata
+        ]
+        if stale_land_edges:
+            errors.append(
+                f"{', '.join(stale_land_edges)}: must be omitted unless property_type is Land."
+            )
     floors = _integer(metadata, "floors", errors, required=False, positive=True)
     year_built = _integer(metadata, "year_built", errors, required=False, positive=True)
     if year_built is not None and not 1000 <= year_built <= 2100:
@@ -325,15 +368,21 @@ def _validate_metadata(metadata: dict[str, Any]) -> tuple[list[str], dict[str, A
     )
     maintenance_currency = metadata.get("maintenance_currency")
     if maintenance_status == "Fee":
-        if maintenance_currency not in CURRENCIES:
-            errors.append(
-                f"maintenance_currency: must be one of {', '.join(CURRENCIES)}."
-            )
-    elif "maintenance_amount" in metadata or "maintenance_currency" in metadata:
-        errors.append(
-            "maintenance_amount and maintenance_currency must be omitted unless "
-            "maintenance_status is Fee."
+        _choice(metadata, "maintenance_currency", CURRENCIES, errors)
+        maintenance_description = _required_text(
+            metadata, "maintenance_description", errors
         )
+    else:
+        if "maintenance_amount" in metadata or "maintenance_currency" in metadata:
+            errors.append(
+                "maintenance_amount and maintenance_currency must be omitted unless "
+                "maintenance_status is Fee."
+            )
+        if "maintenance_description" in metadata:
+            errors.append(
+                "maintenance_description must be omitted unless maintenance_status is Fee."
+            )
+        maintenance_description = None
 
     in_development = metadata.get("in_development")
     if not isinstance(in_development, bool):
@@ -364,22 +413,26 @@ def _validate_metadata(metadata: dict[str, Any]) -> tuple[list[str], dict[str, A
         "state": state,
         "city": city,
         "neighborhood": neighborhood,
-        "half_bathrooms": half_bathrooms,
-        "parking_spaces": parking_spaces,
         "maintenance_status": maintenance_status,
-        "maintenance_description": maintenance_description,
         "in_development": in_development,
     }
     optional_values = {
         "public_location_notes": public_notes,
         "bedrooms": bedrooms,
         "full_bathrooms": full_bathrooms,
+        "half_bathrooms": half_bathrooms,
+        "parking_spaces": parking_spaces,
         "construction_m2": _plain_number(construction_m2),
         "land_m2": _plain_number(land_m2),
+        "land_front_m": _plain_number(land_front_m),
+        "land_depth_m": _plain_number(land_depth_m),
         "floors": floors,
         "year_built": year_built,
         "maintenance_amount": _plain_number(maintenance_amount),
         "maintenance_currency": maintenance_currency
+        if maintenance_status == "Fee"
+        else None,
+        "maintenance_description": maintenance_description
         if maintenance_status == "Fee"
         else None,
         "private_characteristics": private_characteristics or None,
@@ -435,7 +488,7 @@ def validate_upload(filename: str, content: bytes) -> PropertyDocument:
     except UnicodeDecodeError:
         raise ValidationError(["The file is not valid UTF-8."]) from None
 
-    front_matter, body = _split_front_matter(text)
+    front_matter, body = split_front_matter(text)
     try:
         parsed = yaml.load(front_matter, Loader=_StrictLoader)
     except yaml.YAMLError as exc:
@@ -461,6 +514,36 @@ def validate_upload(filename: str, content: bytes) -> PropertyDocument:
     )
 
 
+def _listed(normalized: dict[str, Any], list_key: str, other_key: str) -> list[str]:
+    """The chosen values for one optional list, plus its free-text companion."""
+    items = [str(value) for value in normalized.get(list_key, [])]
+    if other := normalized.get(other_key):
+        items.append(str(other))
+    return items
+
+
+def _bullets(heading: str, items: list[str]) -> list[str]:
+    if not items:
+        return []
+    return ["", f"## {heading}", ""] + [f"- {value}" for value in items]
+
+
+def narrative_sections(body: str, name: str) -> tuple[str, str]:
+    """Recover the two administrator-authored narratives from a rendered body.
+
+    The inverse of the first two sections ``render_property_document`` writes,
+    kept beside it so the heading cannot change in one direction only. A body
+    without the distribution heading yields all of its prose as the general
+    description and an empty distribution.
+    """
+    text = body.strip().removeprefix(f"# {name}\n").lstrip()
+    marker = f"\n## {DISTRIBUTION_HEADING}\n"
+    if marker not in text:
+        return text, ""
+    general, rest = text.split(marker, 1)
+    return general.strip(), rest.split("\n## ", 1)[0].strip()
+
+
 def render_property_document(
     metadata: dict[str, Any], *, general_description: str, distribution: str
 ) -> bytes:
@@ -478,25 +561,39 @@ def render_property_document(
         raise ValidationError(errors)
 
     sections = [f"# {normalized['name']}", "", description]
-    sections.extend(["", "## Distribución y espacios", "", layout])
+    sections.extend(["", f"## {DISTRIBUTION_HEADING}", "", layout])
 
-    characteristics = list(normalized.get("private_characteristics", []))
-    if other := normalized.get("other_private_characteristic"):
-        characteristics.append(str(other))
-    if characteristics:
+    if normalized["property_type"] == "Land":
         sections.extend(
-            ["", "## Características de la propiedad", ""]
-            + [f"- {value}" for value in characteristics]
+            [
+                "",
+                "## Medidas del terreno",
+                "",
+                f"- Superficie: {format_amount(normalized['land_m2'])} m²",
+                f"- Frente: {format_amount(normalized['land_front_m'])} m",
+                f"- Fondo: {format_amount(normalized['land_depth_m'])} m",
+            ]
         )
 
-    amenities = list(normalized.get("community_amenities", []))
-    if other := normalized.get("other_community_amenity"):
-        amenities.append(str(other))
-    if normalized["in_development"] and amenities:
-        sections.extend(
-            ["", "## Amenidades del coto", ""]
-            + [f"- {value}" for value in amenities]
+    sections.extend(
+        _bullets(
+            "Características de la propiedad",
+            _listed(
+                normalized,
+                "private_characteristics",
+                "other_private_characteristic",
+            ),
         )
+    )
+    amenities = _listed(
+        normalized, "community_amenities", "other_community_amenity"
+    )
+    sections.extend(
+        _bullets(
+            "Amenidades del coto",
+            amenities if normalized["in_development"] else [],
+        )
+    )
 
     sections.extend(["", "## Mantenimiento", "", _maintenance_text(normalized)])
     location = ", ".join(
@@ -520,17 +617,18 @@ def render_property_document(
 
 def _maintenance_text(metadata: dict[str, Any]) -> str:
     status = metadata["maintenance_status"]
-    description = metadata["maintenance_description"]
     if status == "Fee":
-        amount = _format_amount(metadata["maintenance_amount"])
+        description = metadata["maintenance_description"]
+        amount = format_amount(metadata["maintenance_amount"])
         currency = metadata["maintenance_currency"]
         return f"Cuota de mantenimiento: ${amount} {currency}. {description}"
     if status == "None":
-        return f"No tiene cuota de mantenimiento. {description}"
-    return f"La cuota de mantenimiento está pendiente de confirmación. {description}"
+        return "No tiene cuota de mantenimiento."
+    return "La cuota de mantenimiento está pendiente de confirmación."
 
 
-def _format_amount(value: int | float) -> str:
+def format_amount(value: int | float) -> str:
+    """Render a stored money amount the way the document itself renders it."""
     number = Decimal(str(value))
     if number == number.to_integral_value():
         return f"{int(number):,}"

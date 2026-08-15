@@ -303,17 +303,26 @@ def _stamp(moment: datetime, schedule: WeeklySchedule) -> str:
     return f"{_DAYS[local.weekday()]} {local.strftime('%d/%m')} a las {local.strftime('%H:%M')}"
 
 
+def _tail(visit: _Visit) -> list[str]:
+    """The private Visit Address, when there is one, then the reference to quote.
+
+    Both single-visit notices end this way; ``needs_review_body`` deliberately
+    withholds the address because the visit is not confirmed.
+    """
+    address = [f"Dirección: {visit.visit_address}"] if visit.visit_address else []
+    return [*address, f"Ref: {visit.appointment.reference}"]
+
+
 def booked_body(visit: _Visit, schedule: WeeklySchedule) -> str:
-    lines = [
+    return "\n".join(
+        [
             "🗓️ Nueva visita agendada",
             visit.property_name,
             _stamp(visit.appointment.starts_at, schedule),
             f"{visit.who} — {visit.phone}",
+            *_tail(visit),
         ]
-    if visit.visit_address:
-        lines.append(f"Dirección: {visit.visit_address}")
-    lines.append(f"Ref: {visit.appointment.reference}")
-    return "\n".join(lines)
+    )
 
 
 def needs_review_body(visit: _Visit, schedule: WeeklySchedule) -> str:
@@ -355,12 +364,11 @@ def digest_body(
 def reminder_body(visit: _Visit, now: datetime, schedule: WeeklySchedule) -> str:
     local = visit.appointment.starts_at.astimezone(schedule.zone)
     minutes = max(0, int((visit.appointment.starts_at - now).total_seconds() // 60))
-    lines = [
+    return "\n".join(
+        [
             f"⏰ Visita en {minutes} min — {local.strftime('%H:%M')}",
             visit.property_name,
             f"{visit.who} — {visit.phone}",
+            *_tail(visit),
         ]
-    if visit.visit_address:
-        lines.append(f"Dirección: {visit.visit_address}")
-    lines.append(f"Ref: {visit.appointment.reference}")
-    return "\n".join(lines)
+    )

@@ -26,7 +26,6 @@ from realestate.api import plugin as plugin_api
 from realestate.api import webhooks as webhook_api
 from realestate.api.plugin import SESSION_HEADER
 from realestate.app import create_app
-from realestate.channels.whatsapp.signature import SIGNATURE_HEADER, compute_signature
 from realestate.config import Settings
 from realestate.db.engine import Base, Database
 from realestate.db.models import (
@@ -79,14 +78,9 @@ async def _truncate(database: Database) -> None:
 
 
 async def _post_signed(client: httpx.AsyncClient, payload: dict) -> httpx.Response:
-    raw = webhooks.encode(payload)
-    return await client.post(
-        webhook_api.WEBHOOK_PATH,
-        content=raw,
-        headers={
-            SIGNATURE_HEADER: compute_signature(APP_SECRET, raw),
-            "Content-Type": "application/json",
-        },
+    """This suite's webhook path and app secret, bound to the shared signer."""
+    return await webhooks.post_signed(
+        client, webhook_api.WEBHOOK_PATH, payload, APP_SECRET
     )
 
 

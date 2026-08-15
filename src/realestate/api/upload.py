@@ -11,49 +11,16 @@ HTTPS tunnel; the webhook authenticates with Meta's signature instead.
 
 from __future__ import annotations
 
-import hmac
 import html
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Request, UploadFile
 from fastapi.responses import HTMLResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
-from realestate.config import get_settings
-from realestate.domain.properties import AcceptedUpload, PropertyService
+from realestate.api.developer import property_writer, require_developer
+from realestate.domain.properties import AcceptedUpload
 from realestate.domain.property_document import MAX_UPLOAD_BYTES, ValidationError
 
 router = APIRouter(tags=["upload"])
-_basic = HTTPBasic(auto_error=False)
-
-
-def require_developer(
-    credentials: HTTPBasicCredentials | None = Depends(_basic),
-) -> str:
-    settings = get_settings()
-    unauthorized = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Developer credentials required.",
-        headers={"WWW-Authenticate": "Basic"},
-    )
-    if not settings.developer_basic_user or not settings.developer_basic_password:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="DEVELOPER_BASIC_USER / DEVELOPER_BASIC_PASSWORD are not configured.",
-        )
-    if credentials is None:
-        raise unauthorized
-    # Compared as bytes: hmac.compare_digest raises TypeError on str inputs that
-    # are not pure ASCII, which would turn a bad credential into a 500.
-    user_ok = hmac.compare_digest(
-        credentials.username.encode("utf-8"), settings.developer_basic_user.encode("utf-8")
-    )
-    password_ok = hmac.compare_digest(
-        credentials.password.encode("utf-8"),
-        settings.developer_basic_password.encode("utf-8"),
-    )
-    if not (user_ok and password_ok):
-        raise unauthorized
-    return credentials.username
 
 
 def _page(message: str = "", errors: list[str] | None = None) -> str:
@@ -118,11 +85,7 @@ async def upload_document(
     content = await file.read()
 
     async with request.app.state.database.session_scope() as session:
-        service = PropertyService(
-            session,
-            request.app.state.artifacts,
-            getattr(request.app.state, "property_catalog", None),
-        )
+        service = property_writer(request, session)
         try:
             accepted: AcceptedUpload = await service.accept_upload(
                 filename=file.filename or "", content=content, actor_id=developer
