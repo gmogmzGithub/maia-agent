@@ -3,14 +3,21 @@
 These assertions are the automated guard against the single most likely way this
 project drifts: quietly adding an unreviewed product tool, or letting a Role see
 data outside its approved view.
+
+"Frozen" means a name enters the surface only with the stage that owns it and a
+reason that is written down. Stage 3 adds exactly two: an atomic reschedule,
+which cannot be expressed as a cancel followed by a booking without breaking the
+ADR-0037 guarantee that a failure preserves the original visit, and a human
+handoff, which is an operation with an alert and a deadline behind it rather
+than something the Model can do by writing a sentence (ADR-0029).
 """
 
 from __future__ import annotations
 
 import realestate_hermes_plugin as plugin
 
-# Exactly the Stage 0 contracts in TOOL-CONTRACTS.md.
-EXPECTED_FROZEN_SURFACE = {
+# The Stage 0 contracts in TOOL-CONTRACTS.md.
+STAGE_ZERO_SURFACE = {
     "get_property_information",
     "get_available_slots",
     "book_appointment",
@@ -21,17 +28,32 @@ EXPECTED_FROZEN_SURFACE = {
     "list_pending_admin_work",
 }
 
+# Stage 3 (ADR-0029, ADR-0037).
+STAGE_THREE_ADDITIONS = {
+    "reschedule_appointment",
+    "request_human_handoff",
+}
 
-def test_the_frozen_surface_is_exactly_the_stage_zero_contracts() -> None:
+EXPECTED_FROZEN_SURFACE = STAGE_ZERO_SURFACE | STAGE_THREE_ADDITIONS
+
+
+def test_the_frozen_surface_is_exactly_the_reviewed_contracts() -> None:
     assert set(plugin.FROZEN_TOOL_SURFACE) == EXPECTED_FROZEN_SURFACE
-    assert len(plugin.FROZEN_TOOL_SURFACE) == 8
+    assert len(plugin.FROZEN_TOOL_SURFACE) == 10
+
+
+def test_stage_three_added_exactly_two_names() -> None:
+    """A guard on the guard: the surface grew by two, and by which two."""
+    assert set(plugin.FROZEN_TOOL_SURFACE) - STAGE_ZERO_SURFACE == (
+        STAGE_THREE_ADDITIONS
+    )
 
 
 def test_no_tool_is_registered_outside_the_frozen_surface() -> None:
     assert set(plugin.REGISTERED_TOOLS) <= set(plugin.FROZEN_TOOL_SURFACE)
 
 
-def test_checkpoint_five_registers_the_complete_frozen_surface() -> None:
+def test_every_frozen_tool_is_registered() -> None:
     assert plugin.REGISTERED_TOOLS == (
         "get_property_information",
         "get_available_slots",
@@ -41,6 +63,8 @@ def test_checkpoint_five_registers_the_complete_frozen_surface() -> None:
         "list_properties",
         "resolve_pending_admin_work",
         "list_pending_admin_work",
+        "reschedule_appointment",
+        "request_human_handoff",
     )
 
 

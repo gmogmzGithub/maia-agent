@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from realestate.db.models import (
     AgentRole,
+    FactsReviewState,
     Property,
     PropertyDocumentVersion,
     PropertyInactiveReason,
@@ -31,6 +34,7 @@ from realestate.domain.property_document import (
     PropertyDocument,
     ValidationError,
     normalize_name,
+    split_front_matter,
     validate_upload,
 )
 
@@ -133,7 +137,11 @@ def customer_availability_message(reason: str | None) -> str:
     }.get(reason or "", "La propiedad no está disponible por el momento.")
 
 
-async def resolve_property(session: AsyncSession, reference: str) -> Property | None:
+async def resolve_property(
+    session: AsyncSession,
+    reference: str | None,
+    organization_id: uuid.UUID | None = None,
+) -> Property | None:
     """The Property a model-supplied *reference* names, or None.
 
     A readable key ('casa-roble') or the exact name ('Casa Roble'), compared by
@@ -145,17 +153,26 @@ async def resolve_property(session: AsyncSession, reference: str) -> Property | 
     if not candidate:
         return None
 
-    by_key = (
-        await session.execute(select(Property).where(Property.property_key == candidate))
-    ).scalar_one_or_none()
+    by_key_query = select(Property).where(Property.property_key == candidate)
+    if organization_id is not None:
+        by_key_query = by_key_query.where(
+            Property.organization_id == organization_id
+        )
+    by_key = (await session.execute(by_key_query)).scalar_one_or_none()
     if by_key is not None:
         return by_key
 
-    return (
-        await session.execute(
-            select(Property).where(Property.normalized_name == normalize_name(candidate))
+    by_name_query = select(Property).where(
+        Property.normalized_name == normalize_name(candidate)
+    )
+    if organization_id is not None:
+        by_name_query = by_name_query.where(
+            Property.organization_id == organization_id
         )
-    ).scalar_one_or_none()
+    matches = list(await session.scalars(by_name_query.limit(2)))
+    # Similar names are evidence to investigate, never permission to merge or
+    # guess a physical identity. A key remains unambiguous.
+    return matches[0] if len(matches) == 1 else None
 
 
 async def accepted_version(
@@ -232,7 +249,6 @@ class PropertyService:
                     "Choose a different name/key instead of adding a numeric suffix."
                 ]
             )
-        await self._reject_name_collision(document, existing)
         if existing is None:
             await self._reject_inventory_overflow()
 
@@ -250,6 +266,7 @@ class PropertyService:
                     document,
                     checksum,
                     artifact_path,
+                    actor_id=actor_id,
                     visit_address=visit_address,
                 )
             else:
@@ -297,22 +314,6 @@ class PropertyService:
         )
         return result.scalar_one_or_none()
 
-    async def _reject_name_collision(
-        self, document: PropertyDocument, existing: Property | None
-    ) -> None:
-        query = select(Property).where(Property.normalized_name == document.normalized_name)
-        if existing is not None:
-            query = query.where(Property.id != existing.id)
-        collision = (await self._session.execute(query)).scalar_one_or_none()
-        if collision is not None:
-            raise ValidationError(
-                [
-                    f"name: {document.name!r} matches the existing Property "
-                    f"{collision.name!r} ({collision.property_key}) after ignoring case, "
-                    "whitespace, and accents. Names must stay unique."
-                ]
-            )
-
     async def _reject_inventory_overflow(self) -> None:
         count = (
             await self._session.execute(select(func.count()).select_from(Property))
@@ -331,6 +332,7 @@ class PropertyService:
         checksum: str,
         artifact_path: Path,
         *,
+        actor_id: str,
         visit_address: str | None,
     ) -> AcceptedUpload:
         prop = Property(
@@ -342,6 +344,10 @@ class PropertyService:
             status=PropertyStatus.ACTIVE.value,
             inactive_reason=None,
             visit_address=(visit_address or "").strip() or None,
+            property_type=str(document.metadata["property_type"]),
+            physical_facts=_physical_facts(document.metadata),
+            facts_review_state=FactsReviewState.APPROVED.value,
+            provenance={"kind": "PropertyDocument", "checksum": checksum},
         )
         self._session.add(prop)
         await self._session.flush()  # INSERT ... RETURNING id
@@ -350,6 +356,25 @@ class PropertyService:
         self._session.add(version)
         await self._session.flush()
         prop.accepted_version_id = version.id
+
+        # Stage 4 compatibility cut: the accepted document is an input.  Its
+        # initial Offer is copied once into Product's catalog; subsequent
+        # commercial edits happen only through OfferManagement.
+        from realestate.domain.catalog.administration import (
+            CatalogAdministration,
+            ImportLegacyDocument,
+        )
+        from realestate.domain.commercial.actors import Actor
+
+        await CatalogAdministration(self._session).record(
+            Actor.product(prop.organization_id, f"PropertyDocument:{actor_id}"),
+            ImportLegacyDocument(
+                property_uuid=prop.id,
+                document_version_id=version.id,
+                metadata=document.metadata,
+                command_key=f"legacy-catalog:{version.id}",
+            ),
+        )
 
         return AcceptedUpload(
             property_key=prop.property_key,
@@ -388,6 +413,14 @@ class PropertyService:
         prop.accepted_version_id = version.id
         prop.name = document.name
         prop.normalized_name = document.normalized_name
+        prop.property_type = str(document.metadata["property_type"])
+        prop.physical_facts = _physical_facts(document.metadata)
+        prop.facts_review_state = FactsReviewState.APPROVED.value
+        prop.provenance = {
+            "kind": "PropertyDocument",
+            "version_id": str(version.id),
+            "checksum": checksum,
+        }
         if visit_address is not None:
             prop.visit_address = visit_address.strip() or None
 
@@ -466,18 +499,54 @@ class PropertyService:
         if prop is None:
             return {"result": "not_found"}
 
-        # An Inactive Property discloses no promotional content to the Sales
-        # Role. The Administrative Role may inspect either status.
-        if role is AgentRole.SALES and prop.status == PropertyStatus.INACTIVE.value:
-            return {
-                "result": "unavailable",
-                "property_id": prop.property_key,
-                "name": prop.name,
-                "status": prop.status,
-                "customer_message": customer_availability_message(
-                    prop.inactive_reason
-                ),
-            }
+        authorized = None
+        if role is AgentRole.SALES:
+            # Temporary fail-closed compatibility while legacy status remains
+            # a read projection. Production writes update both in one
+            # transaction; disagreement must never broaden disclosure.
+            if prop.status == PropertyStatus.INACTIVE.value:
+                return {
+                    "result": "unavailable",
+                    "property_id": prop.property_key,
+                    "name": prop.name,
+                    "status": prop.status,
+                    "customer_message": customer_availability_message(
+                        prop.inactive_reason
+                    ),
+                }
+            # The Property Document is provenance, not commercial authority.
+            # Resolve the exact source Listing and make customer disclosure pass
+            # the same eligibility gate used by every other catalog projection.
+            from realestate.domain.catalog.eligibility import EligibilityPurpose
+            from realestate.domain.catalog.projection import (
+                AuthorizedListingQuery,
+                CatalogProjection,
+                ListingNotEligible,
+            )
+            from realestate.domain.commercial.actors import Actor, NotFound
+
+            organization_id = await self._organization_id()
+            try:
+                authorized = await CatalogProjection(
+                    self._session,
+                    Actor.product(organization_id, "PropertyInformation"),
+                ).get_authorized_listing(
+                    AuthorizedListingQuery(
+                        purpose=EligibilityPurpose.AGENT_DISCLOSURE,
+                        at=datetime.now(tz=UTC),
+                        property_uuid=prop.id,
+                    )
+                )
+            except (ListingNotEligible, NotFound):
+                return {
+                    "result": "unavailable",
+                    "property_id": prop.property_key,
+                    "name": prop.name,
+                    "status": prop.status,
+                    "customer_message": customer_availability_message(
+                        prop.inactive_reason
+                    ),
+                }
 
         version = await self._accepted_version(prop)
         if version is None:
@@ -491,6 +560,10 @@ class PropertyService:
             # rather than a stale one.
             return {"result": "temporarily_unavailable"}
 
+        rendered = markdown.decode("utf-8")
+        if authorized is not None:
+            _, narrative = split_front_matter(rendered)
+            rendered = _catalog_document(authorized, narrative)
         return {
             "result": "found",
             "property_id": prop.property_key,
@@ -498,11 +571,71 @@ class PropertyService:
             "status": prop.status,
             "inactive_reason": prop.inactive_reason,
             "document_version": version.version,
-            "document_markdown": markdown.decode("utf-8"),
+            "document_markdown": rendered,
         }
 
     async def _resolve(self, reference: str) -> Property | None:
-        return await resolve_property(self._session, reference)
+        return await resolve_property(
+            self._session, reference, await self._organization_id()
+        )
 
     async def _accepted_version(self, prop: Property) -> PropertyDocumentVersion | None:
         return await accepted_version(self._session, prop)
+
+
+def _physical_facts(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Facts copied from a document without its commercial Offer fields."""
+    excluded = {
+        "schema_version",
+        "property_id",
+        "name",
+        "operation",
+        "price_amount",
+        "price_currency",
+    }
+    return {key: value for key, value in metadata.items() if key not in excluded}
+
+
+def _catalog_document(listing: Any, narrative: str) -> str:
+    """Compatibility Markdown projected from catalog truth, never legacy price."""
+    offers = []
+    for offer in listing.offers:
+        price: str | None = (
+            str(offer.price_amount) if offer.price_amount is not None else None
+        )
+        offers.append(
+            {
+                "operation": offer.operation,
+                "price": price,
+                "currency": offer.price_currency,
+                "price_visibility": offer.price_visibility,
+                "consultation_copy": offer.consultation_copy,
+                "availability": offer.availability,
+                "terms": offer.terms,
+            }
+        )
+    facts = json.dumps(
+        {
+            "physical": listing.physical_facts,
+            "publication": listing.listing_facts,
+        },
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+        default=str,
+    )
+    offer_json = json.dumps(
+        offers, ensure_ascii=False, indent=2, sort_keys=True, default=str
+    )
+    return (
+        f"# {listing.title}\n\n"
+        f"Publicación autorizada: `{listing.listing_key}` · {listing.source_name}.\n\n"
+        f"Atribución: {listing.attribution}\n\n"
+        f"Disponibilidad: {listing.availability}\n\n"
+        "## Ofertas autorizadas\n\n"
+        f"```json\n{offer_json}\n```\n\n"
+        "## Datos aprobados\n\n"
+        f"```json\n{facts}\n```\n\n"
+        "## Narrativa del documento de procedencia\n\n"
+        f"{narrative.strip()}\n"
+    )

@@ -304,7 +304,16 @@ async def reset_property_inventory(session) -> None:  # noqa: ANN001
     """
     from sqlalchemy import text
 
-    for table in ("appointments", "availability_snapshots", "properties"):
+    for table in (
+        "appointments",
+        "availability_snapshots",
+        "listing_media",
+        "listing_offers",
+        "catalog_listings",
+        "properties",
+        "unit_models",
+        "developments",
+    ):
         await session.execute(text(f"DELETE FROM {table}"))
 
 
@@ -327,3 +336,24 @@ async def age_pending_inbox(database) -> None:  # noqa: ANN001
                 row.persisted_at = row.persisted_at - timedelta(seconds=10)
                 row.next_attempt_at = None
         await session.commit()
+
+
+@pytest.fixture
+async def operation(tmp_path: Path):
+    """A Stage 3 operation: a provisioned team, calendars, one Property.
+
+    Every Stage 3 suite needs exactly this and used to carry its own copy, so a
+    change to the setup — another table to reset, a second artifacts root — meant
+    editing seven files with nothing failing if one was missed. A pytest fixture
+    in ``conftest`` is inherited, so the suites simply ask for ``operation``.
+    """
+    from realestate.db.engine import Database
+    from tests.fixtures import visits
+
+    database = Database(DATABASE_URL)
+    async with database.session_scope() as session:
+        await visits.reset(session)
+        built = await visits.build(session, tmp_path / "artifacts")
+        await session.commit()
+    yield database, built
+    await database.dispose()

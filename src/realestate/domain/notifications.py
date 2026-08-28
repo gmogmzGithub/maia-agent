@@ -33,7 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from realestate.db.models import Appointment, AppointmentStatus, Lead, Property
 from realestate.domain.availability import WeeklySchedule
-from realestate.domain.copy import SPANISH_DAYS as _DAYS
+from realestate.domain.copy import SPANISH_DAYS, visit_stamp
 
 BOOKED = "Booked"
 NEEDS_REVIEW = "NeedsReview"
@@ -299,8 +299,7 @@ class BrokerNotificationService:
 
 
 def _stamp(moment: datetime, schedule: WeeklySchedule) -> str:
-    local = moment.astimezone(schedule.zone)
-    return f"{_DAYS[local.weekday()]} {local.strftime('%d/%m')} a las {local.strftime('%H:%M')}"
+    return visit_stamp(moment, schedule.zone)
 
 
 def _tail(visit: _Visit) -> list[str]:
@@ -346,7 +345,7 @@ def digest_body(
     visits: list[_Visit], local_now: datetime, schedule: WeeklySchedule
 ) -> str:
     header = (
-        f"📋 Visitas de hoy, {_DAYS[local_now.weekday()]} "
+        f"📋 Visitas de hoy, {SPANISH_DAYS[local_now.weekday()]} "
         f"{local_now.strftime('%d/%m')}:"
     )
     lines = [header]

@@ -68,6 +68,25 @@ class Settings(BaseSettings):
         default="", alias="ORGANIZATION_DEFAULT_ADVISOR_LOGIN"
     )
 
+    # Per-Advisor operational configuration, non-secret, reconciled into the
+    # member table at startup exactly as the role lists are (ADR-0048).
+    #
+    # ``login=calendar-id`` pairs. An Advisor with no calendar has no
+    # authoritative availability and cannot receive a visit — a refusal, never
+    # an empty week treated as free. An Administrator can also set this per
+    # person from the team surface, and configuration never clears what they
+    # set.
+    organization_member_calendars: str = Field(
+        default="", alias="ORGANIZATION_MEMBER_CALENDARS"
+    )
+    # ``login=telegram-chat-id`` pairs, for the immediate operational alerts a
+    # human handoff raises. Optional: without one the alert is still durable and
+    # visible in the CRM, and the Administrators are told it could not be
+    # delivered.
+    organization_member_telegram_ids: str = Field(
+        default="", alias="ORGANIZATION_MEMBER_TELEGRAM_IDS"
+    )
+
     @property
     def directory_plan(self) -> DirectoryPlan:
         """The configured team, validated. Raises on an inconsistent plan."""
@@ -75,6 +94,12 @@ class Settings(BaseSettings):
             administrators=self.organization_admin_logins,
             advisors=self.organization_advisor_logins,
             default_advisor=self.organization_default_advisor_login,
+            calendars=self.organization_member_calendars,
+            telegram_ids=self.organization_member_telegram_ids,
+            # Stage 0's single calendar becomes the default Advisor's, so an
+            # existing local setup keeps booking instead of quietly losing its
+            # authority the moment appointments gained an owner.
+            fallback_calendar_id=self.google_calendar_id,
         )
 
     # --- Property Document ingestion (P-045, P-051) --------------------------
@@ -91,6 +116,14 @@ class Settings(BaseSettings):
     # Public-safe, source-controlled current copies for human editing.
     property_catalog_root: str = Field(
         default="src/properties", alias="PROPERTY_CATALOG_ROOT"
+    )
+    # Approved Listing media and its derived local cache. These are storage
+    # locations, not credentials; Compose mounts both under one durable volume.
+    listing_media_root: str = Field(
+        default="var/listing-media/originals", alias="LISTING_MEDIA_ROOT"
+    )
+    listing_media_cache_root: str = Field(
+        default="var/listing-media/cache", alias="LISTING_MEDIA_CACHE_ROOT"
     )
 
     # --- Meta WhatsApp Cloud API (P-021, TC-003) -----------------------------
@@ -123,6 +156,15 @@ class Settings(BaseSettings):
     booking_horizon_days: int = Field(default=8, alias="BOOKING_HORIZON_DAYS")
     # One availability result returns at most this many candidates (P-059).
     max_slot_candidates: int = Field(default=6, alias="MAX_SLOT_CANDIDATES")
+
+    # --- Visit reminders (SAN-036 pending) -----------------------------------
+    # The local hour the day-of reminder is due. Configuration rather than a
+    # number chosen in code, because when a customer should be messaged is
+    # Santiago's operational decision. Dispatch stays blocked until he
+    # validates the cadence — see domain/scheduling/reminders.py.
+    appointment_day_of_reminder_hour: int = Field(
+        default=9, alias="APPOINTMENT_DAY_OF_REMINDER_HOUR"
+    )
 
     # --- Broker notifications (amendment 2) ----------------------------------
     broker_digest_hour: int = Field(default=8, alias="BROKER_DIGEST_HOUR")

@@ -140,7 +140,7 @@ async def test_a_malformed_replacement_leaves_the_accepted_version_intact(wired)
         current = await service.get_property_information("casa-roble", AgentRole.SALES)
 
     assert current["document_version"] == 1
-    assert "price_amount: 3000000" in current["document_markdown"]
+    assert '"price": "3000000.00"' in current["document_markdown"]
 
 
 async def test_a_valid_replacement_becomes_version_two(app_client) -> None:

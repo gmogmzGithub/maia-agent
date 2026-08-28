@@ -83,11 +83,9 @@ async def test_a_first_valid_upload_creates_an_active_property(service) -> None:
 async def test_the_accepted_bytes_are_stored_unchanged(service, artifacts) -> None:
     await service.accept_upload("casa-roble.md", V1, actor_id="developer")
 
-    result = await service.get_property_information("casa-roble", AgentRole.SALES)
-
-    # The uploaded Markdown is never rewritten to carry the generated UUID.
-    assert result["document_markdown"].encode("utf-8") == V1
-    assert "property_id: casa-roble" in result["document_markdown"]
+    # Provenance stays byte-exact even though Sales receives a projection whose
+    # price and operation come from the authoritative Offer.
+    assert next(artifacts._root.rglob("*.md")).read_bytes() == V1
 
 
 async def test_the_uuid_is_never_written_into_the_document(service, database) -> None:
@@ -133,7 +131,8 @@ async def test_a_valid_replacement_adds_a_version_and_becomes_current(service) -
 
     result = await service.get_property_information("casa-roble", AgentRole.SALES)
     assert result["document_version"] == 2
-    assert "price_amount: 3200000" in result["document_markdown"]
+    assert '"price": "3000000.00"' in result["document_markdown"]
+    assert "Casa sintética renovada" in result["document_markdown"]
 
 
 async def test_earlier_versions_remain_immutable(service, database) -> None:
@@ -175,7 +174,7 @@ async def test_an_invalid_replacement_changes_nothing(service) -> None:
 
     result = await service.get_property_information("casa-roble", AgentRole.SALES)
     assert result["document_version"] == 1
-    assert "price_amount: 3000000" in result["document_markdown"]
+    assert '"price": "3000000.00"' in result["document_markdown"]
 
 
 # --- Identity ---------------------------------------------------------------
@@ -191,15 +190,21 @@ async def test_a_different_property_key_creates_a_different_property(service) ->
     assert accepted.property_key == "casa-encino"
 
 
-async def test_a_colliding_name_is_rejected_atomically(service) -> None:
+async def test_similar_physical_names_remain_separate_and_name_lookup_is_ambiguous(
+    service,
+) -> None:
     await service.accept_upload("casa-roble.md", V1, actor_id="developer")
     colliding = renamed(rekeyed(V1, "casa-encino"), "cása  roble")
 
-    with pytest.raises(ValidationError) as caught:
-        await service.accept_upload("casa-encino.md", colliding, actor_id="developer")
+    accepted = await service.accept_upload(
+        "casa-encino.md", colliding, actor_id="developer"
+    )
 
-    assert "unique" in str(caught.value)
+    assert accepted.property_key == "casa-encino"
     assert (await service.get_property_information("casa-encino", AgentRole.SALES))[
+        "result"
+    ] == "found"
+    assert (await service.get_property_information("Casa Roble", AgentRole.SALES))[
         "result"
     ] == "not_found"
 

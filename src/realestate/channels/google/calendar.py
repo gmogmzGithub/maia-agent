@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from collections.abc import Callable
 from typing import Any
 from datetime import datetime
 from enum import Enum
@@ -23,6 +24,7 @@ from realestate.domain.availability import Interval
 logger = logging.getLogger(__name__)
 
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
+DEFAULT_TIMEOUT_SECONDS = 15.0
 
 
 class CalendarOutcome(str, Enum):
@@ -55,10 +57,23 @@ class EventResult:
 
 
 class GoogleCalendar:
-    def __init__(self, credentials_path: str, calendar_id: str) -> None:
+    def __init__(
+        self,
+        credentials_path: str,
+        calendar_id: str,
+        *,
+        timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    ) -> None:
         self._credentials_path = credentials_path
         self._calendar_id = calendar_id
+        self._timeout_seconds = timeout_seconds
         self._service = None
+
+    async def _run(self, call: Callable[[], Any]) -> Any:
+        """Bound one blocking Google SDK call without cancelling its ambiguity."""
+        return await asyncio.wait_for(
+            asyncio.to_thread(call), timeout=self._timeout_seconds
+        )
 
     @property
     def configured(self) -> bool:
@@ -96,7 +111,7 @@ class GoogleCalendar:
             return f"{calendar.get('summary')} ({calendar.get('timeZone')})"
 
         try:
-            return {"status": "ok", "detail": await asyncio.to_thread(probe)}
+            return {"status": "ok", "detail": await self._run(probe)}
         except Exception as exc:  # noqa: BLE001
             return {"status": "invalid", "detail": f"{type(exc).__name__}: {exc}"}
 
@@ -124,7 +139,7 @@ class GoogleCalendar:
             ]
 
         try:
-            return BusyResult(CalendarOutcome.OK, await asyncio.to_thread(query))
+            return BusyResult(CalendarOutcome.OK, await self._run(query))
         except Exception as exc:  # noqa: BLE001
             # A failed read is never treated as "nothing is busy": that would
             # offer times the Broker is not actually free.
@@ -178,7 +193,7 @@ class GoogleCalendar:
             return str(event_id)
 
         try:
-            event_id = await asyncio.to_thread(insert)
+            event_id = await self._run(insert)
         except Exception as exc:  # noqa: BLE001
             # This cannot distinguish "rejected" from "accepted but the answer
             # was lost", so it is inconclusive by construction. The caller turns
@@ -217,7 +232,7 @@ class GoogleCalendar:
             return items[0] if items else None
 
         try:
-            found = await asyncio.to_thread(search)
+            found = await self._run(search)
         except Exception as exc:  # noqa: BLE001
             return EventResult(
                 CalendarOutcome.UNKNOWN, detail=f"{type(exc).__name__}: {exc}"
@@ -266,7 +281,7 @@ class GoogleCalendar:
                 raise
 
         try:
-            await asyncio.to_thread(delete)
+            await self._run(delete)
         except Exception as exc:  # noqa: BLE001
             logger.error("Calendar event deletion was inconclusive: %s", exc)
             return EventResult(

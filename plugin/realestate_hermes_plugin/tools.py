@@ -202,3 +202,19 @@ def cancel_appointment(args: dict[str, Any], **kwargs: Any) -> str:
     if (reference := _text(args, "reference")) is not None:
         body["reference"] = reference
     return _forward("cancel_appointment", body, kwargs)
+
+
+def reschedule_appointment(args: dict[str, Any], **kwargs: Any) -> str:
+    body: dict[str, Any] = {"start": _text(args, "start")}
+    reference = _text(args, "reference")
+    if reference:
+        body["reference"] = reference
+    return _forward("reschedule_appointment", body, kwargs)
+
+
+def request_human_handoff(args: dict[str, Any], **kwargs: Any) -> str:
+    body: dict[str, Any] = {}
+    reason = _text(args, "reason")
+    if reason:
+        body["reason"] = reason
+    return _forward("request_human_handoff", body, kwargs)

@@ -19,12 +19,14 @@ from realestate.channels.whatsapp.payload import parse_webhook
 from realestate.db.engine import Database
 from realestate.db.models import (
     Appointment,
+    CatalogListing,
     AppointmentStatus,
     AvailabilitySnapshot,
     Conversation,
     InboxMessage,
     Lead,
     LeadEngagementCycle,
+    Organization,
     Property,
     PropertyStatus,
     OutboxMessage,
@@ -32,9 +34,10 @@ from realestate.db.models import (
 from realestate.domain.appointments import AppointmentPolicy, AppointmentService
 from realestate.domain.availability import Interval
 from realestate.domain.inbox import InboxService
+from realestate.domain.scheduling.appointments import Appointments
 from realestate.domain.properties import ArtifactStore, PropertyService
-from tests.conftest import DATABASE_URL, requires_postgres
-from tests.fixtures import webhooks
+from tests.conftest import DATABASE_URL, requires_postgres, reset_property_inventory
+from tests.fixtures import commercial, webhooks
 from tests.fixtures.stubs import SCHEDULE, StubCalendar
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -49,6 +52,7 @@ def policy() -> AppointmentPolicy:
         visit_minutes=90,
         horizon_days=8,
         max_candidates=6,
+        day_of_reminder_hour=9,
     )
 
 
@@ -56,13 +60,17 @@ def policy() -> AppointmentPolicy:
 async def booking(tmp_path: Path):
     database = Database(DATABASE_URL)
     async with database.session_scope() as session:
-        for model in (Appointment, AvailabilitySnapshot, Conversation,
-                      LeadEngagementCycle, Lead, Property):
+        await reset_property_inventory(session)
+        for model in (Conversation, LeadEngagementCycle, Lead):
             await session.execute(delete(model))
         await session.commit()
 
     artifacts = ArtifactStore(tmp_path / "artifacts")
     async with database.session_scope() as session:
+        # Before the first message: intake assigns the Opportunity as it opens
+        # it, and Stage 3 will not confirm a visit without a Responsible Advisor
+        # who has an authoritative calendar.
+        await commercial.provision_bookable_team(session)
         await PropertyService(session, artifacts).accept_upload(
             "casa-roble.md", V1, actor_id="developer"
         )
@@ -126,6 +134,36 @@ async def cancel(database, service, **kwargs) -> dict:
 
 
 # --- Offering slots -----------------------------------------------------------
+
+
+async def test_availability_hides_another_organizations_property(booking) -> None:
+    database, _calendar, service = booking
+    suffix = datetime.now(tz=UTC).strftime("%Y%m%d%H%M%S%f")
+    reference = f"foreign-availability-{suffix}"
+    conversation = await conversation_of(database)
+    async with database.session_scope() as session:
+        other = Organization(
+            slug=f"availability-{suffix}", display_name="Otra organización"
+        )
+        session.add(other)
+        await session.flush()
+        session.add(
+            Property(
+                organization_id=other.id,
+                property_key=reference,
+                name="Propiedad ajena",
+                normalized_name=f"propiedad ajena disponibilidad {suffix}",
+                status=PropertyStatus.ACTIVE.value,
+            )
+        )
+        conversation = await session.merge(conversation)
+        result = await (await service(session)).available_slots(
+            conversation=conversation,
+            reference=reference,
+        )
+        await session.rollback()
+
+    assert result == {"result": "not_found"}
 
 
 async def test_the_first_call_creates_a_snapshot_and_returns_candidates(booking) -> None:
@@ -320,6 +358,21 @@ async def test_a_property_deactivated_after_the_offer_blocks_the_booking(booking
         assert (await session.execute(select(Appointment))).scalars().all() == []
 
 
+async def test_catalog_authority_gate_blocks_new_slots_even_if_legacy_is_active(
+    booking,
+) -> None:
+    database, _calendar, service = booking
+    async with database.session_scope() as session:
+        listing = (await session.scalars(select(CatalogListing))).one()
+        listing.authority = "Revoked"
+        listing.authority_evidence = "Revocación de prueba"
+        await session.commit()
+
+    result = await offer(database, service)
+
+    assert result["result"] == "property_inactive"
+
+
 async def test_a_slot_taken_between_offer_and_booking_yields_alternatives(booking) -> None:
     # Step 4: the live exact-interval recheck (P-062).
     database, calendar, service = booking
@@ -483,7 +536,9 @@ async def test_a_calendar_that_cannot_be_read_at_booking_time_is_not_a_rejection
     result = await book(database, service, start)
 
     assert result["result"] == "temporarily_unavailable"
-    assert result["detail"] == "stubbed failure"
+    # A stable reason code rather than the provider's message: the code is what
+    # the operator log and the Model's guide are written against.
+    assert result["detail"] == "CalendarUnreadable"
     async with database.session_scope() as session:
         assert (await session.execute(select(Appointment))).scalars().all() == []
 
@@ -501,10 +556,13 @@ async def test_the_loser_of_an_idempotency_race_reports_the_winners_outcome(
     database, calendar, service = booking
     start = (await offer(database, service))["candidates"][0]["start"]
 
-    original = AppointmentService._persist_attempt
+    original = Appointments._persist_attempt
     competitor: dict[str, str] = {}
 
-    async def another_worker_wins_first(self, conversation, prop, slot, attendee_name):  # noqa: ANN001, ANN202
+    async def another_worker_wins_first(self, **kwargs):  # noqa: ANN001, ANN003, ANN202
+        conversation = kwargs["conversation"]
+        prop = kwargs["prop"]
+        slot = kwargs["slot"]
         async with database.session_scope() as other:
             row = Appointment(
                 organization_id=conversation.organization_id,
@@ -522,11 +580,9 @@ async def test_the_loser_of_an_idempotency_race_reports_the_winners_outcome(
             other.add(row)
             await other.commit()
             competitor["reference"] = row.reference
-        return await original(self, conversation, prop, slot, attendee_name)
+        return await original(self, **kwargs)
 
-    monkeypatch.setattr(
-        AppointmentService, "_persist_attempt", another_worker_wins_first
-    )
+    monkeypatch.setattr(Appointments, "_persist_attempt", another_worker_wins_first)
 
     result = await book(database, service, start)
 

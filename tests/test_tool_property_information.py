@@ -160,9 +160,12 @@ async def test_the_found_result_matches_the_contract(wired) -> None:
     assert body["name"] == "Casa Roble"
     assert body["status"] == "Active"
     assert body["document_version"] == 1
-    assert body["document_markdown"].startswith("---\nschema_version: 1\nproperty_id: casa-roble")
-    # The complete document, not a chunk or summary (P-053).
-    assert body["document_markdown"].encode("utf-8") == V1
+    assert body["document_markdown"].startswith("# Casa Roble")
+    assert "Publicación autorizada: `casa-roble-legacy`" in body["document_markdown"]
+    assert '"price": "3000000.00"' in body["document_markdown"]
+    # The full approved narrative remains, while commercial fields are
+    # projected from Offer rather than copied from legacy front matter.
+    assert "Alberca" in body["document_markdown"]
 
 
 async def test_the_name_resolves_as_well_as_the_key(wired) -> None:
@@ -220,7 +223,8 @@ async def test_a_replacement_is_visible_without_restarting_anything(wired) -> No
 
     assert before["document_version"] == 1
     assert after["document_version"] == 2
-    assert "price_amount: 3200000" in after["document_markdown"]
+    assert '"price": "3000000.00"' in after["document_markdown"]
+    assert "Casa sintética renovada" in after["document_markdown"]
     # Nothing about the tool schema, the session, or the system prompt changed.
 
 

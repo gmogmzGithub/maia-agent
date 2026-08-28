@@ -22,13 +22,15 @@ from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from realestate.db.models import (
     LAREVIA_SLUG,
+    MemberProvisioning,
     MemberRole,
     Organization,
     OrganizationMember,
@@ -63,6 +65,27 @@ def parse_logins(raw: str) -> tuple[str, ...]:
     return tuple(seen)
 
 
+def parse_assignments(raw: str) -> dict[str, str]:
+    """Parse ``login=value,login2=value2`` into a mapping.
+
+    Used for the two per-member operational values configuration can supply: an
+    Advisor's authoritative calendar and where their immediate alerts go. A
+    malformed entry is skipped rather than fatal — an unparsable calendar id
+    leaves that Advisor unbookable, which fails closed, whereas refusing to
+    start would take the whole operation down over one typo.
+    """
+    mapping: dict[str, str] = {}
+    for part in raw.split(","):
+        chunk = part.strip()
+        if not chunk or "=" not in chunk:
+            continue
+        login, _, value = chunk.partition("=")
+        login, value = login.strip(), value.strip()
+        if login and value:
+            mapping[login] = value
+    return mapping
+
+
 @dataclass(frozen=True)
 class DirectoryPlan:
     """The intended team, already validated as internally consistent."""
@@ -70,6 +93,14 @@ class DirectoryPlan:
     administrators: tuple[str, ...]
     advisors: tuple[str, ...]
     default_advisor: str | None
+    #: Per-Advisor authoritative calendars, by login (ADR-0048).
+    calendars: Mapping[str, str] = field(default_factory=dict)
+    #: Where each member's immediate operational alerts go, by login.
+    telegram_ids: Mapping[str, str] = field(default_factory=dict)
+    #: The single calendar Stage 0 configured. Applied to the default Advisor
+    #: when no per-login mapping names them, so an existing local setup keeps
+    #: working instead of silently becoming unbookable.
+    fallback_calendar_id: str | None = None
 
     @classmethod
     def from_configuration(
@@ -78,6 +109,9 @@ class DirectoryPlan:
         administrators: str,
         advisors: str,
         default_advisor: str,
+        calendars: str = "",
+        telegram_ids: str = "",
+        fallback_calendar_id: str = "",
     ) -> DirectoryPlan:
         admin_logins = parse_logins(administrators)
         advisor_logins = parse_logins(advisors)
@@ -98,7 +132,19 @@ class DirectoryPlan:
             administrators=admin_logins,
             advisors=advisor_logins,
             default_advisor=default,
+            calendars=parse_assignments(calendars),
+            telegram_ids=parse_assignments(telegram_ids),
+            fallback_calendar_id=fallback_calendar_id.strip() or None,
         )
+
+    def calendar_for(self, login: str) -> str | None:
+        """The authoritative calendar this login should have, if configured."""
+        explicit = self.calendars.get(login)
+        if explicit:
+            return explicit
+        if login == self.default_advisor and self.fallback_calendar_id:
+            return self.fallback_calendar_id
+        return None
 
     @property
     def logins(self) -> frozenset[str]:
@@ -210,15 +256,28 @@ class OrganizationDirectory:
         # RESTRICT foreign key would refuse anyway.
         for login, held in existing.items():
             departed = login not in plan.logins
-            if departed and held.active:
+            configured = held.provisioned_by == MemberProvisioning.CONFIGURATION.value
+            # Only configuration's own rows are governed by configuration
+            # (ADR-0047). Deactivating an Administrator-created Advisor because
+            # they were never in .env would delete the team on the next restart,
+            # which is exactly the failure the provenance column prevents.
+            if departed and configured and held.active:
                 held.active = False
                 deactivated.append(login)
-            if held.is_default_advisor and (departed or login != plan.default_advisor):
-                held.is_default_advisor = False
+            if held.is_default_advisor and (
+                (departed and configured) or login != plan.default_advisor
+            ):
+                # The default Advisor *is* configuration's decision even for a
+                # row an Administrator created, because the fallback is named
+                # in one place and the partial unique index permits one.
+                if plan.default_advisor is not None or (departed and configured):
+                    held.is_default_advisor = False
 
         for login in sorted(plan.logins):
             role = plan.role_of(login)
             advises = plan.advises(login)
+            calendar_id = plan.calendar_for(login)
+            telegram_chat_id = plan.telegram_ids.get(login)
             current = existing.get(login)
             if current is None:
                 self._session.add(
@@ -230,10 +289,14 @@ class OrganizationDirectory:
                         advises=advises,
                         is_default_advisor=False,
                         active=True,
+                        provisioned_by=MemberProvisioning.CONFIGURATION.value,
+                        calendar_id=calendar_id,
+                        telegram_chat_id=telegram_chat_id,
                     )
                 )
                 created.append(login)
                 continue
+            changed = False
             if (current.role, current.advises, current.active) != (
                 role.value,
                 advises,
@@ -242,6 +305,25 @@ class OrganizationDirectory:
                 current.role = role.value
                 current.advises = advises
                 current.active = True
+                changed = True
+            # A login named in configuration is configuration's to govern from
+            # now on, whoever created the row first.
+            if current.provisioned_by != MemberProvisioning.CONFIGURATION.value:
+                current.provisioned_by = MemberProvisioning.CONFIGURATION.value
+                changed = True
+            # Configuration only ever *supplies* these two; it never clears a
+            # value an Administrator set through the team surface, because the
+            # absence of an environment variable is not an instruction.
+            if calendar_id is not None and current.calendar_id != calendar_id:
+                current.calendar_id = calendar_id
+                changed = True
+            if (
+                telegram_chat_id is not None
+                and current.telegram_chat_id != telegram_chat_id
+            ):
+                current.telegram_chat_id = telegram_chat_id
+                changed = True
+            if changed:
                 updated.append(login)
 
         await self._session.flush()

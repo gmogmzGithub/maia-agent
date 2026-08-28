@@ -230,8 +230,31 @@ _Avoid_: Contact, Opportunity history, permanent memory
 **Conversation Handling Mode**:
 The explicit authority state that determines whether Maia may converse, a human
 is handling the Contact, the operation is awaiting the Contact, or Admin review is
-required.
+required. Exactly one authority holds a Conversation at a time, and a human mode
+always names the person holding it.
 _Avoid_: Advisor assignment, Opportunity stage, model guess
+
+**Human Handling Request**:
+One unmet request for a person on one Conversation, with who was alerted and when
+the Organization Administrator must be told if nobody has taken it. It is
+resolved by a human taking or releasing the Conversation, never by time passing.
+_Avoid_: Conversation Handling Mode, Opportunity reassignment, service-level
+promise
+
+**Internal Operational Alert**:
+One durable notice to a member of the Brokerage Organization on its own private
+channel, with its delivery state retained. It is not outreach to a Contact and
+does not pass the outbound eligibility gate; a recipient with no configured
+channel produces a notice that is visible but undelivered rather than one that is
+lost.
+_Avoid_: Outbox row, customer message, log line
+
+**Visit Reminder**:
+One deterministic Contact-facing notice a confirmed Property Visit Appointment
+owes before it happens, scheduled when the visit is confirmed and settled exactly
+once. The cadence is an unvalidated hypothesis, so a reminder may be withheld
+with a recorded reason rather than sent.
+_Avoid_: Follow-up, sales message, model-composed text
 
 **Real Estate Advisor**:
 A human member of a Brokerage Organization who can own Opportunities, work with
@@ -254,9 +277,16 @@ _Avoid_: Responsible Advisor, property owner, listing source
 
 **Advisor Absence**:
 A declared period during which a Real Estate Advisor is ineligible for new
-Opportunity assignments. Only an Organization Administrator may record, change,
-or end it.
+Opportunity assignments and new visit bookings. Only an Organization
+Administrator may record, change, or end it. It never reassigns an existing
+Opportunity or cancels an existing appointment; those are surfaced for review.
 _Avoid_: Deactivated Advisor, automatic reassignment, deleted calendar event
+
+**Authoritative Advisor Calendar**:
+The external calendar that decides one Real Estate Advisor's real availability. An
+Advisor without one has no availability the Platform may quote and cannot receive
+a visit; a calendar that cannot be read is likewise not an empty one.
+_Avoid_: Weekly Bookable Schedule, empty calendar, shared brokerage calendar
 
 **External Collaborator**:
 An agent or agency outside the Brokerage Organization that participates in a
@@ -477,9 +507,10 @@ revision of its facts.
 _Avoid_: Document version, filename, database UUID
 
 **Property Document**:
-The approved customer-safe facts about one Property from which Maia may answer
-questions.
-_Avoid_: Prompt, knowledge file, listing page
+An immutable legacy source artifact retained as provenance and narrative for one
+Property. Product projects customer answers from the authorized Listing and its
+Offers; the document's operation and price are not editable commercial truth.
+_Avoid_: Catalog authority, current Offer, Listing publication state
 
 **Property Document Version**:
 One immutable accepted revision of a Property Document; later corrections create a
@@ -487,14 +518,16 @@ new version without changing the Property Key.
 _Avoid_: Property, duplicate Property, mutable file
 
 **Property Catalog**:
-The curated, public-safe collection of Property Documents eligible to be introduced
-into Maia; it is not evidence of current availability.
-_Avoid_: Fixtures, runtime folder, database
+The legacy source-controlled collection of current Property Document copies used
+only by the compatibility ingestion path. The authoritative catalog is PostgreSQL
+Property, Listing, Offer and Listing Media state.
+_Avoid_: Authorized Inventory, editable commercial truth, public site
 
 **Authorized Inventory**:
 The Listings a Brokerage Organization is currently permitted to present or
 recommend, including Organization Listings and eligible Collaborator Listings
-with preserved provenance.
+with preserved provenance, current authority, availability, reviewed terms and
+purpose-specific eligibility.
 _Avoid_: All properties in Mexico, scraped catalog, permanent data lake
 
 **Property Submission**:
@@ -514,14 +547,16 @@ availability, regardless of whether each one can presently be offered.
 _Avoid_: Property Catalog, listings folder
 
 **Active Property**:
-A Property currently permitted to be disclosed to customers and considered for new
-visit bookings.
-_Avoid_: Published Property, available document
+The legacy compatibility status projected into Listing and Offer availability by
+the remaining Stage 0 administration path. It cannot authorize disclosure or a
+new visit by itself; Listing Eligibility still decides.
+_Avoid_: Listing Availability, Listing Authority, publication permission
 
 **Inactive Property**:
-A Property blocked from customer disclosure and new visit bookings, with a separate
-Inactive Reason explaining why.
-_Avoid_: Deleted Property, Sold Property
+A fail-closed legacy compatibility status that blocks customer disclosure and new
+visit bookings while preserving existing appointments and records. Its reason is
+written through to authoritative Listing and Offer state.
+_Avoid_: Deleted Property, automatic appointment cancellation
 
 **Inactive Reason**:
 The Organization Administrator-confirmed explanation for an Inactive Property:

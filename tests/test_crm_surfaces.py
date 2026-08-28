@@ -7,8 +7,8 @@ vocabulary — lead, listing, pipeline, property expert — never leaks into it.
 
 **Accessibility and mobile.** One shell, so the language attribute, the skip
 link, the visible focus ring, the labelled controls, the table header scopes and
-the single-column collapse cannot go missing from one screen at a time. No
-JavaScript is required for any action.
+the single-column collapse cannot go missing from one screen at a time. Forms
+work without JavaScript; progressive enhancement only announces pending work.
 
 **Honesty.** Denied outbound decisions and an active Do Not Contact are shown to
 the operator with the reason. Showing them is the point; none of these surfaces
@@ -60,6 +60,7 @@ from realestate.domain.outbound import (
 )
 from tests.conftest import DATABASE_URL, REPO_ROOT, requires_postgres
 from tests.fixtures import commercial
+from tests.fixtures.surfaces import visible_text
 
 pytestmark = requires_postgres
 
@@ -99,14 +100,6 @@ FORBIDDEN_WORDS = (
     r"\bqualified\b",
     r"\bbroker\b",
 )
-
-_TAGS = re.compile(r"<[^>]+>")
-_DROPPED = re.compile(r"<(style|script)\b.*?</\1>", re.DOTALL | re.IGNORECASE)
-
-
-def visible_text(html: str) -> str:
-    """What a person actually reads, without markup or the stylesheet."""
-    return _TAGS.sub(" ", _DROPPED.sub(" ", html))
 
 
 @pytest.fixture
@@ -236,8 +229,10 @@ async def test_every_surface_ships_the_accessible_spanish_shell(
     assert "focus-visible" in html
     assert "min-height:44px" in html
     assert "@media (max-width:760px)" in html
-    # No JavaScript is required for any surface to work.
-    assert "<script" not in html
+    # Progressive enhancement may expose the pending state, but forms remain
+    # ordinary server-rendered submissions when JavaScript is unavailable.
+    assert 'aria-live="polite"' in html
+    assert "Procesando. Espera la confirmación del servidor." in html
     assert "onclick" not in html
 
 
@@ -458,8 +453,13 @@ async def test_an_opt_out_is_shown_and_no_surface_can_send(wired) -> None:
     assert "No se puede enviar nada a este contacto" in response.text
     assert "pidió explícitamente no recibir mensajes" in response.text
     assert "Sí es posible responder cuando el contacto escribe." in response.text
-    # There is no way to send from this screen: it has no form at all.
-    assert 'method="post"' not in response.text
+    # Stage 3 gave this screen a reply path (ADR-0029), so "no form at all"
+    # stopped being the guarantee. What still holds is stronger and is asserted
+    # where it lives: an operator who does not hold the conversation gets no
+    # message box at all, and the Outbound Eligibility Gate refuses a suppressed
+    # Contact whoever is typing — see tests/test_conversation_handling.py.
+    assert "Responder por WhatsApp" not in response.text
+    assert 'name="mensaje"' not in response.text
     assert "<textarea" not in response.text
 
     # And the contact list marks the restriction.
@@ -1220,6 +1220,43 @@ def test_the_stylesheet_is_shipped_inline_and_owns_the_focus_ring() -> None:
     assert "focus-visible" in STYLES
     assert "prefers-contrast" in STYLES
     assert Path(REPO_ROOT / "src/realestate/api/ui.py").exists()
+
+
+def test_operator_text_and_focus_colours_meet_wcag_aa_contrast() -> None:
+    """Every small-text/status pair clears the 4.5:1 AA threshold."""
+    from realestate.api.ui import STYLES
+
+    def luminance(hex_colour: str) -> float:
+        if len(hex_colour) == 3:
+            hex_colour = "".join(channel * 2 for channel in hex_colour)
+        channels = [int(hex_colour[index : index + 2], 16) / 255 for index in (0, 2, 4)]
+        linear = [
+            value / 12.92
+            if value <= 0.04045
+            else ((value + 0.055) / 1.055) ** 2.4
+            for value in channels
+        ]
+        return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+    def contrast(foreground: str, background: str) -> float:
+        brighter, darker = sorted(
+            (luminance(foreground), luminance(background)), reverse=True
+        )
+        return (brighter + 0.05) / (darker + 0.05)
+
+    pairs = (
+        ("1f2933", "f6f8fb"),
+        ("5b6472", "fff"),
+        ("1145b8", "fff"),
+        ("a4231a", "fdf2f1"),
+        ("026a3e", "ecfdf3"),
+        ("8a5300", "fff8ec"),
+        ("0b57d0", "fff"),
+    )
+    for foreground, background in pairs:
+        assert f"#{foreground}" in STYLES
+        assert f"#{background}" in STYLES
+        assert contrast(foreground, background) >= 4.5
 
 
 # -- Edge cases the operator can still land on ----------------------------

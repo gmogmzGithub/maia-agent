@@ -1,15 +1,26 @@
 """Who is responsible for this Opportunity — and what happens when nobody is.
 
-The rule is deterministic and short (PROJECT_MEMORY): preserve an existing
-Responsible Advisor; otherwise use the configured default Advisor; otherwise
-place the Opportunity in the Assignment Queue for an Administrator. No
-round-robin, no load scoring, no acceptance deadline: those need real
+The rule is deterministic and short (PROJECT_MEMORY), and Stage 3 completes it:
+
+1. preserve an existing Responsible Advisor;
+2. for an Opportunity that names a Property, use its **present** Property
+   Expert, then its backups in rank order;
+3. otherwise the configured default Advisor;
+4. if everybody the rule would have chosen is absent or ineligible, place the
+   Opportunity in the Assignment Queue for an Administrator.
+
+No round-robin, no load scoring, no acceptance deadline: those need real
 operational data to be anything other than a guess.
 
-The Property Expert branch of that rule is deliberately absent rather than
-approximated. The designation itself belongs to the human-operation stage, and
-:class:`AssignmentBasis` already names the basis so adding the branch later does
-not rewrite what has been recorded.
+"Present" is one predicate — active, eligible to own work, and not covered by an
+Advisor Absence right now — and it is applied to every candidate rather than
+only to the fallback. Assigning work to somebody the operation has already been
+told is away is the failure this stage removes, and it does not become
+acceptable because that person happens to be a specialist.
+
+What an absence deliberately does *not* do is touch work already assigned. This
+module only ever decides who takes an Opportunity that has nobody; nothing here
+moves an existing Responsible Advisor.
 
 Two failure modes shape the implementation. **Silence** is the one that matters:
 an Opportunity nobody owns must become visible work, not a null column, which
@@ -58,6 +69,9 @@ def _now() -> datetime:
 BASIS_LABELS: dict[str, str] = {
     AssignmentBasis.PRESERVED.value: "Se conservó el asesor existente",
     AssignmentBasis.PROPERTY_EXPERT.value: "Especialista de la propiedad",
+    AssignmentBasis.PROPERTY_EXPERT_BACKUP.value: (
+        "Especialista suplente de la propiedad"
+    ),
     AssignmentBasis.DEFAULT_ADVISOR.value: "Asesor predeterminado",
     AssignmentBasis.MANUAL_ADMIN.value: "Asignación manual del administrador",
 }
@@ -68,6 +82,9 @@ QUEUE_REASON_LABELS: dict[str, str] = {
     ),
     AssignmentQueueReason.DEFAULT_ADVISOR_INACTIVE.value: (
         "El asesor predeterminado está inactivo"
+    ),
+    AssignmentQueueReason.EVERY_CANDIDATE_ABSENT.value: (
+        "Todos los asesores elegibles están ausentes"
     ),
 }
 
@@ -80,6 +97,10 @@ QUEUE_REASON_DETAIL: dict[str, str] = {
     ),
     AssignmentQueueReason.DEFAULT_ADVISOR_INACTIVE.value: (
         "El asesor predeterminado está dado de baja; reactívalo o configura otro."
+    ),
+    AssignmentQueueReason.EVERY_CANDIDATE_ABSENT.value: (
+        "Los asesores que correspondían están ausentes; asigna manualmente o "
+        "termina una ausencia."
     ),
 }
 
@@ -147,7 +168,7 @@ class Assignment:
                 created=False,
             )
 
-        candidate, why = await self._default_advisor(opportunity.organization_id)
+        candidate, basis, why = await self._candidate(opportunity)
         if candidate is None:
             assert why is not None
             entry = await self._enqueue(
@@ -162,11 +183,12 @@ class Assignment:
                 queue_reason=AssignmentQueueReason(entry.reason),
             )
 
+        assert basis is not None
         return await self._attach(
             actor,
             opportunity,
             advisor=candidate,
-            basis=AssignmentBasis.DEFAULT_ADVISOR,
+            basis=basis,
         )
 
     async def assign_manually(
@@ -190,6 +212,19 @@ class Assignment:
         if not advisor.advises:
             raise NotAuthorized(
                 f"{advisor.display_name} no puede ser asesor responsable."
+            )
+        # Even a deliberate manual assignment respects a declared absence. The
+        # operation has already recorded that this person cannot take new work,
+        # and an Administrator who disagrees can end the absence — which leaves
+        # a record — rather than quietly contradicting it.
+        from realestate.domain.commercial.team import current_absence
+
+        absence = await current_absence(self._session, advisor.id, _now())
+        if absence is not None:
+            raise NotAuthorized(
+                f"{advisor.display_name} tiene una ausencia registrada hasta el "
+                f"{absence.ends_at.date().isoformat()}. Termina la ausencia si "
+                "de todos modos debe recibir esta oportunidad."
             )
 
         open_assignment = await self._open_assignment(opportunity_id)
@@ -263,6 +298,32 @@ class Assignment:
                 )
         await self._session.flush()
         return True
+
+    async def prospective(
+        self, actor: Actor, opportunity_id: uuid.UUID
+    ) -> tuple[OrganizationMember | None, AssignmentQueueReason | None]:
+        """Who the rule *would* choose, and why nobody. Changes nothing.
+
+        Availability is quoted before anybody is committed to the work, and a
+        Contact asking "¿qué horarios tienen?" must not silently create a period
+        of responsibility. Booking then applies the same rule for real, so the
+        times quoted and the person who receives the visit cannot come from two
+        different answers.
+
+        The reason travels with the answer because the caller has to say
+        something useful. "Nobody is responsible" and "the only eligible Advisor
+        is away" lead a Contact — and an operator — to different next steps.
+        """
+        opportunity = await visible_opportunity(self._session, actor, opportunity_id)
+        if opportunity.responsible_advisor_id is not None:
+            return (
+                await self._session.get(
+                    OrganizationMember, opportunity.responsible_advisor_id
+                ),
+                None,
+            )
+        candidate, _basis, why = await self._candidate(opportunity)
+        return candidate, why
 
     async def queue(self, actor: Actor) -> list[QueuedOpportunity]:
         """The Assignment Queue: active Opportunities nobody is responsible for.
@@ -341,35 +402,153 @@ class Assignment:
         )
         return found
 
-    async def _default_advisor(
-        self, organization_id: uuid.UUID
-    ) -> tuple[OrganizationMember | None, AssignmentQueueReason | None]:
-        """The configured fallback, and — when there is none — why not.
+    async def _candidate(
+        self, opportunity: Opportunity
+    ) -> tuple[
+        OrganizationMember | None,
+        AssignmentBasis | None,
+        AssignmentQueueReason | None,
+    ]:
+        """Who the deterministic rule chooses, why — or why nobody.
 
-        Inactive means ineligible: returning an unusable Advisor would satisfy
-        the column and defeat the promise, which is the exact failure the queue
-        exists to make visible.
-
-        The reason is returned rather than assumed because the Administrator's
-        two remedies differ. "Nobody is configured" needs a login added to the
-        configuration; "the configured Advisor is inactive" needs that person
-        reactivated. Collapsing both into one message would put one sentence in
-        front of two different actions.
+        The order is the rule, written once: present Property Expert, present
+        backups in rank order, then the configured default Advisor. The reason
+        for an empty answer is returned rather than assumed because the
+        Administrator's remedies differ. "Nobody is configured" needs a login
+        added; "the configured Advisor is inactive" needs that person
+        reactivated; "everybody is away" needs a manual assignment or an
+        absence ended. One sentence in front of three different actions would
+        be worse than no sentence.
         """
+        moment = _now()
+        experts = await self._expert_chain(opportunity)
+        # Only an *absence* produces the absent-candidate reason. A specialist
+        # who was deactivated is a different remedy, so lumping the two
+        # together would put the wrong instruction in front of the
+        # Administrator.
+        absent_candidate = False
+        away = await self._absent_among(
+            opportunity.organization_id, [member.id for member, _ in experts], moment
+        )
+        for member, basis in experts:
+            if member.active and member.advises:
+                absent_candidate = True
+            if member.active and member.advises and member.id not in away:
+                logger.info(
+                    "Opportunity %s goes to the Property Expert %s (%s)",
+                    opportunity.id,
+                    member.login,
+                    basis.value,
+                )
+                return member, basis, None
+
         designated: OrganizationMember | None = await self._session.scalar(
             select(OrganizationMember)
-            .where(OrganizationMember.organization_id == organization_id)
+            .where(OrganizationMember.organization_id == opportunity.organization_id)
             .where(OrganizationMember.is_default_advisor.is_(True))
             .limit(1)
         )
         if designated is None:
-            return None, AssignmentQueueReason.NO_ELIGIBLE_ADVISOR
+            return (
+                None,
+                None,
+                AssignmentQueueReason.EVERY_CANDIDATE_ABSENT
+                if absent_candidate
+                else AssignmentQueueReason.NO_ELIGIBLE_ADVISOR,
+            )
         if not designated.active:
-            return None, AssignmentQueueReason.DEFAULT_ADVISOR_INACTIVE
+            return None, None, AssignmentQueueReason.DEFAULT_ADVISOR_INACTIVE
         # ``advises`` is not re-checked: ``ck_organization_members_default_advises``
         # makes "designated but cannot own work" impossible to store, so a check
-        # here would be a branch the schema forbids.
-        return designated, None
+        # here would be a branch the schema forbids. Absence is not a schema
+        # fact, so it is checked.
+        if not await self._present(designated, moment):
+            return None, None, AssignmentQueueReason.EVERY_CANDIDATE_ABSENT
+        return designated, AssignmentBasis.DEFAULT_ADVISOR, None
+
+    async def _expert_chain(
+        self, opportunity: Opportunity
+    ) -> list[tuple[OrganizationMember, AssignmentBasis]]:
+        """The Property Experts for this Opportunity's Property, in rule order.
+
+        Empty when the Opportunity names no Property, which is the ordinary
+        case for a Contact who has not said what they are looking at yet. The
+        Property comes from the preserved Opportunity Origin rather than from a
+        caller argument: attribution is already the record of what this pursuit
+        was about, and a second source for it could disagree.
+        """
+        # Local import: OpportunityManagement delegates to this module, so the
+        # dependency may only run in this direction.
+        from realestate.db.models import OpportunityOrigin, PropertyExpertRole
+        from realestate.domain.commercial.team import expert_candidates
+
+        property_uuid = await self._session.scalar(
+            select(OpportunityOrigin.property_uuid).where(
+                OpportunityOrigin.opportunity_id == opportunity.id
+            )
+        )
+        if property_uuid is None:
+            return []
+        from realestate.domain.commercial.team import TeamAdministration
+
+        designations = await TeamAdministration(self._session).experts_for(property_uuid)
+        candidates = expert_candidates(designations)
+        if not candidates:
+            return []
+        members = {
+            member.id: member
+            for member in await self._session.scalars(
+                select(OrganizationMember).where(
+                    OrganizationMember.id.in_([advisor_id for advisor_id, _ in candidates])
+                )
+            )
+        }
+        chain: list[tuple[OrganizationMember, AssignmentBasis]] = []
+        for advisor_id, role in candidates:
+            member = members.get(advisor_id)
+            if member is None:
+                continue
+            chain.append(
+                (
+                    member,
+                    AssignmentBasis.PROPERTY_EXPERT
+                    if role == PropertyExpertRole.PRIMARY.value
+                    else AssignmentBasis.PROPERTY_EXPERT_BACKUP,
+                )
+            )
+        return chain
+
+    async def _absent_among(
+        self,
+        organization_id: uuid.UUID,
+        member_ids: list[uuid.UUID],
+        moment: datetime,
+    ) -> set[uuid.UUID]:
+        """Which of these Advisors are away, in one query.
+
+        The batched form of the absence half of :meth:`_present`, used when the
+        whole expert chain is being considered at once.
+        """
+        if not member_ids:
+            return set()
+        from realestate.domain.commercial.team import absent_advisor_ids
+
+        return await absent_advisor_ids(
+            self._session, organization_id, moment, among=member_ids
+        )
+
+    async def _present(self, member: OrganizationMember, moment: datetime) -> bool:
+        """Active, able to own work, and not away right now.
+
+        One predicate for every candidate. An earlier shape checked ``active``
+        on the fallback only, which would have let a Property Expert on holiday
+        receive work the operation had already been told they could not take.
+        """
+        if not member.active or not member.advises:
+            return False
+        from realestate.domain.commercial.team import current_absence
+
+        return await current_absence(self._session, member.id, moment) is None
 
     async def _attach(
         self,

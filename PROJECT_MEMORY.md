@@ -765,9 +765,11 @@ WhatsApp handoffs are diagnostic funnel measures, not the final success metric.
 
 ## Current Stage
 
-Local Stage 2 commercial system-of-record implementation, verified in the
-canonical Docker Compose runtime. Stage closure is Codex's decision, not a
-claim made here.
+Local Stage 4 authoritative-catalog implementation on top of the closed Stage 3
+human operation: physical Properties, source-specific Listings, simultaneous
+Offers, independent availability/publication/authority, approved media and one
+purpose-specific eligibility gate. Canonical Docker Compose verification and
+stage closure remain Codex's decision, not a claim made here.
 
 Implemented locally:
 
@@ -806,6 +808,46 @@ Implemented locally:
   replays instead of opening a second Opportunity or owing a second action;
 - conversation-content expiry separated from commercial history, with a
   background pass for staleness, day-28 dormancy, and content retention;
+- Organization Administrator management of the team: adding members, an
+  Advisor's authoritative calendar and alert channel, deactivation that never
+  removes the last administrator, and the deterministic assignment fallback,
+  without startup reconciliation deleting what the Administrator created
+  (ADR-0047);
+- Advisor Absences that only an Administrator records or ends, cannot overlap,
+  exclude somebody from new assignments and new bookings, and never reassign an
+  Opportunity or cancel a visit — with an alert naming the work they left alone;
+- Property Expert principal and backup designations kept explicitly distinct from
+  the Responsible Advisor, revoked rather than deleted;
+- the complete deterministic assignment rule: preserve the existing owner, then
+  the present Property Expert, then present backups by rank, then the default
+  Advisor, then the Assignment Queue with a reason that distinguishes "everybody
+  is away" from "nobody is configured";
+- Conversation Handling Mode arbitrating Maia against a human and one human
+  against another, with the Lead worker re-checking under a row lock at
+  settlement so a human arriving mid-turn wins and the draft is withheld rather
+  than duplicated;
+- human replies sent from the CRM on the Brokerage Organization's own WhatsApp
+  channel, through the same outbound eligibility gate as everything else;
+- Human Handling requests recognised deterministically from the Contact's own
+  words or raised by a typed tool, an immediate alert to the responsible Advisor,
+  Product's own approved acknowledgement to the Contact, and an alert to the
+  Organization Administrator after 15 minutes — exactly once across restarts, and
+  never an automatic reassignment;
+- a durable internal alert channel, separate from the customer Outbox, whose
+  undeliverable notices stay visible in the CRM (ADR-0049);
+- per-Advisor authoritative calendars, where an unconfigured or unreadable
+  calendar is a named refusal rather than an empty week (ADR-0048);
+- Advisor-owned appointments with an explicit conducting expert only when stated,
+  atomic rescheduling that preserves the original on any failure, cancellation
+  that decides nothing commercial, and Missed or Attended outcomes recorded only
+  by a human;
+- deterministically scheduled visit reminders whose dispatch is blocked with a
+  recorded reason until the cadence is validated;
+- deterministic post-appointment routing that keeps bounded Appointment Logistics
+  with Maia and sends commercial, visit-specific and ambiguous messages to the
+  Advisor;
+- server-rendered Mexican Spanish surfaces for Team, Absences, Specialists, the
+  visit Calendar, pending human-handling requests and conversation handling;
 - Google Calendar availability and appointment booking;
 - Telegram administrative role;
 - deterministic lead follow-up worker whose current attempts are intentionally
@@ -815,6 +857,28 @@ Implemented locally:
 - credential-free CI for every push and pull request, including a vertical
   WhatsApp-to-booking-to-Telegram scenario;
 - pytest suite for domain, API, worker, plugin, and channel behavior.
+- an authoritative real-estate catalog in Product: Property is physical truth,
+  each Listing preserves one Organization or Collaborator source, each Offer
+  owns its operation/price/terms, and Development/Unit Model records do not
+  manufacture physical units;
+- `CatalogAdministration.record`, `OfferManagement.record`,
+  `MediaAdministration.record`, `ListingEligibility.evaluate` and
+  `CatalogProjection.get_authorized_listing` as the invariant-bearing seams;
+- independent Listing Availability, Publication State and Authority, with
+  evidence, freshness/revalidation, deterministic presentation readiness,
+  automatic tiers and auditable Administrator overrides;
+- a recoverable media lifecycle for JPG/PNG/WebP whose local Compose adapter
+  stores originals durably, revokes public eligibility before cleanup, and
+  resumes storage/cache deletion idempotently after restart;
+- Mexican Spanish catalog administration where Advisors have read-only access
+  only to Properties for which they are currently designated experts, while
+  only Administrators can change catalog state;
+- one-way compatibility import of accepted Property Documents: immutable
+  artifacts remain provenance and narrative, while their price and operation
+  are copied only once and thereafter only Listing Offers are editable;
+- Maia property disclosure, inventory lists and new-visit checks routed through
+  Listing Eligibility rather than treating a legacy Property status or document
+  as permission.
 
 Not yet proven or claimed:
 
@@ -827,7 +891,8 @@ Not yet proven or claimed:
 - multi-tenant operation;
 - horizontal scaling;
 - self-managed multi-brokerage onboarding, billing, round-robin assignment, load
-  scoring, automatic commissions, the public catalog, EasyBroker, campaigns, and
+  scoring, automatic commissions, the public catalog/search experience, EasyBroker,
+  campaigns, and
   the data warehouse — all deliberately later stages.
 
 ## Core Boundary
@@ -900,10 +965,52 @@ prevent unsafe changes to `main`; they do not hide sensitive content. Private
 material should stay in ignored local files, local-only branches, or a separate
 private repository.
 
+## Known Stage 3 Limitations
+
+- Contact-facing visit reminders are scheduled but never sent.
+  `REMINDER_POLICY_ACTIVATED` is `False` because SAN-036 has not validated the
+  cadence, and a due reminder is settled with the reason `PolicyNotValidated`.
+  Turning it on would still meet the outbound gate, which denies free-form text
+  outside Meta's 24-hour window — so reminders are structural template work.
+- The Weekly Bookable Schedule, the 90-minute visit and the booking horizon stay
+  Organization-wide. Per-Advisor working hours are not modelled because SAN-031
+  and SAN-032 are unanswered; an Advisor expresses their limits as busy time in
+  their own calendar.
+- Appointments booked before Stage 3 have no Advisor. They are surfaced to an
+  Administrator as requiring a decision rather than backfilled with a guess, and
+  reconciliation resolves their calendar through the default Advisor because a
+  pre-Stage-3 event can only be on the one calendar the operation had.
+- The post-appointment routing whitelist is a phrase list. A logistics request
+  phrased unusually reaches the Advisor, which is the safe direction, and the
+  courtesy list matches the whole message so "gracias, pero…" is not a
+  pleasantry. Neither list is a classifier and neither should become one without
+  real conversation data.
+- An internal alert can be delivered twice if the process dies between the
+  Telegram send and the stamp. That trade is deliberate for an operator alert and
+  is the opposite of the Lead-facing choice in P-036.
+- A human handoff names the responsible Advisor as the handling holder
+  immediately, so Maia stops. That is not the Advisor confirming they are on it;
+  acknowledgement is a separate recorded fact, and the 15-minute escalation reads
+  the second one.
+- The model-facing tool surface grew by two names — `reschedule_appointment` and
+  `request_human_handoff`. Both are required by ADR-0037 and ADR-0029 and
+  neither can be expressed with the Stage 0 surface, but the frozen-surface guard
+  and its test were edited to admit them, which is the kind of change that
+  deserves review rather than a passing test.
+- Recording a visit outcome uses a deliberately minimal form. SAN-038 asks
+  Santiago to design the real one, and a longer form Product invented would be a
+  form nobody fills in.
+- `Appointments.book` commits three times: the attempt, the Calendar result, and
+  the handoff. A single transaction across an external side effect is impossible,
+  and pretending otherwise would be the bug — but it does mean a crash mid-flight
+  leaves work for reconciliation rather than nothing at all.
+
 ## Known Stage 2 Limitations
 
-- Membership is reconciled from three explicit non-secret configuration values.
-  There is no self-service team surface, and Advisor Absences are Stage 3.
+- Membership is now managed by an Organization Administrator in `/crm/equipo`,
+  and configuration remains the bootstrap. A member row records which of the two
+  provisioned it so startup reconciliation cannot delete the other's work
+  (ADR-0047).
 - The time-driven commercial rules — Property Need staleness, day-28 dormancy,
   conversation-content expiry — run on a 15-minute interval inside
   `CommercialUpkeepWorker` rather than on the background loop's one-second
@@ -922,8 +1029,6 @@ private repository.
   (PROJECT_MEMORY), so this is a naming inconsistency rather than a leak — no
   operator-visible string says "lead" — but renaming the table is its own
   migration.
-- The Property Expert branch of the assignment rule is named but unreachable:
-  the designation itself arrives with the inventory and human-operation stages.
 - A WhatsApp phone number does not identify a Brokerage Organization. The
   single-Organization MVP resolves it by slug in one place.
 - Child tables reach the Organization through a NOT NULL foreign key to
@@ -932,6 +1037,8 @@ private repository.
 - Proactive follow-up remains denied. Stage 2 removes one of ADR-0045's four
   preconditions — the commercial states now exist — but marketing consent
   capture, real approved Meta templates, and explicit policy activation do not.
+  Stage 3's visit reminders are denied for the same structural reason plus an
+  unvalidated cadence.
 - Downgrading revision 0013 drops the commercial tables, so the history they
   hold does not survive it. Revision 0012's downgrade likewise drops the
   Contacts it derived; the Leads they came from are untouched.

@@ -66,8 +66,15 @@ class Purpose(str, enum.Enum):
     """
 
     AGENT_REPLY = "AgentReply"
+    #: An Advisor or Administrator answering from the CRM on the Brokerage
+    #: Organization's own channel (ADR-0029). A human author does not exempt the
+    #: message from the gate: Meta's 24-hour window is a platform constraint,
+    #: and a suppressed Contact is suppressed whoever is typing.
+    HUMAN_REPLY = "HumanReply"
     PROCESSING_FAILURE = "ProcessingFailureNotice"
     APPOINTMENT_CONFIRMATION = "AppointmentConfirmation"
+    APPOINTMENT_RESCHEDULED = "AppointmentRescheduled"
+    APPOINTMENT_REMINDER = "AppointmentReminder"
     APPOINTMENT_RESOLUTION = "AppointmentResolution"
     APPOINTMENT_CANCELLATION = "AppointmentCancellation"
     APPOINTMENT_NEEDS_REVIEW = "AppointmentNeedsReview"
@@ -80,8 +87,15 @@ class Purpose(str, enum.Enum):
 # marketing is the only one that needs a positive consent record.
 PURPOSE_CATEGORY: dict[Purpose, ConsentCategory] = {
     Purpose.AGENT_REPLY: ConsentCategory.SERVICE,
+    # Service, like Maia's own reply: it answers messages the Contact wrote.
+    Purpose.HUMAN_REPLY: ConsentCategory.SERVICE,
     Purpose.PROCESSING_FAILURE: ConsentCategory.SERVICE,
     Purpose.APPOINTMENT_CONFIRMATION: ConsentCategory.UTILITY,
+    Purpose.APPOINTMENT_RESCHEDULED: ConsentCategory.UTILITY,
+    # Utility, and business-initiated: a reminder is the operation reaching out
+    # on a schedule, so it needs a template outside the service window and can
+    # never be free-form. That is structural, not a limitation (ADR-0045).
+    Purpose.APPOINTMENT_REMINDER: ConsentCategory.UTILITY,
     Purpose.APPOINTMENT_RESOLUTION: ConsentCategory.UTILITY,
     Purpose.APPOINTMENT_CANCELLATION: ConsentCategory.UTILITY,
     Purpose.APPOINTMENT_NEEDS_REVIEW: ConsentCategory.UTILITY,

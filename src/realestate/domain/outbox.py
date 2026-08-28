@@ -41,8 +41,11 @@ class OutboxKind(str):
     """
 
     AGENT_REPLY = "AgentReply"
+    HUMAN_REPLY = "HumanReply"
     PROCESSING_FAILURE = "ProcessingFailureNotice"
     APPOINTMENT_CONFIRMATION = "AppointmentConfirmation"
+    APPOINTMENT_RESCHEDULED = "AppointmentRescheduled"
+    APPOINTMENT_REMINDER = "AppointmentReminder"
     APPOINTMENT_RESOLUTION = "AppointmentResolution"
     APPOINTMENT_CANCELLATION = "AppointmentCancellation"
     APPOINTMENT_NEEDS_REVIEW = "AppointmentNeedsReview"

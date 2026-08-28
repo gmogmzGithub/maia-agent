@@ -306,9 +306,13 @@ async def test_a_missing_organization_fails_loudly(wired) -> None:
             await OrganizationDirectory(session).organization("no-existe")
 
 
-async def test_the_organization_row_is_singular(wired) -> None:
+async def test_the_larevia_organization_row_is_singular(wired) -> None:
     async with wired.session_scope() as session:
-        slugs = list(await session.scalars(select(Organization.slug)))
+        slugs = list(
+            await session.scalars(
+                select(Organization.slug).where(Organization.slug == "larevia")
+            )
+        )
         assert slugs == ["larevia"]
 
 

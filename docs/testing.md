@@ -40,6 +40,29 @@ provider transports. It therefore verifies Maia's real orchestration and
 authority boundaries without pretending that a language-model answer is
 deterministic.
 
+`tests/test_stage_three_e2e.py` does the same for the human-operation paths, with
+the same discipline: a signed webhook in, the real Inbox and Lead worker, the real
+authenticated product tools, the real CRM an Advisor uses, and the internal alert
+channel. Its four scenarios are the branches the stage promises —
+
+```text
+webhook -> Maia answers -> Maia books -> Advisor is the owner
+        -> post-appointment commercial question -> Advisor, not Maia
+        -> Advisor answers on the official channel -> records the outcome
+
+webhook -> "quiero hablar con una persona" -> Maia stops
+        -> approved acknowledgement to the Contact
+        -> immediate internal alert -> 15-minute escalation, once
+        -> a human takes it, then returns it to Maia explicitly
+
+webhook -> confirmed visit -> Maia reschedules it atomically
+        (new slot secured before the old one is released)
+
+Advisor without an authoritative calendar -> no times offered, honestly
+```
+
+— and no provider token is involved in any of them.
+
 ## Run the required gate locally
 
 With the Compose runtime running:
@@ -87,8 +110,8 @@ creates provider-side effects.
 | Unit and domain tests | Yes | Policy, parsing, retries, ambiguity, copy, and authorization |
 | Database/API/worker integration tests | Yes | PostgreSQL contracts, Inbox/Outbox, plugin calls, sessions, and recovery |
 | Commercial domain tests | Yes | Contact resolution, stages, qualification, assignment races, Next Actions, retention |
-| Migration tests | Yes | Revisions 0012 and 0013 on an empty and a legacy database, upgrade and downgrade |
-| Operator surface tests | Yes | Mexican Spanish, accessibility, empty states, refusals, and that no CRM screen can send |
+| Migration tests | Yes | The commercial and catalog revisions on an empty and a legacy database, upgrade and downgrade |
+| Operator surface tests | Yes | Mexican Spanish, accessibility, empty states, refusals, and that a CRM reply goes out only through the outbound eligibility gate |
 | Vertical system scenario | Yes | WhatsApp inquiry through booking and Broker notification, and Inbox to Next Action |
 | Live model evaluation | No | Hermes/model tool choice, grounding, and conversational quality |
 | Manual channel rehearsal | No | Real Meta, Google Calendar, and Telegram configuration and delivery |

@@ -33,6 +33,8 @@ services:
       PLUGIN_API_TOKEN: ${PLUGIN_API_TOKEN:?Set PLUGIN_API_TOKEN in .env}
       ARTIFACT_ROOT: /app/var/property-documents
       PROPERTY_CATALOG_ROOT: /app/src/properties
+      LISTING_MEDIA_ROOT: /app/var/listing-media/originals
+      LISTING_MEDIA_CACHE_ROOT: /app/var/listing-media/cache
     depends_on:
       db:
         condition: service_healthy
@@ -40,6 +42,7 @@ services:
       - "127.0.0.1:8080:8080"
     volumes:
       - property-documents:/app/var/property-documents
+      - listing-media:/app/var/listing-media
       - ./src/properties:/app/src/properties
       - ./secrets:/run/secrets:ro
     healthcheck:
@@ -87,3 +90,4 @@ volumes:
   postgres-data:
   hermes-state:
   property-documents:
+  listing-media:

@@ -1,27 +1,34 @@
-"""Availability snapshots and appointment booking (P-010, P-042, P-057…P-063).
+"""Maia's conversational view of availability and appointments.
 
-The two model-facing operations live here. Everything consequential is decided by
-this module, not by the Model: which slots exist, whether the Property is still
-Active, whether the exact interval is still free, and whether an attempt became a
-Confirmed Appointment.
+This module is the *conversation's* half of scheduling: the Availability
+Snapshot a Contact was shown, the exact-membership rule that stops the Model
+inventing a time, and the tool-shaped result dictionaries. It decides nothing
+consequential any more.
 
-The ordering in :meth:`book` is the whole point and is deliberate:
+Everything consequential moved to :mod:`realestate.domain.scheduling` in Stage
+3, because those decisions stopped being about a conversation. Which Advisor
+owns the visit, whose calendar is authoritative, whether they are absent,
+whether the attempt is durable before Calendar is touched, and how a reschedule
+stays atomic are all facts about the operation — and the CRM has to reach them
+too. Two implementations of "book a visit" is how the two surfaces end up
+disagreeing about who owns what.
+
+So the ordering that used to live here is now stated where it is enforced, and
+what remains is:
 
 1. resolve the Property and the trusted Conversation;
 2. require the exact start to be a member of *this* Conversation's snapshot, so
    the Model cannot invent a time;
-3. re-read Property Status — must still be ``Active``;
-4. re-read Calendar for that exact interval — must still be free;
-5. persist the Appointment Booking Attempt **before** touching Calendar;
-6. create the Calendar event carrying a deterministic reference to the attempt;
-7. only a conclusive result becomes ``Confirmed``.
+3. hand the decision to :class:`~realestate.domain.scheduling.Appointments`;
+4. translate its named refusal into the tool contract the Model already reads.
 
-Steps 3 and 4 are what stop a stale snapshot from producing a real booking.
+Step 2 is the part that genuinely belongs to a conversation. The snapshot is
+durable evidence of what one Contact was offered, not current truth — the
+authoritative recheck happens inside ``Appointments.book``.
 """
 
 from __future__ import annotations
 
-import secrets
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
@@ -29,36 +36,43 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from realestate.channels.google.calendar import CalendarOutcome, GoogleCalendar
 from realestate.db.models import (
     Appointment,
     AppointmentStatus,
     AvailabilitySnapshot,
     Conversation,
-    Lead,
     LeadEngagementCycle,
-    OutboundInitiation,
     Property,
     PropertyStatus,
-)
-from realestate.domain.outbound import (
-    Denied,
-    OutboundIntent,
-    OutboundMessaging,
-    Purpose,
 )
 from realestate.domain.outbox import OutboxKind
 from realestate.domain.availability import (
     Interval,
     WeeklySchedule,
-    candidate_slots,
     filter_slots,
-    horizon_end,
 )
 from realestate.domain.properties import resolve_property
+from realestate.domain.commercial.actors import Actor
+from realestate.domain.scheduling.advisors import (
+    AdvisorScheduling,
+    SchedulingPolicy,
+    SlotQuery,
+    SlotsUnavailable,
+    Unavailable,
+)
+from realestate.domain.scheduling.appointments import (
+    Appointments,
+    BookVisit,
+    CancelVisit,
+    Refusal,
+    RescheduleVisit,
+    VisitBooked,
+    VisitCancelled,
+    VisitRefused,
+)
+from realestate.domain.scheduling.calendars import CalendarDirectory
 
 
 @dataclass(frozen=True)
@@ -67,15 +81,26 @@ class AppointmentPolicy:
     visit_minutes: int
     horizon_days: int
     max_candidates: int
+    #: The local hour the day-of reminder is due (SAN-036 pending). Carried here
+    #: so the conversational service and the CRM build the same visit module.
+    #: No default: when a customer is messaged is an operational decision, and a
+    #: number here would quietly stand in for the configured one.
+    day_of_reminder_hour: int
     event_title: str = "Visita — {property} — {name}"
+
+    @property
+    def scheduling(self) -> SchedulingPolicy:
+        """The Organization-wide rules the scheduling module needs."""
+        return SchedulingPolicy(
+            schedule=self.schedule,
+            visit_minutes=self.visit_minutes,
+            horizon_days=self.horizon_days,
+            max_candidates=self.max_candidates,
+        )
 
 
 def _now() -> datetime:
     return datetime.now(tz=UTC)
-
-
-def _reference() -> str:
-    return f"APT-{secrets.token_hex(4).upper()}"
 
 
 def _to_json(slots: list[Interval], zone: ZoneInfo | None = None) -> list[dict[str, Any]]:
@@ -104,16 +129,55 @@ def _from_json(rows: list[dict[str, Any]]) -> list[Interval]:
     ]
 
 
+# How a named scheduling or booking refusal reaches the Model. The tool contract
+# has four ways to say "not now" and the Model already knows them, so a new
+# internal reason maps onto one of those rather than inventing a fifth the guide
+# has never seen. ``detail`` carries the specific sentence for the operator log.
+_TOOL_RESULTS: dict[str, str] = {
+    Refusal.CONVERSATION_EXPIRED.value: "conversation_expired",
+    Refusal.PROPERTY_NOT_FOUND.value: "not_found",
+    Refusal.PROPERTY_INACTIVE.value: "property_inactive",
+    Refusal.SLOT_UNAVAILABLE.value: "slot_unavailable",
+    Refusal.NOT_CONFIRMED.value: "not_found",
+    Refusal.ALREADY_STARTED.value: "not_found",
+    Refusal.NOT_YET_HELD.value: "not_found",
+    Refusal.UNCHANGED.value: "not_found",
+    Refusal.NO_RESPONSIBLE_ADVISOR.value: "temporarily_unavailable",
+    Refusal.ADVISOR_INELIGIBLE.value: "temporarily_unavailable",
+    Refusal.CONDUCTOR_NOT_EXPERT.value: "temporarily_unavailable",
+    Refusal.ADVISOR_ABSENT.value: "temporarily_unavailable",
+    Refusal.NO_AUTHORITATIVE_CALENDAR.value: "temporarily_unavailable",
+    Refusal.CALENDAR_UNREADABLE.value: "temporarily_unavailable",
+    Refusal.INCONCLUSIVE.value: "needs_review",
+}
+
+
 class AppointmentService:
+    """The conversational adapter over :mod:`realestate.domain.scheduling`.
+
+    Takes a :class:`~realestate.domain.scheduling.calendars.CalendarDirectory`
+    rather than one calendar, because "the Broker's calendar" stopped being a
+    single thing the moment the operation had two Advisors.
+    """
+
     def __init__(
         self,
         session: AsyncSession,
-        calendar: GoogleCalendar,
+        calendars: CalendarDirectory,
         policy: AppointmentPolicy,
     ) -> None:
         self._session = session
-        self._calendar = calendar
+        self._calendars = calendars
         self._policy = policy
+        self._scheduling = AdvisorScheduling(session, calendars, policy.scheduling)
+        self._appointments = Appointments(
+            session,
+            self._scheduling,
+            schedule=policy.schedule,
+                day_of_reminder_hour=policy.day_of_reminder_hour,
+            max_candidates=policy.max_candidates,
+            event_title=policy.event_title,
+        )
 
     # -- get_available_slots ----------------------------------------------
 
@@ -128,7 +192,7 @@ class AppointmentService:
         time_to: time | None = None,
     ) -> dict[str, Any]:
         """Filter this Conversation-and-Property snapshot, creating it if needed."""
-        prop = await self._resolve_active(reference)
+        prop = await self._resolve_active(reference, conversation.organization_id)
         if isinstance(prop, dict):
             return prop
 
@@ -161,12 +225,37 @@ class AppointmentService:
         }
 
     async def _resolve_active(
-        self, reference: str
+        self, reference: str, organization_id: uuid.UUID
     ) -> Property | dict[str, Any]:
-        prop = await resolve_property(self._session, reference)
+        prop = await resolve_property(self._session, reference, organization_id)
         if prop is None:
             return {"result": "not_found"}
         if prop.status != PropertyStatus.ACTIVE.value:
+            return {
+                "result": "property_inactive",
+                "property_id": prop.property_key,
+                "name": prop.name,
+            }
+        from realestate.domain.catalog.eligibility import EligibilityPurpose
+        from realestate.domain.catalog.projection import (
+            AuthorizedListingQuery,
+            CatalogProjection,
+            ListingNotEligible,
+        )
+        from realestate.domain.commercial.actors import Actor, NotFound
+
+        try:
+            await CatalogProjection(
+                self._session,
+                Actor.product(organization_id, "AppointmentEligibility"),
+            ).get_authorized_listing(
+                AuthorizedListingQuery(
+                    purpose=EligibilityPurpose.APPOINTMENT,
+                    at=datetime.now(tz=UTC),
+                    property_uuid=prop.id,
+                )
+            )
+        except (ListingNotEligible, NotFound):
             return {
                 "result": "property_inactive",
                 "property_id": prop.property_key,
@@ -207,30 +296,76 @@ class AppointmentService:
         prop: Property,
         existing: AvailabilitySnapshot | None,
     ) -> tuple[AvailabilitySnapshot, list[Interval]] | dict[str, Any]:
-        """One Calendar read for the whole horizon, then persist every interval.
+        """One authoritative availability read, then persist every interval.
 
-        Returns ``(snapshot, slots)``, or a refusal dict when Calendar was
-        inconclusive. Both the first snapshot and the post-conflict refresh go
+        The Advisor is the one who is responsible for this Contact's
+        Opportunity, resolved by :class:`~realestate.domain.scheduling.Appointments`
+        the same way at booking. Quoting one person's calendar and then booking
+        another's is the drift the stored ``advisor_id`` exists to make
+        impossible to miss.
+
+        Returns ``(snapshot, slots)``, or a refusal dict when no availability is
+        authoritative. Both the first snapshot and the post-conflict refresh go
         through here so they cannot drift on horizon or candidate policy.
         """
-        now = _now()
-        end = horizon_end(now, self._policy.horizon_days, self._policy.schedule)
-
-        busy = await self._calendar.busy_between(now, end)
-        if not busy.ok:
-            # Never fall back to "nothing is busy" — that would offer times the
-            # Broker is not free.
-            return {"result": "temporarily_unavailable", "detail": busy.detail}
-
-        slots = candidate_slots(
-            now=now,
-            schedule=self._policy.schedule,
-            visit_minutes=self._policy.visit_minutes,
-            horizon_days=self._policy.horizon_days,
-            busy=busy.busy,
+        advisor_id = await self._responsible_advisor(conversation)
+        if advisor_id is None:
+            # No owner, no availability. The Assignment Queue is where this gets
+            # fixed; offering times nobody is accountable for would produce
+            # exactly the appointment this stage forbids.
+            return {
+                "result": "temporarily_unavailable",
+                "detail": Unavailable.NO_ADVISOR.value,
+            }
+        found = await self._scheduling.find_slots(
+            SlotQuery(
+                organization_id=conversation.organization_id,
+                advisor_id=advisor_id,
+            )
         )
-        stored = await self._store_snapshot(conversation, prop, slots, end, existing)
+        if isinstance(found, SlotsUnavailable):
+            # Never fall back to "nothing is busy" — that would offer times the
+            # Advisor is not free.
+            return {
+                "result": "temporarily_unavailable",
+                "detail": found.reason.value,
+            }
+        slots = list(found.slots)
+        stored = await self._store_snapshot(
+            conversation, prop, slots, found.horizon_end, existing, advisor_id
+        )
         return stored, slots
+
+    async def _responsible_advisor(
+        self, conversation: Conversation
+    ) -> uuid.UUID | None:
+        """Whose availability this Conversation should be quoted, if anybody's.
+
+        The deterministic assignment rule, read without applying it: a Contact
+        asking about times must not create a period of responsibility, and the
+        booking that follows applies the same rule for real. An Opportunity
+        early in its life legitimately has no Responsible Advisor yet — Stage 2
+        attaches one at Qualified — so the rule's later clauses, the present
+        Property Expert and the default Advisor, are what answer here.
+        """
+        from realestate.domain.commercial.assignment import Assignment
+        from realestate.domain.commercial.identity import CommercialIdentity
+        from realestate.domain.commercial.opportunities import OpportunityManagement
+
+        contact_id = await CommercialIdentity(self._session).contact_for_lead(
+            conversation.lead_id
+        )
+        if contact_id is None:
+            return None
+        opportunity = await OpportunityManagement(
+            self._session
+        ).open_demand_for_contact(contact_id)
+        if opportunity is None:
+            return None
+        candidate, _why = await Assignment(self._session).prospective(
+            self._actor(conversation), opportunity.id
+        )
+        return candidate.id if candidate else None
 
     async def _store_snapshot(
         self,
@@ -239,12 +374,14 @@ class AppointmentService:
         slots: list[Interval],
         end: datetime,
         existing: AvailabilitySnapshot | None,
+        advisor_id: uuid.UUID | None,
     ) -> AvailabilitySnapshot:
         if existing is not None:
             existing.slots = _to_json(slots)
             existing.horizon_end = end
             existing.created_at = _now()
             existing.time_zone = self._policy.schedule.timezone
+            existing.advisor_id = advisor_id
             await self._session.commit()
             return existing
 
@@ -254,6 +391,7 @@ class AppointmentService:
             horizon_end=end,
             time_zone=self._policy.schedule.timezone,
             slots=_to_json(slots),
+            advisor_id=advisor_id,
         )
         self._session.add(row)
         await self._session.commit()
@@ -269,11 +407,15 @@ class AppointmentService:
         start: datetime,
         attendee_name: str | None = None,
     ) -> dict[str, Any]:
-        cycle = await self._session.get(LeadEngagementCycle, conversation.cycle_id)
-        if cycle is None or not cycle.is_active(_now()):
-            return {"result": "conversation_expired"}
+        """Book the exact slot this Conversation was offered.
 
-        prop = await self._resolve_active(reference)
+        The snapshot check is the conversational guard: a start the Contact was
+        never shown is a time the Model invented, and it is refused before any
+        authority is consulted. Everything after that — the owner, the
+        authoritative calendar, the durable attempt, the inconclusive outcome —
+        belongs to :class:`~realestate.domain.scheduling.Appointments`.
+        """
+        prop = await self._resolve_active(reference, conversation.organization_id)
         if isinstance(prop, dict):
             # A live Inactive Property creates no attempt and no event (P-063).
             return prop
@@ -282,71 +424,92 @@ class AppointmentService:
         snapshot = self._usable(row)
         if snapshot is None:
             return {"result": "invalid_candidate", "detail": "no current snapshot"}
-
-        slot = self._member_of(snapshot, start)
-        if slot is None:
+        if self._member_of(snapshot, start) is None:
             # The Model proposed a time this Conversation never observed.
             return {"result": "invalid_candidate"}
 
-        # An idempotent replay of the same accepted slot returns the prior
-        # outcome rather than booking twice.
-        property_uuid = prop.id
-        key = f"apt:{conversation.id}:{property_uuid}:{slot.start.isoformat()}"
-        existing = (
-            await self._session.execute(
-                select(Appointment).where(Appointment.idempotency_key == key)
-            )
-        ).scalar_one_or_none()
-        if existing is not None:
-            return self._result_for(existing, prop)
+        # Captured before delegating: losing an idempotency race inside the
+        # visit module rolls the session back, which expires ``prop`` — and a
+        # result built from an expired attribute would emit IO from a
+        # synchronous helper and crash the loser instead of reporting the
+        # winner's appointment.
+        property_key, property_name = prop.property_key, prop.name
 
-        live = await self._calendar.is_free(slot)
-        if live.outcome is CalendarOutcome.CONFLICT:
-            return await self._refresh_after_conflict(conversation, prop, row)
-        if not live.ok:
-            return {"result": "temporarily_unavailable", "detail": live.detail}
-
-        attempt = await self._persist_attempt(conversation, prop, slot, attendee_name)
-        if attempt is None:
-            # Another worker won the same key between the check and the insert.
-            again = (
-                await self._session.execute(
-                    select(Appointment).where(Appointment.idempotency_key == key)
-                )
-            ).scalar_one()
-            # The rollback inside _persist_attempt expired this session's
-            # identity map, so `prop` is re-read here. _result_for is a plain
-            # method: reading an expired attribute from it would emit IO with no
-            # greenlet to run it on, and the loser of the race would crash
-            # instead of reporting the winner's outcome.
-            found = await self._session.get(Property, property_uuid)
-            if found is None:  # pragma: no cover - the row was just read
-                raise RuntimeError(f"Property {property_uuid} vanished mid-booking.")
-            return self._result_for(again, found)
-
-        lead = await self._session.get(Lead, conversation.lead_id)
-        event = await self._calendar.create_event(
-            slot=slot,
-            summary=self._policy.event_title.format(
-                property=prop.name, name=attendee_name or (lead.profile_name if lead else "")
+        outcome = await self._appointments.book(
+            self._actor(conversation),
+            BookVisit(
+                conversation_id=conversation.id,
+                property_uuid=prop.id,
+                start=start,
+                attendee_name=attendee_name,
+                command_key=f"maia-book:{conversation.id}:{start.isoformat()}",
             ),
-            description=self._describe(lead, attendee_name),
-            reference=attempt.reference,
-            location=prop.visit_address,
+        )
+        if isinstance(outcome, VisitRefused):
+            if outcome.reason is Refusal.SLOT_UNAVAILABLE:
+                # Resolving *this* attempt, not permission to poll: the
+                # conversational snapshot is replaced so the Contact is offered
+                # current times rather than the stale ones that just failed.
+                return await self._refresh_after_conflict(conversation, prop, row)
+            return self._refusal(outcome, prop)
+        return self._result_for(
+            await self._reload(outcome), property_key, property_name
         )
 
-        if event.outcome is CalendarOutcome.OK:
-            attempt.status = AppointmentStatus.CONFIRMED.value
-            attempt.calendar_event_id = event.event_id
-            attempt.resolved_at = _now()
-        else:
-            # Inconclusive: the event may exist. Not a Confirmed Appointment,
-            # not retried, and the Model may not call it confirmed (P-042).
-            attempt.status = AppointmentStatus.NEEDS_REVIEW.value
-            attempt.last_error = event.detail
-        await self._session.commit()
+    async def reschedule(
+        self,
+        *,
+        conversation: Conversation,
+        new_start: datetime,
+        reference: str | None = None,
+    ) -> dict[str, Any]:
+        """Move this Conversation's own future confirmed visit.
 
-        return self._result_for(attempt, prop)
+        Bounded Appointment Logistics, which is the one thing Maia keeps after
+        the Appointment Handoff (ADR-0037). The atomicity — new slot secured
+        before the old is released, original preserved on failure — is the
+        visit module's, not restated here.
+        """
+        cycle = await self._session.get(LeadEngagementCycle, conversation.cycle_id)
+        if cycle is None or not cycle.is_active(_now()):
+            return {"result": "conversation_expired"}
+
+        chosen = await self._one_future_appointment(conversation, reference)
+        if isinstance(chosen, dict):
+            return chosen
+
+        outcome = await self._appointments.reschedule(
+            self._actor(conversation),
+            RescheduleVisit(
+                appointment_id=chosen.id,
+                new_start=new_start,
+                command_key=f"maia-reschedule:{chosen.id}:{new_start.isoformat()}",
+            ),
+        )
+        prop = await self._session.get(Property, chosen.property_uuid)
+        if isinstance(outcome, VisitRefused):
+            answer = self._refusal(outcome, prop)
+            if outcome.reason is Refusal.SLOT_UNAVAILABLE and prop is not None:
+                # Re-quote from the same authority the booking just used.
+                refreshed = await self._refresh_after_conflict(
+                    conversation, prop, await self._snapshot_row(conversation, prop)
+                )
+                return refreshed
+            if outcome.reason is Refusal.INCONCLUSIVE:
+                answer["appointment_reference"] = chosen.reference
+                answer["original_preserved"] = True
+            return answer
+        moved = await self._reload(outcome)
+        return {
+            "result": "rescheduled",
+            "appointment_reference": moved.reference,
+            "previous_reference": chosen.reference,
+            "property_id": prop.property_key if prop else None,
+            "property_name": prop.name if prop else None,
+            "start": self._local(moved.starts_at),
+            "end": self._local(moved.ends_at),
+            "time_zone": self._policy.schedule.timezone,
+        }
 
     # -- cancel_appointment ------------------------------------------------
 
@@ -362,6 +525,79 @@ class AppointmentService:
         if cycle is None or not cycle.is_active(_now()):
             return {"result": "conversation_expired"}
 
+        chosen = await self._one_future_appointment(conversation, reference)
+        if isinstance(chosen, dict):
+            return chosen
+
+        prop = await self._session.get(Property, chosen.property_uuid)
+        outcome = await self._appointments.cancel(
+            self._actor(conversation),
+            CancelVisit(
+                appointment_id=chosen.id,
+                command_key=f"maia-cancel:{chosen.id}",
+                trigger_inbox_ids=trigger_inbox_ids,
+            ),
+        )
+        if isinstance(outcome, VisitRefused):
+            answer = self._refusal(outcome, prop)
+            answer["appointment_reference"] = chosen.reference
+            return answer
+        assert isinstance(outcome, VisitCancelled)
+        return {
+            "result": "cancelled",
+            # Reported rather than assumed: the visit is cancelled either way,
+            # and the tool's answer must not imply a message the gate refused.
+            "lead_notified": outcome.contact_notified,
+            "appointment_reference": outcome.reference,
+            "property_id": prop.property_key if prop else None,
+            "property_name": prop.name if prop else None,
+            "start": self._local(outcome.starts_at),
+            "end": self._local(outcome.ends_at),
+            "time_zone": self._policy.schedule.timezone,
+            "reschedule_prompt_required": outcome.reschedule_prompt_required,
+        }
+
+    # -- Shared conversational plumbing ------------------------------------
+
+    def _actor(self, conversation: Conversation) -> Actor:
+        """Product acting on the Contact's behalf inside the Organization.
+
+        Maia is not a member of the team and holds no authority of her own; the
+        Actor is Product's, which is organization-scoped and deliberately not an
+        administrator (ADR-0046).
+        """
+        return Actor.product(conversation.organization_id, "MaiaAppointments")
+
+    async def _reload(self, outcome: VisitBooked) -> Appointment:
+        row = await self._session.get(Appointment, outcome.appointment_id)
+        assert row is not None
+        return row
+
+    def _refusal(
+        self, outcome: VisitRefused, prop: Property | None
+    ) -> dict[str, Any]:
+        """One named refusal, in the vocabulary the Model's guide already has."""
+        answer: dict[str, Any] = {
+            "result": _TOOL_RESULTS[outcome.reason.value],
+            "detail": outcome.reason.value,
+        }
+        if prop is not None:
+            answer["property_id"] = prop.property_key
+        if outcome.alternatives:
+            answer["candidates"] = _to_json(
+                list(outcome.alternatives)[: self._policy.max_candidates],
+                self._policy.schedule.zone,
+            )
+        return answer
+
+    async def _one_future_appointment(
+        self, conversation: Conversation, reference: str | None
+    ) -> Appointment | dict[str, Any]:
+        """The confirmed future visit a logistics request is about.
+
+        Ambiguity is handed back to the Model rather than guessed: two future
+        visits and no reference means asking which one, not picking the earlier.
+        """
         query = (
             select(Appointment)
             .where(Appointment.conversation_id == conversation.id)
@@ -371,7 +607,7 @@ class AppointmentService:
         )
         if reference:
             query = query.where(Appointment.reference == reference)
-        rows = (await self._session.execute(query)).scalars().all()
+        rows = list(await self._session.scalars(query))
         if not rows:
             return {"result": "not_found"}
         if len(rows) > 1 and not reference:
@@ -379,75 +615,7 @@ class AppointmentService:
                 "result": "ambiguous",
                 "appointments": [self._summary_for(row) for row in rows],
             }
-
-        row = rows[0]
-        prop = await self._session.get(Property, row.property_uuid)
-        lead = await self._session.get(Lead, row.lead_id)
-
-        event_id = row.calendar_event_id
-        if event_id is None:
-            evidence = await self._calendar.find_by_reference(row.reference)
-            if evidence.outcome is not CalendarOutcome.OK:
-                return {
-                    "result": "needs_review",
-                    "appointment_reference": row.reference,
-                    "detail": evidence.detail,
-                }
-            event_id = evidence.event_id
-
-        if event_id is not None:
-            deleted = await self._calendar.delete_event(event_id)
-            if deleted.outcome is not CalendarOutcome.OK:
-                return {
-                    "result": "needs_review",
-                    "appointment_reference": row.reference,
-                    "detail": deleted.detail,
-                }
-
-        row.status = AppointmentStatus.CANCELLED.value
-        row.cancelled_at = _now()
-        row.calendar_event_id = None
-        row.resolved_at = row.resolved_at or row.cancelled_at
-        await self._session.commit()
-
-        notified = lead is not None
-        if lead is not None:
-            # Reached through the Hermes cancel tool, so the Contact is asking
-            # for this in an open conversation. It is still put to the gate: if
-            # the tool ran long after their last message the window may have
-            # closed, and a send that Meta would reject must fail here instead.
-            confirmation = await OutboundMessaging(self._session).request(
-                OutboundIntent(
-                    conversation=conversation,
-                    body=cancellation_message(
-                        property_name=prop.name if prop else "la propiedad",
-                        starts_at=row.starts_at,
-                        schedule=self._policy.schedule,
-                    ),
-                    purpose=Purpose.APPOINTMENT_CANCELLATION,
-                    initiation=OutboundInitiation.REACTIVE,
-                    trigger_inbox_ids=trigger_inbox_ids,
-                    idempotency_key=f"appointment-cancellation:{row.id}",
-                )
-            )
-            await self._session.commit()
-            if isinstance(confirmation, Denied):
-                # The visit is cancelled either way — that already happened in
-                # Calendar. What the Contact was not told is reported, so the
-                # tool's answer cannot imply a message that never went out.
-                notified = False
-
-        return {
-            "result": "cancelled",
-            "lead_notified": notified,
-            "appointment_reference": row.reference,
-            "property_id": prop.property_key if prop else None,
-            "property_name": prop.name if prop else None,
-            "start": self._local(row.starts_at),
-            "end": self._local(row.ends_at),
-            "time_zone": self._policy.schedule.timezone,
-            "reschedule_prompt_required": True,
-        }
+        return rows[0]
 
     def _summary_for(self, row: Appointment) -> dict[str, Any]:
         return {
@@ -463,46 +631,6 @@ class AppointmentService:
             if slot.start == start:
                 return slot
         return None
-
-    async def _persist_attempt(
-        self,
-        conversation: Conversation,
-        prop: Property,
-        slot: Interval,
-        attendee_name: str | None,
-    ) -> Appointment | None:
-        attempt = Appointment(
-            # The appointment belongs to the Organization that owns the
-            # Conversation. Derived rather than passed in: two sources for the
-            # same fact could disagree (ADR-0019).
-            organization_id=conversation.organization_id,
-            reference=_reference(),
-            idempotency_key=f"apt:{conversation.id}:{prop.id}:{slot.start.isoformat()}",
-            conversation_id=conversation.id,
-            lead_id=conversation.lead_id,
-            property_uuid=prop.id,
-            starts_at=slot.start,
-            ends_at=slot.end,
-            attendee_name=attendee_name,
-            status=AppointmentStatus.PENDING.value,
-        )
-        self._session.add(attempt)
-        try:
-            await self._session.commit()
-        except IntegrityError:
-            await self._session.rollback()
-            return None
-        return attempt
-
-    def _describe(self, lead: Lead | None, attendee_name: str | None) -> str:
-        lines = []
-        if attendee_name:
-            lines.append(f"Nombre: {attendee_name}")
-        if lead is not None:
-            if lead.profile_name:
-                lines.append(f"WhatsApp: {lead.profile_name}")
-            lines.append(f"Teléfono: +{lead.wa_id}")
-        return "\n".join(lines)
 
     async def _refresh_after_conflict(
         self,
@@ -539,13 +667,20 @@ class AppointmentService:
         """
         return moment.astimezone(self._policy.schedule.zone).isoformat()
 
-    def _result_for(self, attempt: Appointment, prop: Property) -> dict[str, Any]:
+    def _result_for(
+        self, attempt: Appointment, property_key: str, property_name: str
+    ) -> dict[str, Any]:
+        """The tool answer for one attempt, from values already loaded.
+
+        Takes the Property's key and name rather than the row, for the reason
+        spelled out in :meth:`book`: the row may be expired by then.
+        """
         if attempt.status == AppointmentStatus.CONFIRMED.value:
             return {
                 "result": "confirmed",
                 "appointment_reference": attempt.reference,
-                "property_id": prop.property_key,
-                "property_name": prop.name,
+                "property_id": property_key,
+                "property_name": property_name,
                 "start": self._local(attempt.starts_at),
                 "end": self._local(attempt.ends_at),
                 "time_zone": self._policy.schedule.timezone,
@@ -554,10 +689,14 @@ class AppointmentService:
             return {
                 "result": "needs_review",
                 "appointment_reference": attempt.reference,
-                "property_id": prop.property_key,
+                "property_id": property_key,
             }
         if attempt.status == AppointmentStatus.REJECTED.value:
-            return {"result": "slot_unavailable", "property_id": prop.property_key, "candidates": []}
+            return {
+                "result": "slot_unavailable",
+                "property_id": property_key,
+                "candidates": [],
+            }
         return {"result": "temporarily_unavailable"}
 
 
