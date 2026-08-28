@@ -507,6 +507,7 @@ async def test_the_loser_of_an_idempotency_race_reports_the_winners_outcome(
     async def another_worker_wins_first(self, conversation, prop, slot, attendee_name):  # noqa: ANN001, ANN202
         async with database.session_scope() as other:
             row = Appointment(
+                organization_id=conversation.organization_id,
                 reference="APT-COMPETITOR",
                 idempotency_key=(
                     f"apt:{conversation.id}:{prop.id}:{slot.start.isoformat()}"

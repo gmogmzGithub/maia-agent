@@ -26,6 +26,7 @@ from realestate.db.models import (
     PropertyStatus,
 )
 from realestate.domain.audit import record_audit
+from realestate.domain.commercial.organization import OrganizationDirectory
 from realestate.domain.property_document import (
     PropertyDocument,
     ValidationError,
@@ -183,6 +184,15 @@ class PropertyService:
         self._artifacts = artifacts
         self._catalog = catalog
 
+    async def _organization_id(self) -> uuid.UUID:
+        """The Organization a newly accepted Property belongs to (ADR-0019).
+
+        Deferred to the directory rather than resolved here: the upload surface
+        has no Organization selector, and when it gains one there must be a
+        single place that answers this question for every path.
+        """
+        return await OrganizationDirectory(self._session).organization_id()
+
     # -- Ingestion --------------------------------------------------------
 
     async def accept_upload(
@@ -324,6 +334,7 @@ class PropertyService:
         visit_address: str | None,
     ) -> AcceptedUpload:
         prop = Property(
+            organization_id=await self._organization_id(),
             property_key=document.property_key,
             name=document.name,
             normalized_name=document.normalized_name,

@@ -24,6 +24,8 @@ from enum import Enum
 import httpx
 
 
+from realestate.domain.text import fold_mexican_mobile
+
 class SendOutcome(str, Enum):
     SENT = "sent"
     FAILED_RETRYABLE = "failed_retryable"
@@ -54,20 +56,16 @@ KEEPALIVE_EXPIRY_SECONDS = 15.0
 def normalize_recipient(wa_id: str) -> str:
     """Return the form Meta accepts as a send target.
 
-    Mexican mobile numbers carry a legacy ``1`` after the country code. Meta
-    reports inbound senders as ``521XXXXXXXXXX`` but rejects that same string as
-    a send target on the test number's allowlist, which stores
-    ``52XXXXXXXXXX``. Observed directly: replying to the exact ``wa_id`` Meta
-    gave us failed with ``131030 Recipient phone number not in allowed list``,
-    while the un-prefixed form delivered.
+    The numbering rule itself lives in :func:`~realestate.domain.text.fold_mexican_mobile`,
+    shared with the Contact duplicate detector: the send target and the
+    "is this the same person" question must never disagree about Mexico's
+    optional ``1``.
 
-    Only ``521`` + 10 digits is touched. Everything else is returned unchanged,
-    so this cannot silently mangle another country's numbering.
+    The fallback is this function's own: an identifier with no digits at all is
+    returned verbatim rather than as an empty string, because Meta rejecting a
+    malformed recipient is a better outcome than Product sending to "".
     """
-    digits = "".join(c for c in wa_id if c.isdigit())
-    if len(digits) == 13 and digits.startswith("521"):
-        return "52" + digits[3:]
-    return digits or wa_id
+    return fold_mexican_mobile(wa_id) or wa_id
 
 
 class WhatsAppClient:

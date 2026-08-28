@@ -11,6 +11,17 @@ Two responsibilities, deliberately separated:
   Conversation in arrival order as a single group, under a fenced lease.
 
 Nothing here talks to Hermes or to Meta.
+
+**One dependency points the "wrong" way and is deliberate.** Acceptance calls
+:class:`~realestate.domain.commercial.intake.CommercialIntake`, so this module
+imports the commercial layer. The requirement is real — a Contact or an
+Opportunity that outlived the message which produced it would be a record of
+something that never durably happened, so they must land in *this* transaction.
+The tidier shape is a coordinator above both, which the webhook route would call
+instead; that means moving commit ownership and the duplicate-``wamid``
+``IntegrityError`` retry out of :meth:`InboxService.accept`, and rewriting a
+Stage 1 recovery path is not worth doing on the way past. Recorded rather than
+hidden.
 """
 
 from __future__ import annotations
@@ -36,6 +47,7 @@ from realestate.db.models import (
     LeadEngagementCycle,
 )
 from realestate.domain.audit import record_audit
+from realestate.domain.commercial.intake import CommercialIntake
 from realestate.domain.outbound import detect_opt_out, record_explicit_opt_out
 
 # P-038: a two-minute processing lease, renewed every 30 seconds.
@@ -70,7 +82,9 @@ def _requeue(message: InboxMessage, now: datetime) -> None:
         return
     message.status = InboxStatus.PENDING.value
     message.group_id = None
-    message.next_attempt_at = now + timedelta(seconds=retry_delay_seconds(message.attempts))
+    message.next_attempt_at = now + timedelta(
+        seconds=retry_delay_seconds(message.attempts)
+    )
 
 
 @dataclass(frozen=True)
@@ -81,6 +95,13 @@ class AcceptedMessage:
     lead_id: uuid.UUID
     duplicate: bool
     cycle_created: bool
+    # The commercial record this message resolved to (Stage 2). Set on a first
+    # delivery, where they are a by-product of work this transaction already
+    # did. ``None`` on a redelivery: the record exists, but looking it up again
+    # would cost the webhook path two queries for an answer the original
+    # delivery already reported.
+    contact_id: uuid.UUID | None = None
+    opportunity_id: uuid.UUID | None = None
 
 
 def combined_text(messages: Sequence[InboxMessage]) -> str:
@@ -129,8 +150,15 @@ class InboxService:
             )
         ).scalar_one_or_none()
         if existing is not None:
-            conversation = await self._session.get(Conversation, existing.conversation_id)
+            conversation = await self._session.get(
+                Conversation, existing.conversation_id
+            )
             assert conversation is not None
+            # Deliberately not re-resolving the commercial record here. The
+            # first delivery created it in the same transaction as the message,
+            # so a redelivery adds nothing — and Meta retries on the latency
+            # path, which is the worst place to spend two extra queries on
+            # fields no caller reads for a duplicate.
             return AcceptedMessage(
                 inbox_id=existing.id,
                 conversation_id=conversation.id,
@@ -140,7 +168,9 @@ class InboxService:
                 cycle_created=False,
             )
 
-        lead = await self._lead(message)
+        intake = CommercialIntake(self._session)
+        organization_id = await intake.organization_id()
+        lead = await self._lead(message, organization_id)
         cycle, cycle_created = await self._current_cycle(lead)
         conversation = await self._conversation(lead, cycle, message.phone_number_id)
 
@@ -185,6 +215,14 @@ class InboxService:
                     commit=False,
                 )
 
+            # The commercial record is created here, in the same transaction,
+            # for the reason the opt-out above is: a Contact or an Opportunity
+            # that outlived the message that produced it would be a record of
+            # something that never durably happened.
+            intake_result = await intake.record_inbound(
+                lead=lead, conversation=conversation, inbox_id=row.id
+            )
+
             await self._session.commit()
         except IntegrityError:
             # Two concurrent webhook deliveries of the same wamid raced. The
@@ -199,12 +237,15 @@ class InboxService:
             lead_id=lead.id,
             duplicate=False,
             cycle_created=cycle_created,
+            contact_id=intake_result.contact_id,
+            opportunity_id=intake_result.opportunity_id,
         )
 
-    async def _lead(self, message: InboundMessage) -> Lead:
+    async def _lead(self, message: InboundMessage, organization_id: uuid.UUID) -> Lead:
         lead = (
             await self._session.execute(
                 select(Lead)
+                .where(Lead.organization_id == organization_id)
                 .where(Lead.wa_id == message.from_wa_id)
                 .with_for_update()
             )
@@ -214,7 +255,11 @@ class InboxService:
                 lead.profile_name = message.profile_name
             return lead
 
-        lead = Lead(wa_id=message.from_wa_id, profile_name=message.profile_name)
+        lead = Lead(
+            organization_id=organization_id,
+            wa_id=message.from_wa_id,
+            profile_name=message.profile_name,
+        )
         self._session.add(lead)
         await self._session.flush()
         return lead
@@ -260,7 +305,10 @@ class InboxService:
             return conversation
 
         conversation = Conversation(
-            lead_id=lead.id, cycle_id=cycle.id, phone_number_id=phone_number_id
+            organization_id=lead.organization_id,
+            lead_id=lead.id,
+            cycle_id=cycle.id,
+            phone_number_id=phone_number_id,
         )
         self._session.add(conversation)
         await self._session.flush()

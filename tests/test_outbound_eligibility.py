@@ -48,7 +48,11 @@ from realestate.domain.outbound import (
 from realestate.domain.text import fold_phrase
 from realestate.domain.outbox import OutboxKind
 from realestate.channels.whatsapp.payload import InboundMessage
-from tests.conftest import DATABASE_URL, requires_postgres
+from tests.conftest import (
+    DATABASE_URL,
+    larevia_organization_id,
+    requires_postgres,
+)
 
 pytestmark = requires_postgres
 
@@ -85,7 +89,8 @@ async def seed(
 ) -> tuple:
     """One Lead with one Conversation, and the message history that matters."""
     async with database.session_scope() as session:
-        lead = Lead(wa_id=WA_ID)
+        organization_id = await larevia_organization_id(session)
+        lead = Lead(organization_id=organization_id, wa_id=WA_ID)
         session.add(lead)
         await session.flush()
         cycle = LeadEngagementCycle(
@@ -96,7 +101,10 @@ async def seed(
         session.add(cycle)
         await session.flush()
         conversation = Conversation(
-            lead_id=lead.id, cycle_id=cycle.id, phone_number_id="123456"
+            organization_id=organization_id,
+            lead_id=lead.id,
+            cycle_id=cycle.id,
+            phone_number_id="123456",
         )
         session.add(conversation)
         await session.flush()
@@ -260,7 +268,8 @@ async def test_trigger_messages_from_another_conversation_are_refused(
     """A caller cannot borrow somebody else's messages to look reactive."""
     _, first = await seed(database)
     async with database.session_scope() as session:
-        lead = Lead(wa_id="5215558880000")
+        organization_id = await larevia_organization_id(session)
+        lead = Lead(organization_id=organization_id, wa_id="5215558880000")
         session.add(lead)
         await session.flush()
         cycle = LeadEngagementCycle(
@@ -269,7 +278,10 @@ async def test_trigger_messages_from_another_conversation_are_refused(
         session.add(cycle)
         await session.flush()
         other = Conversation(
-            lead_id=lead.id, cycle_id=cycle.id, phone_number_id="123456"
+            organization_id=organization_id,
+            lead_id=lead.id,
+            cycle_id=cycle.id,
+            phone_number_id="123456",
         )
         session.add(other)
         await session.flush()

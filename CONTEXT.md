@@ -94,10 +94,36 @@ An authorized member with organization-wide operational visibility and authority
 to manage Properties, Advisor access, assignments, and Advisor Absences.
 _Avoid_: Property Expert, unrestricted database user, Maia
 
+**Organization Member**:
+One authorized human inside a Brokerage Organization, holding exactly one role
+and, separately, whether they may own Opportunities. It is the record
+authorization resolves an authenticated credential to; a credential with no
+active member is refused.
+_Avoid_: Basic-auth account, environment variable, implicit administrator
+
 **Contact**:
 A person known to the real-estate operation across time, independently of how
 many searches, conversations, or transactions they pursue.
 _Avoid_: Lead, customer record, phone number
+
+**Channel Identity**:
+One addressable identifier through which a Contact reaches the operation, with
+how well Product knows it is theirs. The same trusted identifier presented again
+resolves to the same Contact; identifiers that merely look alike never do.
+_Avoid_: Contact, phone number as identity, normalized number
+
+**Opportunity Exception**:
+The recorded, attributed reason an active Opportunity legitimately has no Next
+Action right now. It is the alternative the follow-up promise allows, and it
+clears when the reason stops applying.
+_Avoid_: Missing Next Action, Dormant Opportunity, silent gap
+
+**Follow-up Coverage**:
+The share of active Opportunities that have a Responsible Advisor, an explicit
+commercial stage, and either a Next Action that is not overdue or an
+Opportunity Exception. The target is 100 percent; conversion and harm are
+measured separately.
+_Avoid_: Advisor performance score, conversion rate, win rate
 
 **Property Need**:
 One Contact's coherent real-estate intent and constraints, such as buying a home

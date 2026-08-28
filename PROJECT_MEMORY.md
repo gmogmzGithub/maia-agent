@@ -765,8 +765,9 @@ WhatsApp handoffs are diagnostic funnel measures, not the final success metric.
 
 ## Current Stage
 
-Local Stage 1 outbound-safety implementation, verified in the canonical Docker
-Compose runtime.
+Local Stage 2 commercial system-of-record implementation, verified in the
+canonical Docker Compose runtime. Stage closure is Codex's decision, not a
+claim made here.
 
 Implemented locally:
 
@@ -781,6 +782,30 @@ Implemented locally:
   row, with a second check immediately before Meta delivery;
 - transactional explicit opt-out, durable Suppression and Consent evidence, and
   fail-closed quarantine of pre-gate unsent rows;
+- an explicit Brokerage Organization that owns Properties, channel identities,
+  Conversations, appointments, and every commercial record;
+- Organization Administrator and Real Estate Advisor resolved from a reconciled
+  member directory rather than implied by a credential (ADR-0046);
+- Contact separated from Conversation and from channel identity, deduplicated
+  only on a trusted identifier and never on a look-alike one;
+- Property Needs with confirmed criteria, Pending interpretations, and a Stale
+  state after 90 days without confirmation;
+- Demand and Listing Acquisition Opportunities with the accepted stages,
+  evidence-bearing outcomes, and preserved first attribution;
+- deterministic assignment, a derived Assignment Queue with recorded reasons,
+  and one Next Action per Opportunity with a required result on completion;
+- Follow-up Coverage measured with its gaps attached, and auditable exceptions
+  where no Next Action is owed;
+- server-rendered Mexican Spanish surfaces for the panel, Inbox, Opportunities,
+  Contacts, and the Assignment Queue, showing denied outbound decisions and
+  communication restrictions without any path to send;
+- Property administration and document upload restricted to the Organization
+  Administrator, which they were not before: those routes accepted any
+  configured credential with no role lookup;
+- render-time idempotency keys on every operator form, so a double submission
+  replays instead of opening a second Opportunity or owing a second action;
+- conversation-content expiry separated from commercial history, with a
+  background pass for staleness, day-28 dormancy, and content retention;
 - Google Calendar availability and appointment booking;
 - Telegram administrative role;
 - deterministic lead follow-up worker whose current attempts are intentionally
@@ -800,7 +825,10 @@ Not yet proven or claimed:
 - live approved WhatsApp templates, marketing-consent capture, and proactive
   follow-up delivery;
 - multi-tenant operation;
-- horizontal scaling.
+- horizontal scaling;
+- self-managed multi-brokerage onboarding, billing, round-robin assignment, load
+  scoring, automatic commissions, the public catalog, EasyBroker, campaigns, and
+  the data warehouse — all deliberately later stages.
 
 ## Core Boundary
 
@@ -871,6 +899,42 @@ In a public GitHub repository, pushed branches are visible. Protected branches
 prevent unsafe changes to `main`; they do not hide sensitive content. Private
 material should stay in ignored local files, local-only branches, or a separate
 private repository.
+
+## Known Stage 2 Limitations
+
+- Membership is reconciled from three explicit non-secret configuration values.
+  There is no self-service team surface, and Advisor Absences are Stage 3.
+- The time-driven commercial rules — Property Need staleness, day-28 dormancy,
+  conversation-content expiry — run on a 15-minute interval inside
+  `CommercialUpkeepWorker` rather than on the background loop's one-second
+  cadence. The interval is declared beside the rules it paces.
+- `require_actor` opens its own session to resolve the member row, so a CRM
+  request checks out two connections and reads two snapshots. Harmless for one
+  operator on an internal surface; the fix is a request-scoped session shared by
+  every handler, which is a broad refactor and was not done.
+- `domain/inbox.py` imports the commercial layer, because a Contact and an
+  Opportunity must land in the transaction that persists the message. The tidier
+  shape is a coordinator above both; hoisting commit ownership out of
+  `InboxService.accept` would rewrite a Stage 1 recovery path and was deferred
+  rather than hidden.
+- CONTEXT.md now defines **Channel Identity**, while the table is still called
+  `leads` and the column `lead_id`. Internal identifiers may stay English
+  (PROJECT_MEMORY), so this is a naming inconsistency rather than a leak — no
+  operator-visible string says "lead" — but renaming the table is its own
+  migration.
+- The Property Expert branch of the assignment rule is named but unreachable:
+  the designation itself arrives with the inventory and human-operation stages.
+- A WhatsApp phone number does not identify a Brokerage Organization. The
+  single-Organization MVP resolves it by slug in one place.
+- Child tables reach the Organization through a NOT NULL foreign key to
+  Properties, channel identities, Conversations, or appointments rather than
+  carrying a redundant column that could disagree.
+- Proactive follow-up remains denied. Stage 2 removes one of ADR-0045's four
+  preconditions — the commercial states now exist — but marketing consent
+  capture, real approved Meta templates, and explicit policy activation do not.
+- Downgrading revision 0013 drops the commercial tables, so the history they
+  hold does not survive it. Revision 0012's downgrade likewise drops the
+  Contacts it derived; the Leads they came from are untouched.
 
 ## Open Next Work
 

@@ -83,6 +83,7 @@ async def appointment(database: Database, *, status: str) -> Appointment:
         prop = (await session.execute(select(Property))).scalar_one()
         start = datetime.now(tz=UTC) + timedelta(days=2)
         row = Appointment(
+            organization_id=conversation.organization_id,
             reference=f"APT-{status.upper()}",
             idempotency_key=f"apt:test:{status}",
             conversation_id=conversation.id,

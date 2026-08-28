@@ -17,6 +17,7 @@ from fastapi import FastAPI
 
 from realestate.api import health as health_api
 from realestate.api import admin as admin_api
+from realestate.api import crm as crm_api
 from realestate.api import plugin as plugin_api
 from realestate.api import upload as upload_api
 from realestate.api import webhooks as webhooks_api
@@ -28,12 +29,14 @@ from realestate.db.engine import Database
 from realestate.domain.appointments import AppointmentPolicy
 from realestate.domain.admin_work import AdminWorkService
 from realestate.domain.availability import WeeklySchedule
+from realestate.domain.commercial.organization import OrganizationDirectory
 from realestate.domain.properties import ArtifactStore, CatalogStore
 from realestate.hermes import HermesClient
 from realestate.worker.broker import BrokerNotifier
 from realestate.worker.followups import LeadFollowUpWorker
 from realestate.worker.loop import BackgroundLoop, idle_tick
 from realestate.worker.telegram import TelegramAdminWorker
+from realestate.worker.upkeep import CommercialUpkeepWorker
 from realestate.worker.whatsapp import WhatsAppWorker
 
 logger = logging.getLogger(__name__)
@@ -42,6 +45,46 @@ logger = logging.getLogger(__name__)
 def _log_level(name: str) -> int:
     level = getattr(logging, name.strip().upper(), None)
     return level if isinstance(level, int) else logging.INFO
+
+
+async def _reconcile_directory(app: FastAPI) -> None:
+    """Make the Organization's member rows match the configured team.
+
+    Best-effort on purpose. An unreachable or unmigrated database must not stop
+    the process, because an operator needs /health to read *why*. What is not
+    best-effort is the plan itself: an inconsistent one raises before this runs,
+    the same way a malformed weekly schedule does.
+    """
+    plan = app.state.directory_plan
+    if not plan.logins:
+        logger.warning(
+            "No Organization members are configured. Set "
+            "ORGANIZATION_ADMIN_LOGINS and ORGANIZATION_ADVISOR_LOGINS; until "
+            "then the commercial surfaces refuse every credential."
+        )
+        return
+    try:
+        async with app.state.database.session_scope() as session:
+            result = await OrganizationDirectory(session).reconcile(plan)
+    except Exception:
+        logger.exception(
+            "Could not reconcile Organization members; the commercial "
+            "surfaces will refuse credentials until this succeeds"
+        )
+        return
+    if result.changed:
+        logger.info(
+            "Organization members reconciled (created=%s, updated=%s, "
+            "deactivated=%s)",
+            list(result.created),
+            list(result.updated),
+            list(result.deactivated),
+        )
+    else:
+        logger.info(
+            "Organization members already match configuration (%d member(s))",
+            len(plan.logins),
+        )
 
 
 async def _log_startup_report(app: FastAPI) -> None:
@@ -88,6 +131,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         "hermes_transport=loopback-json-rpc-websocket"
     )
 
+    # Validated before anything else touches it: a default Advisor login that
+    # does not exist would silently send every new Opportunity to the
+    # Assignment Queue, which is worse than refusing to start.
+    app.state.directory_plan = settings.directory_plan
     app.state.database = Database(settings.database_url)
     app.state.artifacts = ArtifactStore(Path(settings.artifact_root))
     app.state.property_catalog = CatalogStore(Path(settings.property_catalog_root))
@@ -135,6 +182,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         reminder_minutes=settings.broker_reminder_minutes_before,
     )
     app.state.followup_worker = LeadFollowUpWorker(database=app.state.database)
+    # Property Need staleness, day-28 dormancy and conversation-content expiry.
+    # Paces itself: these rules have 28- and 90-day horizons and the loop ticks
+    # once a second.
+    app.state.upkeep_worker = CommercialUpkeepWorker(database=app.state.database)
 
     async def tick() -> None:
         # Lead work, follow-ups, Administrative work, and the Broker's
@@ -159,6 +210,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ("recovery", recover),
             ("lead", app.state.worker.tick),
             ("lead follow-ups", app.state.followup_worker.tick),
+            ("commercial upkeep", app.state.upkeep_worker.tick),
             ("administrative", app.state.admin_worker.tick),
             ("broker notifications", app.state.broker_notifier.tick),
         ):
@@ -181,6 +233,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await app.state.background_loop.start()
     else:
         logger.warning("Background worker is disabled; API stays up but no Inbox polling runs")
+    await _reconcile_directory(app)
     await _log_startup_report(app)
 
     try:
@@ -227,6 +280,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.include_router(health_api.router)
     app.include_router(admin_api.router)
+    app.include_router(crm_api.router)
     app.include_router(plugin_api.router)
     app.include_router(upload_api.router)
     app.include_router(webhooks_api.router)

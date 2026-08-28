@@ -67,11 +67,22 @@ PLUGIN_TOKEN = "offline-plugin-token"
 DURABLE_SESSION = "offline-sales-session"
 
 
+# The Organization and its members are created by migration and configuration,
+# not by this scenario. Truncating them would leave every later test in the
+# session without the Organization that all commercial data belongs to
+# (ADR-0019), so they are named as preserved rather than discovered by accident.
+PRESERVED_TABLES = frozenset({"organizations", "organization_members"})
+
+
 async def _truncate(database: Database) -> None:
     """Reset only the dedicated test database, including future mapped tables."""
     name = make_url(DATABASE_URL).database or ""
     assert name.endswith("_test"), f"refusing to truncate non-test database {name!r}"
-    tables = ", ".join(f'"{table.name}"' for table in Base.metadata.tables.values())
+    tables = ", ".join(
+        f'"{table.name}"'
+        for table in Base.metadata.tables.values()
+        if table.name not in PRESERVED_TABLES
+    )
     async with database.session_scope() as session:
         await session.execute(text(f"TRUNCATE TABLE {tables} RESTART IDENTITY CASCADE"))
         await session.commit()

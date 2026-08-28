@@ -14,7 +14,12 @@ from realestate.config import get_settings
 from realestate.db.engine import Database
 from realestate.db.models import AgentRole, AuditEvent, Property
 from realestate.domain.properties import ArtifactStore, CatalogStore, PropertyService
-from tests.conftest import DATABASE_URL, requires_postgres, reset_property_inventory
+from tests.conftest import (
+    DATABASE_URL,
+    provision_property_administrator,
+    requires_postgres,
+    reset_property_inventory,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 V1 = (FIXTURES / "casa-roble.md").read_bytes()
@@ -38,6 +43,7 @@ async def wired(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         await reset_property_inventory(session)
         await session.execute(delete(AuditEvent))
         await session.commit()
+        await provision_property_administrator(session)
 
     app = create_app(get_settings())
     app.state.database = database

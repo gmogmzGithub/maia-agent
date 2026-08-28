@@ -8,15 +8,13 @@ allowed, and then moves in both directions.
 
 from __future__ import annotations
 
-import os
 import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import create_engine, text
-from sqlalchemy.engine import make_url
+from sqlalchemy import text
 
-from tests.conftest import DATABASE_URL, REPO_ROOT, requires_postgres
+from tests.conftest import database_at_revision, requires_postgres
 
 pytestmark = requires_postgres
 
@@ -24,57 +22,15 @@ MIGRATION_DATABASE = "realestate_migration_test"
 NOW = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
 
 
-def _url(database: str) -> str:
-    return make_url(DATABASE_URL).set(database=database).render_as_string(
-        hide_password=False
-    )
-
-
-def _recreate_database() -> str:
-    import psycopg
-
-    admin = _url("postgres").replace("postgresql+psycopg://", "postgresql://")
-    with psycopg.connect(admin, autocommit=True) as connection:
-        connection.execute(
-            f'DROP DATABASE IF EXISTS "{MIGRATION_DATABASE}" WITH (FORCE)'
-        )
-        connection.execute(f'CREATE DATABASE "{MIGRATION_DATABASE}"')
-    return _url(MIGRATION_DATABASE)
-
-
-def _alembic(url: str):
-    from alembic.config import Config
-
-    config = Config()
-    config.set_main_option("script_location", str(REPO_ROOT / "migrations"))
-    config.set_main_option("sqlalchemy.url", url)
-    return config
-
-
 @pytest.fixture
 def migrated():
     """A database at revision 0009 with legacy follow-up rows already in it."""
-    from alembic import command
-
-    from realestate.config import get_settings
-
-    url = _recreate_database()
-    previous = os.environ.get("DATABASE_URL")
-    os.environ["DATABASE_URL"] = url
-    get_settings.cache_clear()
-    config = _alembic(url)
-    try:
-        command.upgrade(config, "0009_property_administration")
-        engine = create_engine(url, future=True)
+    with database_at_revision(MIGRATION_DATABASE, "0009_property_administration") as (
+        config,
+        engine,
+    ):
         _seed_legacy(engine)
         yield config, engine
-        engine.dispose()
-    finally:
-        if previous is None:
-            os.environ.pop("DATABASE_URL", None)
-        else:
-            os.environ["DATABASE_URL"] = previous
-        get_settings.cache_clear()
 
 
 def _insert_cycle(  # noqa: ANN201

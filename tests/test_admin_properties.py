@@ -14,7 +14,12 @@ from realestate.config import get_settings
 from realestate.db.engine import Database
 from realestate.db.models import AuditEvent, Property, PropertyDocumentVersion
 from realestate.domain.properties import ArtifactStore, CatalogStore
-from tests.conftest import DATABASE_URL, requires_postgres, reset_property_inventory
+from tests.conftest import (
+    DATABASE_URL,
+    provision_property_administrator,
+    requires_postgres,
+    reset_property_inventory,
+)
 
 pytestmark = requires_postgres
 
@@ -105,6 +110,7 @@ async def wired(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         await reset_property_inventory(session)
         await session.execute(delete(AuditEvent))
         await session.commit()
+        await provision_property_administrator(session)
 
     app = create_app(get_settings())
     app.state.database = database

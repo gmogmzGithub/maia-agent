@@ -45,7 +45,11 @@ from realestate.domain.outbound import (
     DenialReason,
 )
 from realestate.worker.followups import LeadFollowUpWorker
-from tests.conftest import DATABASE_URL, requires_postgres
+from tests.conftest import (
+    DATABASE_URL,
+    larevia_organization_id,
+    requires_postgres,
+)
 
 pytestmark = requires_postgres
 
@@ -86,7 +90,12 @@ async def cycle(
 ) -> None:
     """One engagement cycle, plus whatever history the case needs."""
     async with database.session_scope() as session:
-        lead = Lead(wa_id=wa_id, follow_up_opt_out=opt_out)
+        organization_id = await larevia_organization_id(session)
+        lead = Lead(
+            organization_id=organization_id,
+            wa_id=wa_id,
+            follow_up_opt_out=opt_out,
+        )
         session.add(lead)
         await session.flush()
         row = LeadEngagementCycle(
@@ -97,7 +106,10 @@ async def cycle(
         session.add(row)
         await session.flush()
         conversation = Conversation(
-            lead_id=lead.id, cycle_id=row.id, phone_number_id="123456"
+            organization_id=organization_id,
+            lead_id=lead.id,
+            cycle_id=row.id,
+            phone_number_id="123456",
         )
         session.add(conversation)
         await session.flush()

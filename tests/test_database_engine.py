@@ -20,7 +20,11 @@ from sqlalchemy import select, text
 
 from realestate.db.engine import Database, DatabaseHealth
 from realestate.db.models import Lead
-from tests.conftest import DATABASE_URL, requires_postgres
+from tests.conftest import (
+    DATABASE_URL,
+    larevia_organization_id,
+    requires_postgres,
+)
 
 
 def test_the_health_report_serialises_for_the_health_endpoint() -> None:
@@ -100,7 +104,12 @@ async def test_a_failed_unit_of_work_is_rolled_back_on_the_way_out() -> None:
     try:
         with pytest.raises(RuntimeError, match="halfway"):
             async with database.session_scope() as session:
-                session.add(Lead(wa_id=wa_id))
+                session.add(
+                    Lead(
+                        organization_id=await larevia_organization_id(session),
+                        wa_id=wa_id,
+                    )
+                )
                 await session.flush()
                 raise RuntimeError("halfway through the unit of work")
 
@@ -124,7 +133,12 @@ async def test_an_uncommitted_unit_of_work_persists_nothing_either() -> None:
     wa_id = "5215559999002"
     try:
         async with database.session_scope() as session:
-            session.add(Lead(wa_id=wa_id))
+            session.add(
+                Lead(
+                    organization_id=await larevia_organization_id(session),
+                    wa_id=wa_id,
+                )
+            )
             await session.flush()
 
         async with database.session_scope() as session:

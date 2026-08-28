@@ -472,6 +472,10 @@ class AppointmentService:
         attendee_name: str | None,
     ) -> Appointment | None:
         attempt = Appointment(
+            # The appointment belongs to the Organization that owns the
+            # Conversation. Derived rather than passed in: two sources for the
+            # same fact could disagree (ADR-0019).
+            organization_id=conversation.organization_id,
             reference=_reference(),
             idempotency_key=f"apt:{conversation.id}:{prop.id}:{slot.start.isoformat()}",
             conversation_id=conversation.id,

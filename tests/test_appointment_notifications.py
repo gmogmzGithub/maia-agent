@@ -148,6 +148,7 @@ async def an_appointment(
         conversation = (await session.execute(select(Conversation))).scalar_one()
         prop = (await session.execute(select(Property))).scalar_one()
         row = Appointment(
+            organization_id=conversation.organization_id,
             reference=reference or f"APT-{uuid.uuid4().hex[:6].upper()}",
             idempotency_key=f"apt:{uuid.uuid4()}",
             conversation_id=conversation.id,

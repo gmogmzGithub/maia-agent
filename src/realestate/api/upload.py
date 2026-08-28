@@ -16,7 +16,9 @@ import html
 from fastapi import APIRouter, Depends, File, Request, UploadFile
 from fastapi.responses import HTMLResponse
 
-from realestate.api.developer import property_writer, require_developer
+from realestate.api.crm import require_administrator
+from realestate.api.developer import property_writer
+from realestate.domain.commercial.actors import Actor
 from realestate.domain.properties import AcceptedUpload
 from realestate.domain.property_document import MAX_UPLOAD_BYTES, ValidationError
 
@@ -72,7 +74,7 @@ current status. An invalid upload changes nothing.</small></p>
 
 
 @router.get("/upload", response_class=HTMLResponse)
-async def upload_page(_: str = Depends(require_developer)) -> HTMLResponse:
+async def upload_page(_: Actor = Depends(require_administrator)) -> HTMLResponse:
     return HTMLResponse(_page())
 
 
@@ -80,7 +82,7 @@ async def upload_page(_: str = Depends(require_developer)) -> HTMLResponse:
 async def upload_document(
     request: Request,
     file: UploadFile = File(...),
-    developer: str = Depends(require_developer),
+    actor: Actor = Depends(require_administrator),
 ) -> HTMLResponse:
     content = await file.read()
 
@@ -88,7 +90,7 @@ async def upload_document(
         service = property_writer(request, session)
         try:
             accepted: AcceptedUpload = await service.accept_upload(
-                filename=file.filename or "", content=content, actor_id=developer
+                filename=file.filename or "", content=content, actor_id=actor.label
             )
         except ValidationError as exc:
             # A rejection persists nothing and leaves any current accepted

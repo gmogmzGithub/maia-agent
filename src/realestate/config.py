@@ -12,6 +12,13 @@ from functools import lru_cache
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# The only domain import in this module, and it points one way: no domain module
+# imports config. Validating the plan on a settings property is what makes a
+# default-Advisor login that does not exist fail at startup instead of silently
+# sending every new Opportunity to the Assignment Queue — the same reason
+# ``WeeklySchedule.parse`` raises rather than narrowing availability.
+from realestate.domain.commercial.organization import DirectoryPlan
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -37,6 +44,38 @@ class Settings(BaseSettings):
     # process. It authenticates to this application with a shared local token;
     # it never receives database or Calendar credentials.
     plugin_api_token: str = Field(default="", alias="PLUGIN_API_TOKEN")
+
+    # --- Organization roles (ADR-0019, Stage 2) ------------------------------
+    # Non-secret, explicit configuration: which authenticated logins are
+    # Organization Administrators and which are Real Estate Advisors. This is
+    # the bootstrap only. Somebody has to be an administrator before anybody can
+    # create one, and the alternative — treating the first credential that
+    # authenticates as privileged — is exactly the ambiguity Stage 2 removes.
+    #
+    # A login listed in both is an Administrator who also advises, which is how
+    # "Santiago initially has both roles" is expressed without a third role.
+    # Membership itself lives in PostgreSQL; these values are reconciled into it
+    # at startup, idempotently and with an audit event.
+    organization_admin_logins: str = Field(
+        default="", alias="ORGANIZATION_ADMIN_LOGINS"
+    )
+    organization_advisor_logins: str = Field(
+        default="", alias="ORGANIZATION_ADVISOR_LOGINS"
+    )
+    # The deterministic assignment fallback. Optional when there is exactly one
+    # Advisor, because naming it twice would buy nothing.
+    organization_default_advisor_login: str = Field(
+        default="", alias="ORGANIZATION_DEFAULT_ADVISOR_LOGIN"
+    )
+
+    @property
+    def directory_plan(self) -> DirectoryPlan:
+        """The configured team, validated. Raises on an inconsistent plan."""
+        return DirectoryPlan.from_configuration(
+            administrators=self.organization_admin_logins,
+            advisors=self.organization_advisor_logins,
+            default_advisor=self.organization_default_advisor_login,
+        )
 
     # --- Property Document ingestion (P-045, P-051) --------------------------
     # Local Basic-auth secrets for the operational write surface. The JSON

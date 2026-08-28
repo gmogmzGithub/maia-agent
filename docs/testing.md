@@ -86,6 +86,9 @@ creates provider-side effects.
 |---|---:|---|
 | Unit and domain tests | Yes | Policy, parsing, retries, ambiguity, copy, and authorization |
 | Database/API/worker integration tests | Yes | PostgreSQL contracts, Inbox/Outbox, plugin calls, sessions, and recovery |
-| Vertical system scenario | Yes | WhatsApp Lead inquiry through booking and Broker notification |
+| Commercial domain tests | Yes | Contact resolution, stages, qualification, assignment races, Next Actions, retention |
+| Migration tests | Yes | Revisions 0012 and 0013 on an empty and a legacy database, upgrade and downgrade |
+| Operator surface tests | Yes | Mexican Spanish, accessibility, empty states, refusals, and that no CRM screen can send |
+| Vertical system scenario | Yes | WhatsApp inquiry through booking and Broker notification, and Inbox to Next Action |
 | Live model evaluation | No | Hermes/model tool choice, grounding, and conversational quality |
 | Manual channel rehearsal | No | Real Meta, Google Calendar, and Telegram configuration and delivery |
