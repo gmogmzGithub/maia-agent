@@ -16,6 +16,7 @@ dependencies = [
     "websockets==15.0.1",
     "python-multipart==0.0.32",
     "pyyaml==6.0.3",
+    "pillow==12.3.0",
     # Google Calendar is the authoritative source of Broker availability (S-007).
     "google-api-python-client==2.189.0",
     "google-auth==2.42.1",

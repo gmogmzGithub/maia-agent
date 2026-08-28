@@ -120,6 +120,34 @@ class CatalogPresentationTier(str, enum.Enum):
     SUPER_PREMIUM = "SuperPremium"
 
 
+class WebsiteConversationStatus(str, enum.Enum):
+    OPEN = "Open"
+    HANDOFF_PENDING = "HandoffPending"
+    VERIFIED = "Verified"
+    CLOSED = "Closed"
+
+
+class WebsiteMessageRole(str, enum.Enum):
+    CUSTOMER = "Customer"
+    MAIA = "Maia"
+    SYSTEM = "System"
+
+
+class ChannelHandoffPurpose(str, enum.Enum):
+    CONTINUE_WHATSAPP = "ContinueWhatsApp"
+    APPOINTMENT = "Appointment"
+    SAVED_COLLECTION_PROTECTION = "SavedCollectionProtection"
+
+
+class PublicAnalyticsEventName(str, enum.Enum):
+    LISTING_IMPRESSION = "ListingImpression"
+    GALLERY_OPEN = "GalleryOpen"
+    LISTING_SAVED = "ListingSaved"
+    MAIA_STARTED = "MaiaStarted"
+    HANDOFF_CREATED = "HandoffCreated"
+    APPOINTMENT_REQUESTED = "AppointmentRequested"
+
+
 class AgentRole(str, enum.Enum):
     """Separate conversational roles with separate authority (ADR-0001)."""
 
@@ -3325,4 +3353,258 @@ class ListingMedia(Base):
             postgresql_where=sql_text("revoked_at IS NULL"),
         ),
         Index("ix_listing_media_authority", "listing_id", "authority", "sort_order"),
+    )
+
+
+class SavedCollection(Base):
+    """One server-authoritative collection reached through an opaque cookie."""
+
+    __tablename__ = "saved_collections"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    access_token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    protected_contact_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("contacts.id", ondelete="RESTRICT"), nullable=True
+    )
+    # A device keeps its original cookie after WhatsApp protection. Following
+    # this pointer lets that device reach the merged protected collection
+    # without exposing a replacement token through the channel handoff.
+    merged_into_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("saved_collections.id", ondelete="RESTRICT"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    last_activity_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "protected_contact_id IS NULL OR expires_at IS NULL",
+            name="ck_saved_collections_protected_no_expiry",
+        ),
+        CheckConstraint(
+            "merged_into_id IS NULL OR merged_into_id <> id",
+            name="ck_saved_collections_not_self_merged",
+        ),
+        Index(
+            "uq_saved_collections_protected_contact",
+            "organization_id",
+            "protected_contact_id",
+            unique=True,
+            postgresql_where=sql_text(
+                "protected_contact_id IS NOT NULL AND deleted_at IS NULL "
+                "AND merged_into_id IS NULL"
+            ),
+        ),
+        Index("ix_saved_collections_expiry", "expires_at"),
+    )
+
+
+class SavedCollectionItem(Base):
+    __tablename__ = "saved_collection_items"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    collection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("saved_collections.id", ondelete="CASCADE"), nullable=False
+    )
+    listing_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("catalog_listings.id", ondelete="RESTRICT"), nullable=False
+    )
+    slug_snapshot: Mapped[str] = mapped_column(String(140), nullable=False)
+    title_snapshot: Mapped[str] = mapped_column(String(200), nullable=False)
+    location_snapshot: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    saved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("collection_id", "listing_id", name="uq_saved_collection_item"),
+        Index("ix_saved_collection_items_collection", "collection_id", "saved_at"),
+    )
+
+
+class SharedSelection(Base):
+    """A revocable, immutable snapshot of selected Listing identifiers."""
+
+    __tablename__ = "shared_selections"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    collection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("saved_collections.id", ondelete="CASCADE"), nullable=False
+    )
+    access_token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    snapshot: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (Index("ix_shared_selections_expiry", "expires_at"),)
+
+
+class WebsiteConversation(Base):
+    """An anonymous website thread, intentionally separate from WhatsApp."""
+
+    __tablename__ = "website_conversations"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    access_token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    hermes_session_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    verified_contact_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("contacts.id", ondelete="RESTRICT"), nullable=True
+    )
+    listing_context: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=WebsiteConversationStatus.OPEN.value
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    last_activity_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('Open', 'HandoffPending', 'Verified', 'Closed')",
+            name="ck_website_conversations_status",
+        ),
+        CheckConstraint(
+            "(verified_contact_id IS NULL AND status IN ('Open', 'HandoffPending')) OR "
+            "(verified_contact_id IS NOT NULL AND status IN ('Verified', 'Closed'))",
+            name="ck_website_conversations_verified_contact",
+        ),
+        Index("ix_website_conversations_activity", "last_activity_at"),
+    )
+
+
+class WebsiteMessage(Base):
+    __tablename__ = "website_messages"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("website_conversations.id", ondelete="CASCADE"), nullable=False
+    )
+    command_key: Mapped[str] = mapped_column(String(200), unique=True, nullable=False)
+    role: Mapped[str] = mapped_column(String(20), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    content_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    content_expired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint("role IN ('Customer', 'Maia', 'System')", name="ck_website_messages_role"),
+        Index("ix_website_messages_thread", "conversation_id", "created_at"),
+        Index(
+            "ix_website_messages_expiry",
+            "content_expires_at",
+            postgresql_where=sql_text("content_expired_at IS NULL"),
+        ),
+    )
+
+
+class ChannelHandoff(Base):
+    """A short-lived, single-use reference crossing site and verified WhatsApp."""
+
+    __tablename__ = "channel_handoffs"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    purpose: Mapped[str] = mapped_column(String(40), nullable=False)
+    website_conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("website_conversations.id", ondelete="CASCADE"), nullable=True
+    )
+    saved_collection_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("saved_collections.id", ondelete="CASCADE"), nullable=True
+    )
+    listing_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("catalog_listings.id", ondelete="RESTRICT"), nullable=True
+    )
+    expected_contact_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("contacts.id", ondelete="RESTRICT"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    consumed_by_contact_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("contacts.id", ondelete="RESTRICT"), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "purpose IN ('ContinueWhatsApp', 'Appointment', 'SavedCollectionProtection')",
+            name="ck_channel_handoffs_purpose",
+        ),
+        CheckConstraint(
+            "(consumed_at IS NULL) = (consumed_by_contact_id IS NULL)",
+            name="ck_channel_handoffs_consumed",
+        ),
+        CheckConstraint(
+            "website_conversation_id IS NOT NULL OR saved_collection_id IS NOT NULL "
+            "OR listing_id IS NOT NULL",
+            name="ck_channel_handoffs_context",
+        ),
+        Index("ix_channel_handoffs_expiry", "expires_at"),
+    )
+
+
+class PublicAnalyticsEvent(Base):
+    """Allowlisted, non-PII public funnel evidence; never raw interaction data."""
+
+    __tablename__ = "public_analytics_events"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    event_key: Mapped[str] = mapped_column(String(200), unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(40), nullable=False)
+    listing_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("catalog_listings.id", ondelete="RESTRICT"), nullable=True
+    )
+    presentation_tier: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    surface: Mapped[str] = mapped_column(String(40), nullable=False)
+    properties: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "name IN ('ListingImpression', 'GalleryOpen', 'ListingSaved', "
+            "'MaiaStarted', 'HandoffCreated', 'AppointmentRequested')",
+            name="ck_public_analytics_event_name",
+        ),
+        CheckConstraint(
+            "presentation_tier IS NULL OR presentation_tier IN "
+            "('Larevia', 'Premium', 'SuperPremium')",
+            name="ck_public_analytics_tier",
+        ),
+        Index("ix_public_analytics_funnel", "organization_id", "occurred_at", "name"),
     )

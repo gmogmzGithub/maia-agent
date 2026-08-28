@@ -86,6 +86,33 @@ services:
         max-size: 10m
         max-file: "3"
 
+  site:
+    build:
+      context: .
+      dockerfile: docker/product.Dockerfile
+    env_file: .env
+    environment:
+      PRODUCT_INTERNAL_BASE_URL: http://127.0.0.1:8080
+      PUBLIC_SITE_BASE_URL: http://127.0.0.1:8081
+      SITE_PUBLIC_ORIGIN: ${SITE_PUBLIC_ORIGIN:-http://localhost:8080}
+      SITE_PRODUCT_API_TOKEN: ${SITE_PRODUCT_API_TOKEN:-}
+      OFFICIAL_WHATSAPP_NUMBER: ${OFFICIAL_WHATSAPP_NUMBER:-}
+    command:
+      - uvicorn
+      - realestate.site.app:app
+      - --host
+      - 127.0.0.1
+      - --port
+      - "8081"
+    network_mode: service:product
+    depends_on:
+      product:
+        condition: service_healthy
+    logging:
+      options:
+        max-size: 10m
+        max-file: "3"
+
 volumes:
   postgres-data:
   hermes-state:

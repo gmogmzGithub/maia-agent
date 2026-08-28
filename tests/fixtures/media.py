@@ -28,6 +28,12 @@ class InMemoryMediaStorage:
             raise MediaStorageError("Falla de prueba al borrar el original.")
         self.objects.pop(key, None)
 
+    async def read(self, key: str) -> bytes:
+        try:
+            return self.objects[key]
+        except KeyError as exc:
+            raise MediaStorageError("missing") from exc
+
     async def purge_cache(self, keys: tuple[str, ...]) -> None:
         if self.fail_cache_once:
             self.fail_cache_once = False

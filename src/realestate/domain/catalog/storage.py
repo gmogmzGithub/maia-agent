@@ -17,6 +17,8 @@ class MediaStorage(Protocol):
 
     async def delete(self, key: str) -> None: ...
 
+    async def read(self, key: str) -> bytes: ...
+
     async def purge_cache(self, keys: tuple[str, ...]) -> None: ...
 
 
@@ -32,6 +34,13 @@ class LocalMediaStorage:
 
     async def delete(self, key: str) -> None:
         await asyncio.to_thread(self._path(self._root, key).unlink, missing_ok=True)
+
+    async def read(self, key: str) -> bytes:
+        path = self._path(self._root, key)
+        try:
+            return await asyncio.to_thread(path.read_bytes)
+        except OSError as exc:
+            raise MediaStorageError("No se pudo leer la fotografía autorizada.") from exc
 
     async def purge_cache(self, keys: tuple[str, ...]) -> None:
         paths = [self._path(self._cache_root, key) for key in keys]

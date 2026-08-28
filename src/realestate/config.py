@@ -45,6 +45,28 @@ class Settings(BaseSettings):
     # it never receives database or Calendar credentials.
     plugin_api_token: str = Field(default="", alias="PLUGIN_API_TOKEN")
 
+    # --- Public site -> Product loopback seam (ADR-0034) ---------------------
+    # The site is a separate process with no database access. It authenticates
+    # to Product over loopback; the dedicated token may fall back to the already
+    # local plugin token for existing installations during the Stage 5 rollout.
+    site_product_api_token: str = Field(default="", alias="SITE_PRODUCT_API_TOKEN")
+    public_site_base_url: str = Field(
+        default="http://127.0.0.1:8081", alias="PUBLIC_SITE_BASE_URL"
+    )
+    product_internal_base_url: str = Field(
+        default="http://127.0.0.1:8080", alias="PRODUCT_INTERNAL_BASE_URL"
+    )
+    site_public_origin: str = Field(
+        default="http://localhost:8080", alias="SITE_PUBLIC_ORIGIN"
+    )
+    official_whatsapp_number: str = Field(
+        default="", alias="OFFICIAL_WHATSAPP_NUMBER"
+    )
+
+    @property
+    def site_internal_token(self) -> str:
+        return self.site_product_api_token or self.plugin_api_token
+
     # --- Organization roles (ADR-0019, Stage 2) ------------------------------
     # Non-secret, explicit configuration: which authenticated logins are
     # Organization Administrators and which are Real Estate Advisors. This is

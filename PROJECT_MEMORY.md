@@ -765,11 +765,12 @@ WhatsApp handoffs are diagnostic funnel measures, not the final success metric.
 
 ## Current Stage
 
-Local Stage 4 authoritative-catalog implementation on top of the closed Stage 3
-human operation: physical Properties, source-specific Listings, simultaneous
-Offers, independent availability/publication/authority, approved media and one
-purpose-specific eligibility gate. Canonical Docker Compose verification and
-stage closure remain Codex's decision, not a claim made here.
+Local Stage 5 public experience on top of the closed Stage 4 authoritative
+catalog: a separate server-rendered Larevia Site consumes Product-owned contracts
+for authorized discovery, Saved Collections, Website Conversation, and verified
+channel continuity. The implementation has canonical Docker Compose and automated
+contract verification; production deployment and real-customer acceptance remain
+explicitly unclaimed.
 
 Implemented locally:
 
@@ -878,7 +879,34 @@ Implemented locally:
   are copied only once and thereafter only Listing Offers are editable;
 - Maia property disclosure, inventory lists and new-visit checks routed through
   Listing Eligibility rather than treating a legacy Property status or document
-  as permission.
+  as permission;
+- a separate Mexican Spanish public Site process with no database or provider
+  credentials, reached only through Product's approved-path reverse proxy and
+  authenticated Product contracts over loopback;
+- a warm editorial Larevia visual system across the landing page, explicit
+  shareable search, curated Guadalajara/Zapopan/Tlaquepaque pages, Technical
+  Sheets, and separate keyboard-operable galleries, with consistent interaction
+  across Larevia, Premium, and Super Premium presentation tiers;
+- progressive server-backed Saved Collections with an opaque HttpOnly cookie,
+  idempotent lifecycle commands, withdrawn-item history, expiring fixed shares,
+  and explicit multi-device protection through verified WhatsApp identity rather
+  than browser fingerprinting;
+- anonymous Website Conversation with Product-owned PII rejection, eligible
+  Listing context, 90-day content expiry, and Hermes Sales-role continuity;
+- opaque, expiring, single-use channel handoffs that bind Website Conversation,
+  Saved Collection, and Listing context only after verified Meta intake, while a
+  website appointment request remains unconfirmed and creates no Appointment;
+- public discovery projected from the same eligible Listing truth: stable
+  canonical URLs, visible-fact structured data, responsive authorized media,
+  image sitemap entries, honest 410 withdrawal, and curated local pages;
+- differentiated crawler policy allowing search and user-requested retrieval
+  while blocking training-only crawlers until explicit legal and commercial
+  approval, with launch-time provider-policy reverification still required;
+- allowlisted public funnel events without free text, keystrokes, session replay,
+  advertising identifiers, or behavioral profiles;
+- automated public-site domain, boundary, SSR, migration, recovery, accessibility,
+  security-header, and frontend-budget checks, plus desktop and narrow-mobile
+  browser acceptance.
 
 Not yet proven or claimed:
 
@@ -891,8 +919,7 @@ Not yet proven or claimed:
 - multi-tenant operation;
 - horizontal scaling;
 - self-managed multi-brokerage onboarding, billing, round-robin assignment, load
-  scoring, automatic commissions, the public catalog/search experience, EasyBroker,
-  campaigns, and
+  scoring, automatic commissions, EasyBroker, campaigns, and
   the data warehouse — all deliberately later stages.
 
 ## Core Boundary

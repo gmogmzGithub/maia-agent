@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+import httpx
 
 from realestate.api import health as health_api
 from realestate.api import admin as admin_api
@@ -21,6 +22,8 @@ from realestate.api import crm as crm_api
 from realestate.api import catalog as catalog_api
 from realestate.api import operations as operations_api
 from realestate.api import plugin as plugin_api
+from realestate.api import public_site as public_site_api
+from realestate.api import public_proxy as public_proxy_api
 from realestate.api import upload as upload_api
 from realestate.api import webhooks as webhooks_api
 from realestate.channels.google.calendar import GoogleCalendar
@@ -147,6 +150,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         Path(settings.listing_media_root), Path(settings.listing_media_cache_root)
     )
     app.state.hermes = HermesClient.from_settings(settings)
+    app.state.public_site_proxy = httpx.AsyncClient(
+        base_url=settings.public_site_base_url,
+        timeout=30.0,
+        follow_redirects=False,
+    )
     app.state.whatsapp = WhatsAppClient(
         access_token=settings.meta_access_token,
         phone_number_id=settings.meta_phone_number_id,
@@ -273,6 +281,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         for what, release in (
             ("background loop", app.state.background_loop.stop),
             ("Hermes client", app.state.hermes.aclose),
+            ("public site proxy", app.state.public_site_proxy.aclose),
             ("WhatsApp client", app.state.whatsapp.aclose),
             ("Telegram client", app.state.telegram.aclose),
             ("database engine", app.state.database.dispose),
@@ -310,8 +319,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(catalog_api.router)
     app.include_router(operations_api.router)
     app.include_router(plugin_api.router)
+    app.include_router(public_site_api.router)
     app.include_router(upload_api.router)
     app.include_router(webhooks_api.router)
+    # Last on purpose: it catches only public website paths after Product's
+    # own health, webhook, plugin and operator routes had the first match.
+    app.include_router(public_proxy_api.router)
     return app
 
 
