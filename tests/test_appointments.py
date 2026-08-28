@@ -32,9 +32,10 @@ from realestate.db.models import (
 from realestate.domain.appointments import AppointmentPolicy, AppointmentService
 from realestate.domain.availability import Interval
 from realestate.domain.inbox import InboxService
+from realestate.domain.scheduling.appointments import Appointments
 from realestate.domain.properties import ArtifactStore, PropertyService
 from tests.conftest import DATABASE_URL, requires_postgres
-from tests.fixtures import webhooks
+from tests.fixtures import commercial, webhooks
 from tests.fixtures.stubs import SCHEDULE, StubCalendar
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -63,6 +64,10 @@ async def booking(tmp_path: Path):
 
     artifacts = ArtifactStore(tmp_path / "artifacts")
     async with database.session_scope() as session:
+        # Before the first message: intake assigns the Opportunity as it opens
+        # it, and Stage 3 will not confirm a visit without a Responsible Advisor
+        # who has an authoritative calendar.
+        await commercial.provision_bookable_team(session)
         await PropertyService(session, artifacts).accept_upload(
             "casa-roble.md", V1, actor_id="developer"
         )
@@ -483,7 +488,9 @@ async def test_a_calendar_that_cannot_be_read_at_booking_time_is_not_a_rejection
     result = await book(database, service, start)
 
     assert result["result"] == "temporarily_unavailable"
-    assert result["detail"] == "stubbed failure"
+    # A stable reason code rather than the provider's message: the code is what
+    # the operator log and the Model's guide are written against.
+    assert result["detail"] == "CalendarUnreadable"
     async with database.session_scope() as session:
         assert (await session.execute(select(Appointment))).scalars().all() == []
 
@@ -501,10 +508,13 @@ async def test_the_loser_of_an_idempotency_race_reports_the_winners_outcome(
     database, calendar, service = booking
     start = (await offer(database, service))["candidates"][0]["start"]
 
-    original = AppointmentService._persist_attempt
+    original = Appointments._persist_attempt
     competitor: dict[str, str] = {}
 
-    async def another_worker_wins_first(self, conversation, prop, slot, attendee_name):  # noqa: ANN001, ANN202
+    async def another_worker_wins_first(self, **kwargs):  # noqa: ANN001, ANN003, ANN202
+        conversation = kwargs["conversation"]
+        prop = kwargs["prop"]
+        slot = kwargs["slot"]
         async with database.session_scope() as other:
             row = Appointment(
                 organization_id=conversation.organization_id,
@@ -522,11 +532,9 @@ async def test_the_loser_of_an_idempotency_race_reports_the_winners_outcome(
             other.add(row)
             await other.commit()
             competitor["reference"] = row.reference
-        return await original(self, conversation, prop, slot, attendee_name)
+        return await original(self, **kwargs)
 
-    monkeypatch.setattr(
-        AppointmentService, "_persist_attempt", another_worker_wins_first
-    )
+    monkeypatch.setattr(Appointments, "_persist_attempt", another_worker_wins_first)
 
     result = await book(database, service, start)
 

@@ -53,7 +53,7 @@ from realestate.worker import whatsapp as worker_module
 from realestate.worker.broker import BrokerNotifier
 from realestate.worker.whatsapp import WhatsAppWorker
 from tests.conftest import DATABASE_URL, requires_postgres
-from tests.fixtures import webhooks
+from tests.fixtures import commercial, webhooks
 from tests.fixtures.stubs import SCHEDULE, ZONE, StubTelegram, StubWhatsApp
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -89,6 +89,10 @@ async def database(tmp_path: Path):
 
     artifacts = ArtifactStore(tmp_path / "artifacts")
     async with db.session_scope() as session:
+        # Stage 3 refuses a visit without a Responsible Advisor who has an
+        # authoritative calendar, and reconciliation has to happen before the
+        # first inbound message because intake assigns as it opens.
+        await commercial.provision_bookable_team(session)
         await PropertyService(session, artifacts).accept_upload(
             "casa-roble.md", CASA_ROBLE, actor_id="developer"
         )

@@ -16,7 +16,7 @@ import html
 from fastapi import APIRouter, Depends, File, Request, UploadFile
 from fastapi.responses import HTMLResponse
 
-from realestate.api.crm import require_administrator
+from realestate.api.operator import require_administrator
 from realestate.api.developer import property_writer
 from realestate.domain.commercial.actors import Actor
 from realestate.domain.properties import AcceptedUpload

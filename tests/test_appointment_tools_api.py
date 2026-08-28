@@ -42,7 +42,7 @@ from realestate.domain.appointments import AppointmentPolicy
 from realestate.domain.inbox import InboxService
 from realestate.domain.properties import ArtifactStore, PropertyService
 from tests.conftest import DATABASE_URL, age_pending_inbox, env, requires_postgres
-from tests.fixtures import webhooks
+from tests.fixtures import commercial, webhooks
 from tests.fixtures.stubs import SCHEDULE, StubCalendar
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -79,7 +79,11 @@ async def wired(tmp_path: Path):
     app = create_app(get_settings())
     app.state.database = database
     app.state.artifacts = ArtifactStore(tmp_path / "artifacts")
+    # A shared stub answers both the calendar port and the directory the
+    # scheduling module now takes, which is the honest double for the
+    # one-calendar setup these suites are about.
     app.state.calendar = StubCalendar()
+    app.state.calendars = app.state.calendar
     app.state.appointment_policy = AppointmentPolicy(
         schedule=SCHEDULE,
         visit_minutes=90,
@@ -88,6 +92,10 @@ async def wired(tmp_path: Path):
     )
 
     async with database.session_scope() as session:
+        # Stage 3 refuses a visit without a Responsible Advisor who has an
+        # authoritative calendar, and reconciliation has to happen before the
+        # first inbound message because intake assigns as it opens.
+        await commercial.provision_bookable_team(session)
         await PropertyService(session, app.state.artifacts).accept_upload(
             "casa-roble.md", V1, actor_id="developer"
         )

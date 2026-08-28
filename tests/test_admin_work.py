@@ -37,7 +37,7 @@ from realestate.domain.properties import ArtifactStore, PropertyService
 from realestate.app import create_app
 from realestate.config import get_settings
 from tests.conftest import DATABASE_URL, env, requires_postgres, reset_property_inventory
-from tests.fixtures import webhooks
+from tests.fixtures import commercial, webhooks
 from tests.fixtures.stubs import SCHEDULE, StubCalendar
 
 pytestmark = requires_postgres
@@ -62,6 +62,10 @@ async def recovery(tmp_path: Path):
             await session.execute(delete(model))
         await session.execute(delete(AuditEvent))
         await session.commit()
+        # Stage 3 refuses a visit without a Responsible Advisor who has an
+        # authoritative calendar, and reconciliation has to happen before the
+        # first inbound message because intake assigns as it opens.
+        await commercial.provision_bookable_team(session)
         await PropertyService(session, ArtifactStore(tmp_path / "artifacts")).accept_upload(
             "casa-roble.md", V1, actor_id="developer"
         )
@@ -256,7 +260,11 @@ async def test_plugin_boundary_allows_admin_and_refuses_sales(recovery) -> None:
 
     app = create_app(get_settings())
     app.state.database = database
+    # A shared stub answers both the calendar port and the directory the
+    # scheduling module now takes, which is the honest double for the
+    # one-calendar setup these suites are about.
     app.state.calendar = calendar
+    app.state.calendars = calendar
     app.state.appointment_policy = AppointmentPolicy(
         schedule=schedule, visit_minutes=90, horizon_days=8, max_candidates=6
     )

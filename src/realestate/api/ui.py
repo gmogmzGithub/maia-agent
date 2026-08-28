@@ -116,9 +116,11 @@ class NavLink:
 NAV: tuple[NavLink, ...] = (
     NavLink("/crm", "Panel"),
     NavLink("/crm/bandeja", "Bandeja"),
+    NavLink("/crm/agenda", "Agenda"),
     NavLink("/crm/oportunidades", "Oportunidades"),
     NavLink("/crm/contactos", "Contactos"),
     NavLink("/crm/asignacion", "Asignación"),
+    NavLink("/crm/equipo", "Equipo"),
     NavLink("/admin/properties", "Propiedades"),
 )
 

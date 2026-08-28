@@ -230,8 +230,31 @@ _Avoid_: Contact, Opportunity history, permanent memory
 **Conversation Handling Mode**:
 The explicit authority state that determines whether Maia may converse, a human
 is handling the Contact, the operation is awaiting the Contact, or Admin review is
-required.
+required. Exactly one authority holds a Conversation at a time, and a human mode
+always names the person holding it.
 _Avoid_: Advisor assignment, Opportunity stage, model guess
+
+**Human Handling Request**:
+One unmet request for a person on one Conversation, with who was alerted and when
+the Organization Administrator must be told if nobody has taken it. It is
+resolved by a human taking or releasing the Conversation, never by time passing.
+_Avoid_: Conversation Handling Mode, Opportunity reassignment, service-level
+promise
+
+**Internal Operational Alert**:
+One durable notice to a member of the Brokerage Organization on its own private
+channel, with its delivery state retained. It is not outreach to a Contact and
+does not pass the outbound eligibility gate; a recipient with no configured
+channel produces a notice that is visible but undelivered rather than one that is
+lost.
+_Avoid_: Outbox row, customer message, log line
+
+**Visit Reminder**:
+One deterministic Contact-facing notice a confirmed Property Visit Appointment
+owes before it happens, scheduled when the visit is confirmed and settled exactly
+once. The cadence is an unvalidated hypothesis, so a reminder may be withheld
+with a recorded reason rather than sent.
+_Avoid_: Follow-up, sales message, model-composed text
 
 **Real Estate Advisor**:
 A human member of a Brokerage Organization who can own Opportunities, work with
@@ -254,9 +277,16 @@ _Avoid_: Responsible Advisor, property owner, listing source
 
 **Advisor Absence**:
 A declared period during which a Real Estate Advisor is ineligible for new
-Opportunity assignments. Only an Organization Administrator may record, change,
-or end it.
+Opportunity assignments and new visit bookings. Only an Organization
+Administrator may record, change, or end it. It never reassigns an existing
+Opportunity or cancels an existing appointment; those are surfaced for review.
 _Avoid_: Deactivated Advisor, automatic reassignment, deleted calendar event
+
+**Authoritative Advisor Calendar**:
+The external calendar that decides one Real Estate Advisor's real availability. An
+Advisor without one has no availability the Platform may quote and cannot receive
+a visit; a calendar that cannot be read is likewise not an empty one.
+_Avoid_: Weekly Bookable Schedule, empty calendar, shared brokerage calendar
 
 **External Collaborator**:
 An agent or agency outside the Brokerage Organization that participates in a

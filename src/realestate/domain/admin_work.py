@@ -15,11 +15,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from realestate.channels.google.calendar import (
-    CalendarOutcome,
-    EventResult,
-    GoogleCalendar,
-)
+from realestate.channels.google.calendar import CalendarOutcome, EventResult
 from realestate.db.models import (
     Appointment,
     AppointmentStatus,
@@ -27,6 +23,7 @@ from realestate.db.models import (
     InactiveReviewStatus,
     Lead,
     LeadNotificationStatus,
+    OrganizationMember,
     OutboundInitiation,
     Property,
 )
@@ -34,6 +31,7 @@ from realestate.domain.administration import Administrator
 from realestate.domain.appointments import NEEDS_REVIEW_MESSAGE, confirmation_message
 from realestate.domain.audit import record_audit
 from realestate.domain.availability import WeeklySchedule
+from realestate.domain.scheduling.calendars import CalendarDirectory, CalendarPort
 from realestate.domain.outbound import (
     Denied,
     OutboundIntent,
@@ -75,15 +73,54 @@ def rejection_message(
 
 
 class AdminWorkService:
+    """Administrative reconciliation of ambiguous booking attempts.
+
+    Takes a calendar *directory* rather than one calendar: since Stage 3 each
+    appointment names the calendar its event was written to, and looking for the
+    event somewhere else would report a conclusive absence that is really a
+    lookup in the wrong place.
+    """
+
     def __init__(
         self,
         session: AsyncSession,
-        calendar: GoogleCalendar,
+        calendars: CalendarDirectory,
         schedule: WeeklySchedule,
     ) -> None:
         self._session = session
-        self._calendar = calendar
+        self._calendars = calendars
         self._schedule = schedule
+
+    async def _calendar_for(self, row: Appointment) -> CalendarPort | None:
+        """The calendar this appointment's event would be on.
+
+        Three cases, in order of how much Product actually knows. The stored
+        ``calendar_id`` is where the event was written and is authoritative even
+        if the Advisor's configuration changed since. Failing that, the
+        Advisor's current calendar. Failing that, the row predates Advisor
+        ownership — and a pre-Stage-3 appointment can only have been written to
+        the single calendar the operation had, which is now the default
+        Advisor's. That is not a guess about where it might be; it is the only
+        place it can be.
+        """
+        if row.calendar_id:
+            found = self._calendars.for_calendar_id(row.calendar_id)
+            if found is not None:
+                return found
+        advisor_id = row.conducting_advisor_id or row.advisor_id
+        if advisor_id is not None:
+            advisor = await self._session.get(OrganizationMember, advisor_id)
+            if advisor is not None:
+                return self._calendars.for_advisor(advisor)
+        legacy: OrganizationMember | None = await self._session.scalar(
+            select(OrganizationMember)
+            .where(OrganizationMember.organization_id == row.organization_id)
+            .where(OrganizationMember.is_default_advisor.is_(True))
+            .limit(1)
+        )
+        if legacy is not None:
+            return self._calendars.for_advisor(legacy)
+        return None
 
     async def list_pending(self) -> dict[str, Any]:
         rows = (
@@ -226,7 +263,16 @@ class AdminWorkService:
                 }
             return {"result": "conflict", "state": row.status}
 
-        evidence = await self._calendar.find_by_reference(row.reference)
+        calendar = await self._calendar_for(row)
+        if calendar is None:
+            return {
+                "result": "still_ambiguous",
+                "detail": (
+                    "La cita no tiene un calendario autoritativo con el que "
+                    "verificarla."
+                ),
+            }
+        evidence = await calendar.find_by_reference(row.reference)
         if evidence.outcome is not CalendarOutcome.OK:
             return {"result": "still_ambiguous", "detail": evidence.detail}
 
@@ -332,7 +378,10 @@ class AdminWorkService:
             != InactiveReviewStatus.HANDLING_MANUALLY.value
         ):
             return {"result": "conflict"}
-        evidence = await self._calendar.find_by_reference(row.reference)
+        calendar = await self._calendar_for(row)
+        if calendar is None:
+            return {"result": "still_ambiguous"}
+        evidence = await calendar.find_by_reference(row.reference)
         if evidence.outcome is not CalendarOutcome.OK:
             return {"result": "still_ambiguous", "detail": evidence.detail}
         if evidence.event_id is not None:

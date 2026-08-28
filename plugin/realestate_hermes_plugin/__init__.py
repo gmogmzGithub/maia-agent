@@ -41,6 +41,12 @@ FROZEN_TOOL_SURFACE: tuple[str, ...] = (
     "list_properties",
     "resolve_pending_admin_work",
     "list_pending_admin_work",
+    # Stage 3 (ADR-0029, ADR-0037). Two names the human-operation stage owns.
+    # Neither could be expressed with the Stage 0 surface: an atomic reschedule
+    # is not a cancel plus a booking, and asking a person to take over is an
+    # operation with an alert and a deadline behind it, not a sentence.
+    "reschedule_appointment",
+    "request_human_handoff",
 )
 
 # The tools registered so far, as ``(name, schema, handler)``. Checkpoint 1 adds
@@ -67,6 +73,16 @@ TOOLS: tuple[tuple[str, dict[str, Any], object], ...] = (
         "list_pending_admin_work",
         schemas.LIST_PENDING_ADMIN_WORK,
         tools.list_pending_admin_work,
+    ),
+    (
+        "reschedule_appointment",
+        schemas.RESCHEDULE_APPOINTMENT,
+        tools.reschedule_appointment,
+    ),
+    (
+        "request_human_handoff",
+        schemas.REQUEST_HUMAN_HANDOFF,
+        tools.request_human_handoff,
     ),
 )
 

@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
-from realestate.api.crm import require_administrator
+from realestate.api.operator import require_administrator
 from realestate.domain.commercial.actors import Actor
 from realestate.api.developer import property_writer
 from realestate.api.ui import escape as _e

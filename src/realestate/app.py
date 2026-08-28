@@ -18,6 +18,7 @@ from fastapi import FastAPI
 from realestate.api import health as health_api
 from realestate.api import admin as admin_api
 from realestate.api import crm as crm_api
+from realestate.api import operations as operations_api
 from realestate.api import plugin as plugin_api
 from realestate.api import upload as upload_api
 from realestate.api import webhooks as webhooks_api
@@ -30,11 +31,13 @@ from realestate.domain.appointments import AppointmentPolicy
 from realestate.domain.admin_work import AdminWorkService
 from realestate.domain.availability import WeeklySchedule
 from realestate.domain.commercial.organization import OrganizationDirectory
+from realestate.domain.scheduling.calendars import GoogleCalendarDirectory
 from realestate.domain.properties import ArtifactStore, CatalogStore
 from realestate.hermes import HermesClient
 from realestate.worker.broker import BrokerNotifier
 from realestate.worker.followups import LeadFollowUpWorker
 from realestate.worker.loop import BackgroundLoop, idle_tick
+from realestate.worker.operations import OperationsWorker
 from realestate.worker.telegram import TelegramAdminWorker
 from realestate.worker.upkeep import CommercialUpkeepWorker
 from realestate.worker.whatsapp import WhatsAppWorker
@@ -145,9 +148,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         graph_version=settings.meta_graph_version,
         base_url=settings.meta_graph_base_url,
     )
+    # Kept for /health, which probes the one calendar an operator configured.
     app.state.calendar = GoogleCalendar(
         credentials_path=settings.google_calendar_credentials,
         calendar_id=settings.google_calendar_id,
+    )
+    # Every scheduling decision goes through the directory instead: since Stage
+    # 3 an appointment belongs to an Advisor and is written to *their* calendar,
+    # so "the calendar" is no longer a single thing (ADR-0048).
+    app.state.calendars = GoogleCalendarDirectory(
+        credentials_path=settings.google_calendar_credentials
     )
     # A malformed schedule must fail loudly at startup, not silently narrow
     # availability — see the truncation guard in domain/availability.py.
@@ -156,6 +166,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         visit_minutes=settings.visit_minutes,
         horizon_days=settings.booking_horizon_days,
         max_candidates=settings.max_slot_candidates,
+        day_of_reminder_hour=settings.appointment_day_of_reminder_hour,
     )
     app.state.telegram = TelegramClient(bot_token=settings.telegram_bot_token)
     app.state.admin_worker = TelegramAdminWorker(
@@ -182,6 +193,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         reminder_minutes=settings.broker_reminder_minutes_before,
     )
     app.state.followup_worker = LeadFollowUpWorker(database=app.state.database)
+    # Human-handoff escalation, internal alert delivery, and visit reminders.
+    app.state.operations_worker = OperationsWorker(
+        database=app.state.database,
+        telegram=app.state.telegram,
+        schedule=app.state.appointment_policy.schedule,
+        day_of_reminder_hour=settings.appointment_day_of_reminder_hour,
+        administrator_chat_ids=settings.admin_user_ids,
+    )
     # Property Need staleness, day-28 dormancy and conversation-content expiry.
     # Paces itself: these rules have 28- and 90-day horizons and the loop ticks
     # once a second.
@@ -197,7 +216,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             async with app.state.database.session_scope() as session:
                 recovered = await AdminWorkService(
                     session,
-                    app.state.calendar,
+                    app.state.calendars,
                     app.state.appointment_policy.schedule,
                 ).recover_pending_attempts()
                 if recovered:
@@ -211,6 +230,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ("lead", app.state.worker.tick),
             ("lead follow-ups", app.state.followup_worker.tick),
             ("commercial upkeep", app.state.upkeep_worker.tick),
+            ("human operations", app.state.operations_worker.tick),
             ("administrative", app.state.admin_worker.tick),
             ("broker notifications", app.state.broker_notifier.tick),
         ):
@@ -281,6 +301,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health_api.router)
     app.include_router(admin_api.router)
     app.include_router(crm_api.router)
+    app.include_router(operations_api.router)
     app.include_router(plugin_api.router)
     app.include_router(upload_api.router)
     app.include_router(webhooks_api.router)

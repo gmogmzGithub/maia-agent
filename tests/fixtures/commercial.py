@@ -92,6 +92,60 @@ DEFAULT_PLAN = DirectoryPlan(
     default_advisor=ADVISOR_LOGIN,
 )
 
+#: Calendars for the two Advisors. Stage 3 refuses to book a visit for an
+#: Advisor with no authoritative calendar, so a suite about booking has to give
+#: them one — the refusal is the behaviour, not an obstacle to work around.
+ADVISOR_CALENDAR_ID = "advisor-1@larevia.test"
+SECOND_ADVISOR_CALENDAR_ID = "advisor-2@larevia.test"
+
+#: Where each member's immediate operational alerts go, so a handoff suite can
+#: assert on delivery rather than on "undeliverable".
+ADMIN_CHAT_ID = "9001"
+ADVISOR_CHAT_ID = "9002"
+SECOND_ADVISOR_CHAT_ID = "9003"
+
+BOOKABLE_PLAN = DirectoryPlan(
+    administrators=(ADMIN_LOGIN,),
+    advisors=(ADVISOR_LOGIN, SECOND_ADVISOR_LOGIN),
+    default_advisor=ADVISOR_LOGIN,
+    calendars={
+        ADVISOR_LOGIN: ADVISOR_CALENDAR_ID,
+        SECOND_ADVISOR_LOGIN: SECOND_ADVISOR_CALENDAR_ID,
+    },
+    telegram_ids={
+        ADMIN_LOGIN: ADMIN_CHAT_ID,
+        ADVISOR_LOGIN: ADVISOR_CHAT_ID,
+        SECOND_ADVISOR_LOGIN: SECOND_ADVISOR_CHAT_ID,
+    },
+)
+
+
+async def provision_bookable_team(
+    session: AsyncSession, *, developer_administers: bool = True
+) -> dict[str, uuid.UUID]:
+    """A team that can actually receive visits, plus the ``developer`` login.
+
+    The Stage 0 appointment suites authenticate — or accept Property Documents —
+    as ``developer``, and Stage 3 requires an Advisor with a calendar before any
+    visit can be Confirmed. Reconciling both in one plan keeps those suites
+    exercising the real path instead of asserting on a refusal.
+
+    Call it *before* the first inbound message: intake assigns the Opportunity
+    as it opens it, so a team provisioned afterwards leaves the pursuit in the
+    Assignment Queue.
+    """
+    administrators = BOOKABLE_PLAN.administrators
+    if developer_administers:
+        administrators = (*administrators, "developer")
+    plan = DirectoryPlan(
+        administrators=administrators,
+        advisors=BOOKABLE_PLAN.advisors,
+        default_advisor=BOOKABLE_PLAN.default_advisor,
+        calendars=BOOKABLE_PLAN.calendars,
+        telegram_ids=BOOKABLE_PLAN.telegram_ids,
+    )
+    return await provision(session, plan)
+
 #: Tables the commercial suites clear, roots last so cascades do the rest.
 #: ``organizations`` is never cleared: migration 0012 creates the row and every
 #: scoped table points at it.
@@ -100,6 +154,14 @@ _RESET_ORDER = (
     "commercial_command_receipts",
     "commercial_transactions",
     "audit_events",
+    # Stage 3 tables that reference ``organization_members`` with RESTRICT.
+    # They have to go before the members a suite is about to replace, and
+    # cascading from Contacts or Conversations does not reach them: an internal
+    # alert about a deactivated Advisor is deliberately not owned by any
+    # Contact.
+    "internal_alerts",
+    "advisor_absences",
+    "property_experts",
     "contacts",
     "leads",
 )

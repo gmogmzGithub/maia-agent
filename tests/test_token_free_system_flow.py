@@ -49,7 +49,7 @@ from realestate.worker import whatsapp as worker_module
 from realestate.worker.broker import BrokerNotifier
 from realestate.worker.whatsapp import WhatsAppWorker
 from tests.conftest import DATABASE_URL, age_pending_inbox, requires_postgres
-from tests.fixtures import webhooks
+from tests.fixtures import commercial, webhooks
 from tests.fixtures.stubs import (
     SCHEDULE,
     ZONE,
@@ -200,7 +200,11 @@ async def test_whatsapp_lead_booking_reaches_telegram_without_provider_tokens(
     telegram = StubTelegram()
     app.state.database = database
     app.state.artifacts = ArtifactStore(tmp_path / "artifacts")
+    # A shared stub answers both the calendar port and the directory the
+    # scheduling module now takes, which is the honest double for the
+    # one-calendar setup these suites are about.
     app.state.calendar = calendar
+    app.state.calendars = calendar
     app.state.appointment_policy = AppointmentPolicy(
         schedule=SCHEDULE,
         visit_minutes=90,
@@ -209,6 +213,11 @@ async def test_whatsapp_lead_booking_reaches_telegram_without_provider_tokens(
     )
 
     async with database.session_scope() as session:
+        # A team that can actually receive a visit. Stage 3 refuses to quote
+        # availability or confirm an appointment without a Responsible Advisor
+        # who has an authoritative calendar, so the vertical scenario has to
+        # provision one before the first message arrives.
+        await commercial.provision_bookable_team(session)
         await PropertyService(session, app.state.artifacts).accept_upload(
             "casa-roble.md", CASA_ROBLE, actor_id="offline-developer"
         )

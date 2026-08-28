@@ -105,6 +105,48 @@ class StubCalendar:
         self.deleted.append(event_id)
         return EventResult(CalendarOutcome.OK, event_id=event_id)
 
+    # -- Also a CalendarDirectory ------------------------------------------
+    #
+    # Stage 3 gave each Advisor their own calendar, so the domain takes a
+    # directory rather than one client. A stub that answers both protocols is
+    # the honest double for "one shared calendar": every Advisor resolves to the
+    # same conclusive answers, which is what a suite that only cares about
+    # booking wants. Use :class:`StubCalendarDirectory` when the point of the
+    # test is that two Advisors have *different* calendars.
+
+    def for_calendar_id(self, calendar_id):  # noqa: ANN001, ANN201
+        return self
+
+    def for_advisor(self, advisor):  # noqa: ANN001, ANN201
+        # Absent configuration still means "no authoritative availability",
+        # because that refusal is the behaviour under test in several suites.
+        return self if advisor.calendar_id else None
+
+
+class StubCalendarDirectory:
+    """One calendar per Advisor, for the suites where that difference matters.
+
+    ``calendars`` is keyed by calendar id. An Advisor whose configured calendar
+    is not in it resolves to ``None``, which is how "this Advisor has no
+    authoritative availability" is set up.
+    """
+
+    def __init__(self, calendars: dict[str, StubCalendar] | None = None) -> None:
+        self.calendars: dict[str, StubCalendar] = calendars or {}
+
+    def add(self, calendar_id: str) -> StubCalendar:
+        calendar = StubCalendar()
+        self.calendars[calendar_id] = calendar
+        return calendar
+
+    def for_calendar_id(self, calendar_id: str) -> StubCalendar | None:
+        return self.calendars.get(calendar_id)
+
+    def for_advisor(self, advisor):  # noqa: ANN001, ANN201
+        if not advisor.calendar_id:
+            return None
+        return self.calendars.get(advisor.calendar_id)
+
 
 class StubWhatsApp:
     """Accepts Product Outbox sends without contacting Meta.

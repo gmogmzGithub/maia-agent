@@ -40,6 +40,29 @@ provider transports. It therefore verifies Maia's real orchestration and
 authority boundaries without pretending that a language-model answer is
 deterministic.
 
+`tests/test_stage_three_e2e.py` does the same for the human-operation paths, with
+the same discipline: a signed webhook in, the real Inbox and Lead worker, the real
+authenticated product tools, the real CRM an Advisor uses, and the internal alert
+channel. Its four scenarios are the branches the stage promises —
+
+```text
+webhook -> Maia answers -> Maia books -> Advisor is the owner
+        -> post-appointment commercial question -> Advisor, not Maia
+        -> Advisor answers on the official channel -> records the outcome
+
+webhook -> "quiero hablar con una persona" -> Maia stops
+        -> approved acknowledgement to the Contact
+        -> immediate internal alert -> 15-minute escalation, once
+        -> a human takes it, then returns it to Maia explicitly
+
+webhook -> confirmed visit -> Maia reschedules it atomically
+        (new slot secured before the old one is released)
+
+Advisor without an authoritative calendar -> no times offered, honestly
+```
+
+— and no provider token is involved in any of them.
+
 ## Run the required gate locally
 
 With the Compose runtime running:

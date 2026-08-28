@@ -38,7 +38,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from realestate.channels.whatsapp.payload import InboundMessage
 from realestate.db.models import (
     ENGAGEMENT_CYCLE_DAYS,
+    MAIA_MAY_REPLY,
     Conversation,
+    ConversationHandlingState,
     InboxGroup,
     InboxGroupStatus,
     InboxMessage,
@@ -48,6 +50,7 @@ from realestate.db.models import (
 )
 from realestate.domain.audit import record_audit
 from realestate.domain.commercial.intake import CommercialIntake
+from realestate.domain.commercial.routing import InboundRouting
 from realestate.domain.outbound import detect_opt_out, record_explicit_opt_out
 
 # P-038: a two-minute processing lease, renewed every 30 seconds.
@@ -102,6 +105,11 @@ class AcceptedMessage:
     # delivery already reported.
     contact_id: uuid.UUID | None = None
     opportunity_id: uuid.UUID | None = None
+    # Whether Product paused Maia on this message and asked for a human
+    # (ADR-0029, ADR-0037), and why. Reported so the webhook path can log it and
+    # a test can assert it without re-deriving the rule.
+    handed_off: bool = False
+    handoff_reason: str | None = None
 
 
 def combined_text(messages: Sequence[InboxMessage]) -> str:
@@ -223,6 +231,19 @@ class InboxService:
                 lead=lead, conversation=conversation, inbox_id=row.id
             )
 
+            # Product's deterministic decisions about this message: an explicit
+            # request for a person, and where a post-Appointment-Handoff
+            # message belongs (ADR-0029, ADR-0037). Here for the same reason as
+            # the opt-out and the commercial record — a handoff request that
+            # outlived the message asking for it would be a record of something
+            # that never durably happened.
+            routing = await InboundRouting(self._session).route(
+                lead=lead,
+                conversation=conversation,
+                inbox_id=row.id,
+                text=message.text,
+            )
+
             await self._session.commit()
         except IntegrityError:
             # Two concurrent webhook deliveries of the same wamid raced. The
@@ -239,6 +260,8 @@ class InboxService:
             cycle_created=cycle_created,
             contact_id=intake_result.contact_id,
             opportunity_id=intake_result.opportunity_id,
+            handed_off=routing.handed_off,
+            handoff_reason=routing.reason,
         )
 
     async def _lead(self, message: InboundMessage, organization_id: uuid.UUID) -> Lead:
@@ -317,16 +340,24 @@ class InboxService:
     # -- Claiming (background loop) ---------------------------------------
 
     async def claimable_conversations(self, limit: int) -> list[uuid.UUID]:
-        """Conversations with settled pending work and no active group.
+        """Conversations Maia may answer, with settled pending work.
 
         A Conversation is eligible only once its oldest pending message has
         cleared the two-second collection window, so rapid fragments arrive in
-        the same group rather than in consecutive ones.
+        the same group rather than in consecutive ones — and only while
+        Conversation Handling Mode says Maia is the one answering.
         """
         now = _now()
         cutoff = now - timedelta(seconds=COLLECTION_WINDOW_SECONDS)
         active = select(InboxGroup.conversation_id).where(
             InboxGroup.status == InboxGroupStatus.PROCESSING.value
+        )
+        # Conversations a human holds, or that need Administrator review, are
+        # not Maia's to answer (ADR-0029). Excluded here so the ordinary case
+        # never even starts a Hermes turn; the worker still re-checks under a
+        # lock at settlement, because a human can arrive mid-turn.
+        handled_elsewhere = select(ConversationHandlingState.conversation_id).where(
+            ConversationHandlingState.mode.not_in(tuple(MAIA_MAY_REPLY))
         )
         rows = await self._session.execute(
             select(InboxMessage.conversation_id)
@@ -337,6 +368,7 @@ class InboxService:
                 | (InboxMessage.next_attempt_at <= now)
             )
             .where(InboxMessage.conversation_id.not_in(active))
+            .where(InboxMessage.conversation_id.not_in(handled_elsewhere))
             .group_by(InboxMessage.conversation_id)
             .having(func.min(InboxMessage.persisted_at) <= cutoff)
             .order_by(func.min(InboxMessage.persisted_at))

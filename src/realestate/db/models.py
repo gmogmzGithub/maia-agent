@@ -892,6 +892,11 @@ class AppointmentStatus(str, enum.Enum):
     # A human handled the affected Lead and removed the Calendar event after an
     # Inactive-Property review. It is distinct from a rejected booking attempt.
     CANCELLED = "Cancelled"
+    # Superseded by a successor appointment that was secured *first*. Never a
+    # step on the way to rescheduling: a row only reaches this once the new
+    # visit is Confirmed, which is what makes a failed reschedule preserve the
+    # original (ADR-0037).
+    RESCHEDULED = "Rescheduled"
 
 
 class LeadNotificationStatus(str, enum.Enum):
@@ -938,6 +943,14 @@ class AvailabilitySnapshot(Base):
         DateTime(timezone=True), nullable=False
     )
     time_zone: Mapped[str] = mapped_column(String(60), nullable=False)
+    # Whose availability this is (Stage 3). Nullable for snapshots taken before
+    # appointments had an owner. Stored so a quote and the booking that follows
+    # it cannot silently be about two different people's calendars.
+    advisor_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_members.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     # Every computed interval, as ISO strings. The complete snapshot is retained
     # even though one tool result returns at most six (P-059).
     slots: Mapped[list[dict[str, Any]]] = mapped_column(
@@ -1035,9 +1048,69 @@ class Appointment(Base):
     )
     digest_sent_on: Mapped[str | None] = mapped_column(String(10), nullable=True)
 
+    # -- Stage 3: the visit belongs to an Advisor -------------------------
+    #
+    # Nullable only because Stage 0 and Stage 2 rows exist. Every appointment
+    # booked from now on has one, and ``Appointments`` refuses to confirm
+    # without it: a confirmed visit nobody owns is exactly the failure this
+    # stage exists to remove (PROJECT_MEMORY, ADR-0048).
+    advisor_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    # Set only when somebody *other than* the owner conducts the visit, which
+    # PROJECT_MEMORY requires to be explicit. NULL means the owner conducts it;
+    # it never means "unknown".
+    conducting_advisor_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    # The calendar the event was written to, captured at booking. Recovery must
+    # look for the event where it was actually created, not wherever the
+    # Advisor's configuration points today.
+    calendar_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    # The commercial pursuit this visit belongs to, when there is one.
+    opportunity_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("opportunities.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # Atomic rescheduling (ADR-0037): the successor is secured first, then this
+    # row points at it. Both directions are kept because the operator asks both
+    # questions — "what replaced this?" and "what did this replace?".
+    rescheduled_to_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("appointments.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    rescheduled_from_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("appointments.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # What the Advisor recorded afterwards. ``attendance`` is the fact, and it
+    # is only ever written by a human: Product never infers that a visit
+    # happened from the clock (ADR-0037, SAN-038).
+    attendance: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    attendance_recorded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    attendance_recorded_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    visit_outcome: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # A Missed Appointment produces a Maia rescheduling invitation only when the
+    # Advisor explicitly authorises one (ADR-0037). Default false, so silence
+    # never becomes permission.
+    reschedule_invitation_authorized: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+
     __table_args__ = (
         CheckConstraint(
-            "status IN ('Pending', 'Confirmed', 'Rejected', 'NeedsReview', 'Cancelled')",
+            "status IN ('Pending', 'Confirmed', 'Rejected', 'NeedsReview', "
+            "'Cancelled', 'Rescheduled')",
             name="ck_appointments_status",
         ),
         CheckConstraint(
@@ -1050,7 +1123,23 @@ class Appointment(Base):
             "inactive_review_status IN ('Pending', 'HandlingManually', 'Complete')",
             name="ck_appointments_inactive_review",
         ),
+        CheckConstraint(
+            "attendance IS NULL OR attendance IN ('Attended', 'Missed')",
+            name="ck_appointments_attendance",
+        ),
+        # Attendance is a human record: the fact and its author arrive together.
+        CheckConstraint(
+            "(attendance IS NULL) = (attendance_recorded_by IS NULL)",
+            name="ck_appointments_attendance_author",
+        ),
+        # Only a Missed visit can authorise a rescheduling invitation, and only
+        # after somebody recorded the miss.
+        CheckConstraint(
+            "reschedule_invitation_authorized IS FALSE OR attendance = 'Missed'",
+            name="ck_appointments_reschedule_invitation",
+        ),
         Index("ix_appointments_upcoming", "status", "starts_at"),
+        Index("ix_appointments_advisor", "advisor_id", "starts_at"),
     )
 
 
@@ -1140,6 +1229,19 @@ class MemberRole(str, enum.Enum):
 
     ADMINISTRATOR = "OrganizationAdministrator"
     ADVISOR = "RealEstateAdvisor"
+
+
+class MemberProvisioning(str, enum.Enum):
+    """Who owns a member row: configuration, or an Administrator.
+
+    Startup reconciliation deactivates a login that has left the configuration.
+    Once an Administrator can add Advisors through the team surface, applying
+    that rule to *every* row would delete the team on the next restart, so the
+    provenance is stored (ADR-0047).
+    """
+
+    CONFIGURATION = "Configuration"
+    ADMINISTRATOR = "Administrator"
 
 
 class ChannelIdentityTrust(str, enum.Enum):
@@ -1265,6 +1367,10 @@ class AssignmentBasis(str, enum.Enum):
 
     PRESERVED = "Preserved"
     PROPERTY_EXPERT = "PropertyExpert"
+    #: A backup expert, because the primary one is absent or ineligible. Kept
+    #: distinct from ``PROPERTY_EXPERT`` so "the specialist took it" and "the
+    #: specialist could not" are different recorded facts.
+    PROPERTY_EXPERT_BACKUP = "ExpertBackup"
     DEFAULT_ADVISOR = "DefaultAdvisor"
     MANUAL_ADMIN = "ManualAdmin"
 
@@ -1274,6 +1380,10 @@ class AssignmentQueueReason(str, enum.Enum):
 
     NO_ELIGIBLE_ADVISOR = "NoEligibleAdvisor"
     DEFAULT_ADVISOR_INACTIVE = "DefaultAdvisorInactive"
+    #: Everybody the deterministic rule would have chosen has a current
+    #: Advisor Absence. Separate from "inactive" because the remedy differs: an
+    #: absence ends, a deactivated login has to be reinstated or replaced.
+    EVERY_CANDIDATE_ABSENT = "EveryCandidateAbsent"
 
 
 class NextActionKind(str, enum.Enum):
@@ -1372,6 +1482,22 @@ class OrganizationMember(Base):
         Boolean, nullable=False, default=False
     )
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Who created this member, and therefore who may overwrite it. Startup
+    # reconciliation is the bootstrap and must not deactivate somebody an
+    # Administrator added through the team surface (ADR-0047), so the two
+    # provenances are recorded rather than inferred from whether a login
+    # happens to appear in configuration today.
+    provisioned_by: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=MemberProvisioning.ADMINISTRATOR.value
+    )
+    # The Advisor's authoritative calendar (ADR-0048). An Advisor without one
+    # has no availability Product may quote and cannot receive an appointment;
+    # that is a refusal, never an empty schedule treated as free.
+    calendar_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    # Where this member's immediate operational alerts go. Optional: an Advisor
+    # without one still gets the durable CRM alert, and the Administrator is
+    # told the immediate notice could not be delivered.
+    telegram_chat_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -1383,6 +1509,10 @@ class OrganizationMember(Base):
         CheckConstraint(
             "role IN ('OrganizationAdministrator', 'RealEstateAdvisor')",
             name="ck_organization_members_role",
+        ),
+        CheckConstraint(
+            "provisioned_by IN ('Configuration', 'Administrator')",
+            name="ck_organization_members_provisioned_by",
         ),
         # An Advisor who cannot own Opportunities is not an Advisor.
         CheckConstraint(
@@ -1926,7 +2056,8 @@ class OpportunityAssignment(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "basis IN ('Preserved', 'PropertyExpert', 'DefaultAdvisor', 'ManualAdmin')",
+            "basis IN ('Preserved', 'PropertyExpert', 'ExpertBackup', "
+            "'DefaultAdvisor', 'ManualAdmin')",
             name="ck_opportunity_assignments_basis",
         ),
         Index(
@@ -1973,7 +2104,8 @@ class AssignmentQueueEntry(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "reason IN ('NoEligibleAdvisor', 'DefaultAdvisorInactive')",
+            "reason IN ('NoEligibleAdvisor', 'DefaultAdvisorInactive', "
+            "'EveryCandidateAbsent')",
             name="ck_assignment_queue_reason",
         ),
         # One open entry per Opportunity, so repeated assignment attempts do not
@@ -2154,4 +2286,496 @@ class CommercialCommandReceipt(Base):
             "subject_type",
             "subject_id",
         ),
+    )
+
+
+# ==========================================================================
+# Stage 3 — human operation, team and visits (ADR-0029, ADR-0037, ADR-0047,
+# ADR-0048)
+#
+# Four separations carry this section:
+#
+# * **expert is not owner.** A Property Expert is a specialist for a Property;
+#   a Responsible Advisor is accountable for one Opportunity. Conflating them
+#   would silently move ownership every time inventory changed hands.
+# * **absence blocks new work, never existing work.** A declared Advisor
+#   Absence removes somebody from the assignment rule and from new bookings. It
+#   does not reassign an Opportunity or cancel a visit (PROJECT_MEMORY).
+# * **handling authority is singular and explicit.** Exactly one of Maia or one
+#   human may answer a Contact, and the transition is recorded rather than
+#   inferred from who typed last (ADR-0029).
+# * **internal alerts are not customer messages.** They ride their own durable
+#   channel, so the 15-minute escalation is idempotent across restarts without
+#   ever touching the Outbound Eligibility Gate (ADR-0045).
+# ==========================================================================
+
+
+class PropertyExpertRole(str, enum.Enum):
+    """Primary specialist, or a backup for when the primary cannot take it."""
+
+    PRIMARY = "Primary"
+    BACKUP = "Backup"
+
+
+class HandlingMode(str, enum.Enum):
+    """Who may answer this Contact right now (CONTEXT.md, ADR-0029).
+
+    ``MAIA`` is the default and the only mode in which the Lead worker may
+    release a draft. ``HUMAN`` names a holder and pauses Maia. ``AWAITING_``
+    ``CONTACT`` is the operation having said its part and waiting. ``ADMIN_``
+    ``REVIEW`` is the state a supervisor has to clear, and Maia does not
+    converse in it either.
+    """
+
+    MAIA = "Maia"
+    HUMAN = "Human"
+    AWAITING_CONTACT = "AwaitingContact"
+    ADMIN_REVIEW = "AdminReview"
+
+
+#: Modes in which Maia may compose and release a reply. Spelled as a set rather
+#: than ``mode == MAIA`` so a fifth mode has to decide explicitly whether Maia
+#: speaks in it.
+MAIA_MAY_REPLY: frozenset[str] = frozenset({HandlingMode.MAIA.value})
+
+
+class HandoffStatus(str, enum.Enum):
+    """The lifecycle of one request for a human."""
+
+    PENDING = "Pending"
+    ACKNOWLEDGED = "Acknowledged"
+    #: Withdrawn without a human taking it — the Contact resolved it with Maia,
+    #: or an Administrator closed it. Never used to hide an unhandled request.
+    CANCELLED = "Cancelled"
+
+
+class HandoffSource(str, enum.Enum):
+    """Why a human is needed. Recorded because the three read differently."""
+
+    #: The Contact asked for a person.
+    CONTACT_REQUEST = "ContactRequest"
+    #: Deterministic post-appointment routing sent this message to the Advisor
+    #: because it was not clearly Appointment Logistics (ADR-0037).
+    POST_HANDOFF_ROUTING = "PostHandoffRouting"
+    #: A human decided to take over without being asked.
+    HUMAN_INITIATED = "HumanInitiated"
+
+
+class InternalAlertStatus(str, enum.Enum):
+    """Delivery state of one internal operational notice."""
+
+    PENDING = "Pending"
+    SENT = "Sent"
+    #: There is nowhere to deliver it — the recipient has no configured chat.
+    #: The alert still exists and is still visible in the CRM.
+    UNDELIVERABLE = "Undeliverable"
+    FAILED = "Failed"
+
+
+class InternalAlertKind(str, enum.Enum):
+    """What an internal alert is about."""
+
+    HUMAN_HANDOFF_REQUESTED = "HumanHandoffRequested"
+    HUMAN_HANDOFF_ESCALATED = "HumanHandoffEscalated"
+    APPOINTMENT_ADVISOR_REVIEW = "AppointmentAdvisorReview"
+    ABSENCE_REVIEW = "AbsenceReview"
+
+
+class AppointmentAttendance(str, enum.Enum):
+    """Whether the visit happened. Only an Advisor may say (SAN-038)."""
+
+    ATTENDED = "Attended"
+    MISSED = "Missed"
+
+
+class AppointmentReminderKind(str, enum.Enum):
+    """The named reminders of the current unvalidated hypothesis (SAN-036).
+
+    The rows are created deterministically so the schedule is inspectable, and
+    dispatch stays blocked until Santiago validates the cadence. A reminder
+    Product cannot justify is not sent.
+    """
+
+    DAY_BEFORE = "DayBefore"
+    DAY_OF = "DayOf"
+
+
+class AdvisorAbsence(Base):
+    """A declared period in which an Advisor takes no new work.
+
+    Only an Organization Administrator records or ends one (PROJECT_MEMORY,
+    SAN-035). Ending an absence that is already under way truncates it —
+    ``ends_at`` moves to the moment it ended — rather than deleting it, because
+    "why was this Opportunity queued last Tuesday" has to stay answerable.
+    Ending one that has not started yet voids it through ``cancelled_at``.
+
+    Migration 0018 adds a PostgreSQL exclusion constraint so two overlapping
+    live absences for one Advisor cannot exist even under concurrency.
+    """
+
+    __tablename__ = "advisor_absences"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    advisor_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recorded_by: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    ended_early_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    cancelled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    ended_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+
+    __table_args__ = (
+        CheckConstraint("ends_at > starts_at", name="ck_advisor_absence_period"),
+        CheckConstraint(
+            "ended_by IS NOT NULL OR (ended_early_at IS NULL AND cancelled_at IS NULL)",
+            name="ck_advisor_absence_ended_by",
+        ),
+        Index("ix_advisor_absences_advisor", "advisor_id", "starts_at"),
+    )
+
+    def covers(self, moment: datetime) -> bool:
+        """Whether this absence is in force at *moment*."""
+        return (
+            self.cancelled_at is None
+            and self.starts_at <= moment < self.ends_at
+        )
+
+
+class PropertyExpert(Base):
+    """A Real Estate Advisor designated as a Property's specialist.
+
+    Distinct from the Responsible Advisor by construction: this row names a
+    *Property*, and nothing here changes who owns an Opportunity. Revoked
+    rather than deleted so an attribution question about a past visit still has
+    an answer.
+    """
+
+    __tablename__ = "property_experts"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    property_uuid: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("properties.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    advisor_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    role: Mapped[str] = mapped_column(String(10), nullable=False)
+    #: Order among backups. The primary is always 0.
+    rank: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    designated_by: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    designated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint("role IN ('Primary', 'Backup')", name="ck_property_expert_role"),
+        CheckConstraint(
+            "(role = 'Primary') = (rank = 0)", name="ck_property_expert_rank"
+        ),
+        # One live primary per Property, and one live designation per person per
+        # Property. Both are the database's job: an Administrator double-
+        # clicking must not produce two primaries.
+        Index(
+            "uq_property_expert_primary",
+            "property_uuid",
+            unique=True,
+            postgresql_where=sql_text("revoked_at IS NULL AND role = 'Primary'"),
+        ),
+        Index(
+            "uq_property_expert_live",
+            "property_uuid",
+            "advisor_id",
+            unique=True,
+            postgresql_where=sql_text("revoked_at IS NULL"),
+        ),
+        Index("ix_property_experts_advisor", "advisor_id"),
+    )
+
+
+class ConversationHandlingState(Base):
+    """Who is answering one Conversation, and since when (ADR-0029).
+
+    One row per Conversation, created lazily: an absent row means Maia, which
+    is the default the whole product already behaved as. ``version`` makes a
+    lost update visible instead of silent — two Advisors pressing *Atender* at
+    the same instant resolve to one holder.
+    """
+
+    __tablename__ = "conversation_handling"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    mode: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=HandlingMode.MAIA.value
+    )
+    holder_member_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    since: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    #: Why the mode changed, in the product's own vocabulary. Operator-visible.
+    reason: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "mode IN ('Maia', 'Human', 'AwaitingContact', 'AdminReview')",
+            name="ck_conversation_handling_mode",
+        ),
+        # A human mode with no human is the ambiguity this table removes.
+        CheckConstraint(
+            "(mode = 'Human') = (holder_member_id IS NOT NULL)",
+            name="ck_conversation_handling_holder",
+        ),
+    )
+
+
+class HumanHandoffRequest(Base):
+    """One unmet request for a human on one Conversation (ADR-0029).
+
+    The 15-minute escalation is a stamped column rather than a scheduled job:
+    the alert and its stamp land in one transaction, so a restart mid-window
+    re-derives exactly the same due set and cannot alert twice.
+    """
+
+    __tablename__ = "human_handoff_requests"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    contact_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("contacts.id", ondelete="CASCADE"), nullable=True
+    )
+    opportunity_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("opportunities.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    #: The Advisor alerted immediately. NULL when nobody is responsible yet,
+    #: which is itself why the Administrator has to see it.
+    advisor_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    source: Mapped[str] = mapped_column(String(24), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(14), nullable=False, default=HandoffStatus.PENDING.value
+    )
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    #: When the Administrator must be told if nobody has taken it.
+    escalate_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    advisor_alert_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    admin_alert_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    resolved_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    #: The inbound message that asked, when there was one. Kept so the request
+    #: can be read back to an operator even after content expiry blanks bodies.
+    trigger_inbox_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("inbox_messages.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "source IN ('ContactRequest', 'PostHandoffRouting', 'HumanInitiated')",
+            name="ck_handoff_source",
+        ),
+        CheckConstraint(
+            "status IN ('Pending', 'Acknowledged', 'Cancelled')",
+            name="ck_handoff_status",
+        ),
+        CheckConstraint(
+            "(status = 'Pending') = (resolved_at IS NULL)",
+            name="ck_handoff_resolution",
+        ),
+        # One open request per Conversation. A Contact asking three times in a
+        # row is one unmet request, not three alerts.
+        Index(
+            "uq_handoff_open",
+            "conversation_id",
+            unique=True,
+            postgresql_where=sql_text("status = 'Pending'"),
+        ),
+        Index("ix_handoff_escalation", "status", "escalate_at"),
+    )
+
+
+class InternalAlert(Base):
+    """One durable operational notice to a member of the operation.
+
+    Deliberately *not* an Outbox row. ADR-0045 gates messages to a Contact;
+    these go to the operation's own people on a private channel, and applying
+    consent or a service window to them would be meaningless. What they do
+    share is durability: the row is created in the transaction that caused it,
+    and delivery is a separate claimable step, which is what makes the
+    escalation survive a restart.
+    """
+
+    __tablename__ = "internal_alerts"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    #: NULL means every Organization Administrator.
+    recipient_member_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    subject_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    subject_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    #: The at-most-once key. Derived from what the alert is about, never from a
+    #: clock, so a retry or a restart produces the same key.
+    dedupe_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(14), nullable=False, default=InternalAlertStatus.PENDING.value
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    claimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    delivered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    acknowledged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('Pending', 'Sent', 'Undeliverable', 'Failed')",
+            name="ck_internal_alert_status",
+        ),
+        UniqueConstraint(
+            "organization_id", "dedupe_key", name="uq_internal_alert_dedupe"
+        ),
+        Index("ix_internal_alerts_pending", "status", "created_at"),
+        Index("ix_internal_alerts_recipient", "recipient_member_id", "created_at"),
+    )
+
+
+class AppointmentReminder(Base):
+    """One scheduled Contact-facing reminder for one appointment.
+
+    Created deterministically when the visit is confirmed so the schedule can be
+    inspected and asserted on. Dispatch is separately gated: the cadence is an
+    unvalidated hypothesis (SAN-036) and every send still passes the Outbound
+    Eligibility Gate, which denies free-form text outside the 24-hour window.
+    """
+
+    __tablename__ = "appointment_reminders"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    appointment_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("appointments.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    kind: Mapped[str] = mapped_column(String(12), nullable=False)
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    #: Stamped whether the reminder was sent or deliberately withheld, so a
+    #: blocked policy cannot make the worker retry the same reminder forever.
+    settled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    #: ``Sent``, or the stable reason it was not.
+    outcome: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("kind IN ('DayBefore', 'DayOf')", name="ck_reminder_kind"),
+        UniqueConstraint("appointment_id", "kind", name="uq_reminder_appointment_kind"),
+        Index("ix_reminders_due", "settled_at", "due_at"),
     )

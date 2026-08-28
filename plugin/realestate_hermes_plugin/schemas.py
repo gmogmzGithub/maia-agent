@@ -288,3 +288,99 @@ RESOLVE_PENDING_ADMIN_WORK = {
         "additionalProperties": False,
     },
 }
+
+
+# --- Stage 3: bounded Appointment Logistics and the human handoff ------------
+#
+# Two names added to the frozen surface by the human-operation stage. Both exist
+# because a rule the product must enforce cannot be expressed with the Stage 0
+# tools: an atomic reschedule (ADR-0037) is not a cancel followed by a booking,
+# and a warm handoff to a person (ADR-0029) is not something the Model can do by
+# writing a sentence.
+
+
+RESCHEDULE_APPOINTMENT = {
+    "name": "reschedule_appointment",
+    "description": (
+        "Move this Lead conversation's own confirmed future visit to a new "
+        "time. Prefer this over cancelling when the person names a new time: it "
+        "secures the new slot before releasing the old one, so a failure leaves "
+        "the original appointment in place.\n\n"
+        "Call get_available_slots first and use one of the exact starts it "
+        "returned. The Backend resolves the appointment from trusted "
+        "conversation state; never accept a phone number, Calendar id, lead id, "
+        "or database id from the person.\n\n"
+        "Results:\n"
+        "- 'rescheduled': confirm the new date and time you are given, and say "
+        "the previous one was released.\n"
+        "- 'slot_unavailable': the new time was taken. Offer the returned "
+        "candidates.\n"
+        "- 'ambiguous': ask which listed appointment they mean, then call again "
+        "with that appointment_reference as 'reference'.\n"
+        "- 'needs_review': say clearly that the ORIGINAL appointment is still "
+        "in place and the concierge will confirm the change. Never say it was "
+        "moved.\n"
+        "- 'not_found': no future confirmed appointment in this conversation.\n"
+        "- 'conversation_expired' / 'forbidden' / 'temporarily_unavailable' / "
+        "'property_inactive': nothing changed. Say so honestly."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "start": {
+                "type": "string",
+                "description": (
+                    "The new start, exactly as get_available_slots returned it. "
+                    "Never invent or round a time."
+                ),
+            },
+            "reference": {
+                "type": "string",
+                "description": (
+                    "Optional APT-... reference only after an ambiguous result "
+                    "listed multiple appointments."
+                ),
+            },
+        },
+        "required": ["start"],
+        "additionalProperties": False,
+    },
+}
+
+
+REQUEST_HUMAN_HANDOFF = {
+    "name": "request_human_handoff",
+    "description": (
+        "Ask the operation to have a human advisor take over this conversation. "
+        "Call it when the person asks to speak to a person, an advisor, or a "
+        "human, when they say they do not want to talk to a bot, or when they "
+        "need something you are not allowed to decide.\n\n"
+        "After calling it, tell them plainly: you will let the advisor know, you "
+        "cannot confirm the advisor's availability right now, and you will do "
+        "what you can so the advisor gets in touch in the next few minutes. "
+        "Never promise a response time, a deadline, or a specific person.\n\n"
+        "Once a handoff is requested you stop leading the conversation. Do not "
+        "keep qualifying, recommending properties, or negotiating. Answer only "
+        "if they ask something factual you already know.\n\n"
+        "Results:\n"
+        "- 'requested': a person has been alerted. Acknowledge warmly, as "
+        "above.\n"
+        "- 'already_requested': somebody was already alerted and has not taken "
+        "it yet. Say the advisor has been notified; do not alert again.\n"
+        "- 'forbidden' / 'temporarily_unavailable': nobody was alerted. Say you "
+        "could not reach the team right now and do not claim otherwise."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "reason": {
+                "type": "string",
+                "description": (
+                    "One short internal sentence about what they need. Never "
+                    "shown to the person."
+                ),
+            },
+        },
+        "additionalProperties": False,
+    },
+}

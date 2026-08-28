@@ -458,8 +458,13 @@ async def test_an_opt_out_is_shown_and_no_surface_can_send(wired) -> None:
     assert "No se puede enviar nada a este contacto" in response.text
     assert "pidió explícitamente no recibir mensajes" in response.text
     assert "Sí es posible responder cuando el contacto escribe." in response.text
-    # There is no way to send from this screen: it has no form at all.
-    assert 'method="post"' not in response.text
+    # Stage 3 gave this screen a reply path (ADR-0029), so "no form at all"
+    # stopped being the guarantee. What still holds is stronger and is asserted
+    # where it lives: an operator who does not hold the conversation gets no
+    # message box at all, and the Outbound Eligibility Gate refuses a suppressed
+    # Contact whoever is typing — see tests/test_conversation_handling.py.
+    assert "Responder por WhatsApp" not in response.text
+    assert 'name="mensaje"' not in response.text
     assert "<textarea" not in response.text
 
     # And the contact list marks the restriction.

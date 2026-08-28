@@ -19,16 +19,22 @@ eligibility gate has no entry point here.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
 from datetime import UTC, datetime, timedelta
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from realestate.api.developer import require_developer
+from realestate.api.operator import (
+    command_field,
+    command_key,
+    command_payload,
+    refusal,
+    require_actor,
+    shell,
+    tag,
+)
 from realestate.api.ui import (
     checkbox,
     datetime_input_value,
@@ -36,17 +42,19 @@ from realestate.api.ui import (
     errors_box,
     escape,
     flash,
-    layout,
     local,
     options,
     parse_datetime_input,
     relative,
     table,
 )
+from sqlalchemy import select
+
 from realestate.db.models import (
     ACTIVE_STAGES,
     ChannelIdentityTrust,
-    MemberRole,
+    InboxGroup,
+    InboxGroupStatus,
     NextAction,
     NextActionKind,
     NextActionOutcome,
@@ -63,7 +71,10 @@ from realestate.db.models import (
     PropertyNeedCriterion,
     QUALIFIED_OR_BEYOND,
 )
-from realestate.domain.commercial.actors import Actor, CommercialError, UnknownMember
+from realestate.api.operations import handling_panel, reply_form
+from realestate.domain.commercial.actors import Actor, CommercialError
+from realestate.domain.commercial.handling import ConversationHandling
+from realestate.domain.commercial.handoff import HumanHandoff
 from realestate.domain.commercial.assignment import (
     BASIS_LABELS,
     QUEUE_REASON_LABELS,
@@ -113,7 +124,6 @@ from realestate.domain.commercial.opportunities import (
     WonEvidence,
 )
 from realestate.domain.commercial.organization import (
-    ROLE_LABELS,
     OrganizationDirectory,
 )
 from realestate.domain.outbound import DenialReason, Purpose
@@ -165,6 +175,9 @@ DENIAL_REASON_LABELS = {
 
 PURPOSE_LABELS = {
     Purpose.AGENT_REPLY.value: "Respuesta de Maia",
+    Purpose.HUMAN_REPLY.value: "Respuesta de una persona",
+    Purpose.APPOINTMENT_RESCHEDULED.value: "Cita reagendada",
+    Purpose.APPOINTMENT_REMINDER.value: "Recordatorio de cita",
     Purpose.PROCESSING_FAILURE.value: "Aviso de falla",
     Purpose.APPOINTMENT_CONFIRMATION.value: "Confirmación de cita",
     Purpose.APPOINTMENT_RESOLUTION.value: "Resolución de cita",
@@ -186,101 +199,12 @@ def _now() -> datetime:
     return datetime.now(tz=UTC)
 
 
-async def require_actor(
-    request: Request, login: str = Depends(require_developer)
-) -> Actor:
-    """Resolve the authenticated credential to an Organization member.
-
-    Authentication is unchanged; this is the authorization step Stage 2 adds. A
-    credential that is valid but unknown to the Organization is refused with an
-    explanation an operator can act on, rather than silently granted the
-    authority the surface happens to expose.
-    """
-    async with request.app.state.database.session_scope() as session:
-        try:
-            return await OrganizationDirectory(session).resolve_actor(login)
-        except UnknownMember as exc:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN, detail=exc.message
-            ) from exc
-
-
-async def require_administrator(
-    actor: Actor = Depends(require_actor),
-) -> Actor:
-    """An Actor that administers the Organization, or a refusal.
-
-    Property management, Advisor access and assignment are the Organization
-    Administrator's authority (CONTEXT.md). Before this existed, every surface
-    outside ``/crm`` accepted any credential in the operational credential map
-    with no role lookup at all — latent only because both configured logins
-    happen to administer today.
-    """
-    if not actor.is_administrator:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                "Sólo un administrador de la organización puede administrar el "
-                "inventario."
-            ),
-        )
-    return actor
-
-
-def _shell(actor: Actor, title: str, content: str, *, active: str) -> HTMLResponse:
-    return layout(
-        title,
-        content,
-        active=active,
-        actor_label=actor.display_name,
-        role_label=(
-            ROLE_LABELS[MemberRole.ADMINISTRATOR.value]
-            if actor.is_administrator
-            else ROLE_LABELS[MemberRole.ADVISOR.value]
-        ),
-    )
-
-
-def _command_field() -> str:
-    """A hidden idempotency key, minted when the form is rendered.
-
-    Without it every submission invented its own key, so the domain's
-    idempotency was real but unreachable: a double-submitted "Abrir
-    oportunidad" produced two Opportunities, and a double-submitted action
-    produced one superseded immediately by its twin.
-
-    Minted per render rather than per request, so re-submitting *the page in
-    front of the operator* — the double click, the impatient refresh, the
-    flaky-connection retry — replays instead of repeating.
-    """
-    return f'<input type="hidden" name="clave" value="{uuid.uuid4().hex}">'
-
-
-def _command_key(form: Mapping[str, Any], prefix: str) -> str:
-    """The command key for one submission.
-
-    A mutation without one is refused: silently minting a server-side value
-    makes a retry look protected while guaranteeing that it runs twice.
-    """
-    nonce = str(form.get("clave", "")).strip()
-    if not nonce:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Falta la clave de operación; recarga la página e inténtalo de nuevo.",
-        )
-    return f"{prefix}:{nonce}"
-
-
-def _command_payload(form: Mapping[str, Any]) -> dict[str, str]:
-    """Stable request facts bound to an idempotency key, excluding the key."""
-    return {
-        str(name): str(value) for name, value in form.items() if str(name) != "clave"
-    }
-
-
-def _tag(text: str, kind: str = "") -> str:
-    classes = f"tag {kind}".strip()
-    return f'<span class="{escape(classes)}">{escape(text)}</span>'
+# The shared operator plumbing, under the local names this file already uses.
+_shell = shell
+_tag = tag
+_command_field = command_field
+_command_key = command_key
+_command_payload = command_payload
 
 
 def _stage_tag(stage: str | None) -> str:
@@ -526,10 +450,21 @@ def _inbox_filter_form(filters: InboxFilters) -> str:
 </form>"""
 
 
+#: What the handling controls confirm, in the operator's words.
+_CONVERSATION_FLASH = {
+    "atendiendo": "Ahora tú atiendes esta conversación. Maia dejó de responder.",
+    "liberada": "Liberaste la conversación.",
+    "enviado": "Se envió el mensaje por el canal oficial.",
+    "solicitud": "Registramos que tú estás atendiendo la solicitud.",
+}
+
+
 @router.get("/bandeja/{conversation_id}", response_class=HTMLResponse)
 async def conversation(
     request: Request,
     conversation_id: uuid.UUID,
+    guardado: str = "",
+    error: str = "",
     actor: Actor = Depends(require_actor),
 ) -> HTMLResponse:
     """One conversation, its restrictions, and what Product refused to send."""
@@ -539,6 +474,16 @@ async def conversation(
             view = await CommercialInbox(session).conversation(actor, conversation_id)
         except CommercialError as exc:
             return _refusal(actor, exc, active="/crm/bandeja")
+        handling = await ConversationHandling(session).snapshot(conversation_id)
+        pending_handoff = await HumanHandoff(session).open_for_conversation(
+            conversation_id
+        )
+        mid_turn = await session.scalar(
+            select(InboxGroup.id)
+            .where(InboxGroup.conversation_id == conversation_id)
+            .where(InboxGroup.status == InboxGroupStatus.PROCESSING.value)
+            .limit(1)
+        )
 
     messages = "".join(
         f"<li class='msg{' out' if message.direction == 'Maia' else ''}'>"
@@ -609,7 +554,17 @@ async def conversation(
 <a class="button quiet" href="/crm/contactos/{view.contact.id}">Ver contacto</a></div>"""
 
     content = (
-        f"{restriction_block}"
+        flash(_CONVERSATION_FLASH.get(guardado))
+        + (f'<div class="error" role="alert">{escape(error)}</div>' if error else "")
+        + handling_panel(
+            handling,
+            pending_handoff,
+            actor,
+            conversation_id=conversation_id,
+            maia_mid_turn=mid_turn is not None,
+        )
+        + reply_form(handling, actor, conversation_id=conversation_id)
+        + f"{restriction_block}"
         f"<div class='card'><h2>Contacto</h2><dl class='pairs'>"
         f"<dt>Nombre</dt><dd>{escape(view.contact.display_name or 'Sin nombre registrado')}</dd>"
         f"<dt>WhatsApp</dt><dd>{escape(view.channel_identity)}</dd></dl></div>"
@@ -2052,14 +2007,4 @@ async def assign_from_queue(
     return _back("/crm/asignacion", saved="asignada")
 
 
-def _refusal(actor: Actor, exc: CommercialError, *, active: str) -> HTMLResponse:
-    """A refusal an operator can read, on the surface they were already on."""
-    response = _shell(
-        actor,
-        "No disponible",
-        f'<div class="error" role="alert">{escape(exc.message)}</div>'
-        '<p><a href="/crm">Volver al panel</a></p>',
-        active=active,
-    )
-    response.status_code = status.HTTP_404_NOT_FOUND
-    return response
+_refusal = refusal

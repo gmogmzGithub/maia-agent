@@ -27,6 +27,7 @@ from realestate.db.models import (
     AgentRole,
     AgentSession,
     Conversation,
+    HandoffSource,
     InboxGroup,
     InboxGroupStatus,
     InboxMessage,
@@ -35,6 +36,12 @@ from realestate.db.models import (
 )
 from realestate.domain.administration import AdministrationService, Administrator
 from realestate.domain.admin_work import ALLOWED_ACTIONS, AdminWorkService
+from realestate.domain.commercial.actors import Actor
+from realestate.domain.commercial.handoff import (
+    HUMAN_HANDOFF_ACKNOWLEDGEMENT,
+    HumanHandoff,
+    RequestHumanHandling,
+)
 from realestate.domain.appointments import AppointmentService
 from realestate.domain.properties import PropertyService
 
@@ -146,6 +153,8 @@ async def plugin_health(
             "list_properties",
             "resolve_pending_admin_work",
             "list_pending_admin_work",
+            "reschedule_appointment",
+            "request_human_handoff",
         ],
     }
 
@@ -343,7 +352,7 @@ async def resolve_pending_admin_work(
     async with request.app.state.database.session_scope() as session:
         return await AdminWorkService(
             session,
-            request.app.state.calendar,
+            request.app.state.calendars,
             request.app.state.appointment_policy.schedule,
         ).resolve(
             payload.reference,
@@ -369,7 +378,7 @@ async def list_pending_admin_work(
     async with request.app.state.database.session_scope() as session:
         return await AdminWorkService(
             session,
-            request.app.state.calendar,
+            request.app.state.calendars,
             request.app.state.appointment_policy.schedule,
         ).list_pending()
 
@@ -453,7 +462,7 @@ async def get_available_slots(
     async with request.app.state.database.session_scope() as session:
         service = AppointmentService(
             session,
-            request.app.state.calendar,
+            request.app.state.calendars,
             request.app.state.appointment_policy,
         )
         result = await service.available_slots(
@@ -510,7 +519,7 @@ async def book_appointment(
     async with request.app.state.database.session_scope() as session:
         service = AppointmentService(
             session,
-            request.app.state.calendar,
+            request.app.state.calendars,
             request.app.state.appointment_policy,
         )
         result = await service.book(
@@ -579,7 +588,7 @@ async def cancel_appointment(
         )
         service = AppointmentService(
             session,
-            request.app.state.calendar,
+            request.app.state.calendars,
             request.app.state.appointment_policy,
         )
         result = await service.cancel(
@@ -593,3 +602,108 @@ async def cancel_appointment(
             result.get("result"),
         )
         return result
+
+
+class RescheduleAppointmentRequest(BaseModel):
+    """`reschedule_appointment` arguments (ADR-0037).
+
+    The new start and, after an ambiguous result, which appointment. No advisor,
+    calendar, duration, or appointment id: the visit is resolved from the
+    trusted Sales conversation and the ownership from the commercial record.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    start: datetime
+    reference: str | None = Field(default=None, min_length=1, max_length=40)
+
+
+@router.post("/tools/reschedule_appointment", dependencies=[Depends(require_plugin_token)])
+async def reschedule_appointment(
+    request: Request,
+    payload: RescheduleAppointmentRequest,
+    hermes_session_id: str = Header(default="", alias=SESSION_HEADER),
+) -> dict[str, object]:
+    conversation = await resolve_sales_conversation(request, hermes_session_id)
+    logger.info(
+        "Plugin tool request: reschedule_appointment (durable=%s, sales_conversation=%s, payload=%s)",
+        hermes_session_id or "<none>",
+        conversation.id if conversation is not None else "<none>",
+        _safe_payload(payload),
+    )
+    if conversation is None:
+        logger.warning(
+            "Plugin tool forbidden: reschedule_appointment (durable=%s)",
+            hermes_session_id or "<none>",
+        )
+        return {"result": "forbidden"}
+
+    async with request.app.state.database.session_scope() as session:
+        service = AppointmentService(
+            session,
+            request.app.state.calendars,
+            request.app.state.appointment_policy,
+        )
+        result = await service.reschedule(
+            conversation=await session.merge(conversation),
+            new_start=payload.start,
+            reference=payload.reference,
+        )
+        logger.debug(
+            "Plugin tool result: reschedule_appointment (durable=%s, result=%s)",
+            hermes_session_id or "<none>",
+            result.get("result"),
+        )
+        return result
+
+
+class RequestHumanHandoffRequest(BaseModel):
+    """`request_human_handoff` arguments (ADR-0029).
+
+    A short internal reason and nothing else. Who is alerted, how long they have,
+    and whether Maia stops talking are Product's decisions, not arguments.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    reason: str | None = Field(default=None, max_length=300)
+
+
+@router.post("/tools/request_human_handoff", dependencies=[Depends(require_plugin_token)])
+async def request_human_handoff(
+    request: Request,
+    payload: RequestHumanHandoffRequest,
+    hermes_session_id: str = Header(default="", alias=SESSION_HEADER),
+) -> dict[str, object]:
+    conversation = await resolve_sales_conversation(request, hermes_session_id)
+    logger.info(
+        "Plugin tool request: request_human_handoff (durable=%s, sales_conversation=%s)",
+        hermes_session_id or "<none>",
+        conversation.id if conversation is not None else "<none>",
+    )
+    if conversation is None:
+        logger.warning(
+            "Plugin tool forbidden: request_human_handoff (durable=%s)",
+            hermes_session_id or "<none>",
+        )
+        return {"result": "forbidden"}
+
+    async with request.app.state.database.session_scope() as session:
+        merged = await session.merge(conversation)
+        actor = Actor.product(merged.organization_id, "MaiaHumanHandoff")
+        recorded = await HumanHandoff(session).request(
+            actor,
+            RequestHumanHandling(
+                conversation=merged,
+                source=HandoffSource.CONTACT_REQUEST,
+                detail=(payload.reason or "").strip() or None,
+            ),
+        )
+        await session.commit()
+        return {
+            "result": "requested" if recorded.created else "already_requested",
+            # The approved acknowledgement is Product's, so a model run cannot
+            # turn a warm handoff into a service-level commitment (ADR-0029).
+            "acknowledgement": HUMAN_HANDOFF_ACKNOWLEDGEMENT,
+            "handling_mode": recorded.mode,
+        }

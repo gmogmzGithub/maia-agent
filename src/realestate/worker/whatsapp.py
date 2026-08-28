@@ -40,7 +40,9 @@ from realestate.domain.appointments import (
     mark_lead_notified,
     pending_lead_notice,
 )
+from realestate.domain.audit import record_audit
 from realestate.domain.availability import WeeklySchedule
+from realestate.domain.commercial.handling import ConversationHandling
 from realestate.domain.inbox import (
     RECONCILIATION_WINDOW_SECONDS,
     ClaimedGroup,
@@ -130,6 +132,15 @@ class WhatsAppWorker:
 
             conversation = await session.get(Conversation, conversation_id)
             assert conversation is not None
+
+            # Handling authority, checked again now that the group is claimed.
+            # The claimable query already excluded conversations a human holds;
+            # this covers the human who arrived between the two.
+            handling = ConversationHandling(session)
+            if not await handling.maia_may_reply(conversation_id, lock=True):
+                await self._withhold_for_human(session, inbox, group, conversation)
+                return
+
             cycle = await session.get(LeadEngagementCycle, conversation.cycle_id)
             assert cycle is not None
             lead = await session.get(Lead, conversation.lead_id)
@@ -293,6 +304,16 @@ class WhatsAppWorker:
             await inbox.fail(group)
             return
 
+        # The Maia-against-human race, resolved at the last possible moment and
+        # under the handling row's lock. A human who took over while Hermes was
+        # composing wins: the draft is discarded rather than delivered beside
+        # whatever the person is about to write (ADR-0029).
+        if not await ConversationHandling(session).maia_may_reply(
+            conversation.id, lock=True
+        ):
+            await self._withhold_for_human(session, inbox, group, conversation)
+            return
+
         # What the Lead is told about an Appointment is product text rendered
         # from the persisted row, never the Model's account of the booking. When
         # one is owed it *replaces* the draft, so a confirmed visit produces
@@ -345,6 +366,48 @@ class WhatsAppWorker:
                 conversation.id,
                 outcome.outbox_id,
             )
+
+    async def _withhold_for_human(
+        self,
+        session: AsyncSession,
+        inbox: InboxService,
+        group: ClaimedGroup,
+        conversation: Conversation,
+    ) -> None:
+        """Close the lane without answering, because a human holds this thread.
+
+        The group is *settled*, not failed. Failing it would retry the same
+        messages until the attempt budget ran out and then send the Contact a
+        processing-failure notice — announcing a fault where the product worked
+        exactly as designed. The messages are already visible in the CRM thread
+        the human is reading.
+        """
+        snapshot = await ConversationHandling(session).snapshot(conversation.id)
+        logger.info(
+            "Withholding Maia for conversation %s: handling mode is %s",
+            conversation.id,
+            snapshot.mode.value,
+        )
+        await record_audit(
+            session,
+            actor_type="Product",
+            actor_id="WhatsAppWorker",
+            action="WithholdMaiaReplyForHuman",
+            subject_type="Conversation",
+            subject_id=str(conversation.id),
+            details={
+                "mode": snapshot.mode.value,
+                "holder_member_id": (
+                    str(snapshot.holder_member_id)
+                    if snapshot.holder_member_id
+                    else None
+                ),
+                "inbox_ids": [str(identifier) for identifier in group.inbox_ids],
+            },
+            commit=False,
+        )
+        await session.commit()
+        await inbox.settle(group)
 
     def _release(
         self, conversation: Conversation, reply: str, notice: LeadNotice | None

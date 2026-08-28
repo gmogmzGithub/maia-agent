@@ -24,8 +24,14 @@ authorization, persistence, delivery, retries, and business authority.
 - A commercial system of record — Contacts, needs, Opportunities, assignment and
   next actions — behind small module interfaces, with the races that matter
   guarded by database constraints rather than service-layer checks.
-- Server-rendered Mexican Spanish operator surfaces that show refused outbound
-  decisions and communication restrictions without any path to send.
+- An explicit handling authority over each conversation, so an advisor and the
+  agent can never answer the same customer at once, and a request for a human
+  cannot quietly go unanswered.
+- Appointments that belong to a named advisor and their own authoritative
+  calendar, with rescheduling that secures the new time before releasing the old.
+- Server-rendered Mexican Spanish operator surfaces for the team, absences,
+  property specialists, the visit calendar and the conversation inbox, showing
+  refused outbound decisions and communication restrictions with their reasons.
 - A standalone Hermes plugin that exposes typed product operations without
   giving the agent direct database or Calendar credentials.
 - Recovery-oriented tests around persistence, sessions, tools, workers,
