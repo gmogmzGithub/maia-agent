@@ -43,6 +43,15 @@ class SentNotice(NamedTuple):
     body: str
 
 
+class SentTemplate(NamedTuple):
+    """One recorded WhatsApp template send."""
+
+    to_wa_id: str
+    template_id: str
+    language_code: str
+    provider_message_id: str
+
+
 class StubCalendar:
     """Answers each test controls; nothing here reaches Google.
 
@@ -106,6 +115,7 @@ class StubWhatsApp:
 
     def __init__(self, result: SendResult | None = None) -> None:
         self.sent: list[SentText] = []
+        self.sent_templates: list[SentTemplate] = []
         self._result = result
 
     async def send_text(self, to_wa_id: str, body: str) -> SendResult:
@@ -113,6 +123,23 @@ class StubWhatsApp:
             SendOutcome.SENT, provider_message_id=f"wamid.{len(self.sent) + 1}"
         )
         self.sent.append(SentText(to_wa_id, body, result.provider_message_id or ""))
+        return result
+
+    async def send_template(
+        self, to_wa_id: str, template_id: str, language_code: str
+    ) -> SendResult:
+        result = self._result or SendResult(
+            SendOutcome.SENT,
+            provider_message_id=f"wamid.template.{len(self.sent_templates) + 1}",
+        )
+        self.sent_templates.append(
+            SentTemplate(
+                to_wa_id,
+                template_id,
+                language_code,
+                result.provider_message_id or "",
+            )
+        )
         return result
 
 

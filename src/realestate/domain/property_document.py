@@ -129,13 +129,13 @@ class _StrictLoader(yaml.SafeLoader):
     """Safe YAML loader that rejects duplicate mapping keys."""
 
 
-def _construct_mapping(loader: _StrictLoader, node: yaml.MappingNode) -> dict:
-    mapping: dict = {}
+def _construct_mapping(loader: _StrictLoader, node: yaml.MappingNode) -> dict[str, Any]:
+    mapping: dict[Any, Any] = {}
     for key_node, value_node in node.value:
-        key = loader.construct_object(key_node)
+        key = loader.construct_object(key_node)  # type: ignore[no-untyped-call]
         if key in mapping:
             raise yaml.YAMLError(f"duplicate front-matter key: {key}")
-        mapping[key] = loader.construct_object(value_node)
+        mapping[key] = loader.construct_object(value_node)  # type: ignore[no-untyped-call]
     return mapping
 
 

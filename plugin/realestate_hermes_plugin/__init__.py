@@ -16,6 +16,8 @@ Model can see.
 
 from __future__ import annotations
 
+from typing import Any
+
 import json
 import logging
 import os
@@ -45,7 +47,7 @@ FROZEN_TOOL_SURFACE: tuple[str, ...] = (
 # the first. This is the one place a tool is declared: ``REGISTERED_TOOLS`` and
 # the registration loop in :func:`register` both derive from it, so a new tool
 # cannot be half-added.
-TOOLS: tuple[tuple[str, dict, object], ...] = (
+TOOLS: tuple[tuple[str, dict[str, Any], object], ...] = (
     (
         "get_property_information",
         schemas.GET_PROPERTY_INFORMATION,

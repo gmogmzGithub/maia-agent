@@ -35,6 +35,8 @@ from realestate.db.models import (
     Lead,
     LeadEngagementCycle,
 )
+from realestate.domain.audit import record_audit
+from realestate.domain.outbound import detect_opt_out, record_explicit_opt_out
 
 # P-038: a two-minute processing lease, renewed every 30 seconds.
 LEASE_SECONDS = 120
@@ -156,6 +158,33 @@ class InboxService:
         )
         self._session.add(row)
         try:
+            # Flushed inside the guard: the duplicate-wamid race can surface
+            # here as easily as at commit, and both mean the same thing.
+            await self._session.flush()
+
+            # A Contact asking to be left alone is honoured at the moment their
+            # message becomes durable, in the same transaction. Doing it later —
+            # in the worker, or after Hermes has had an opinion — would leave a
+            # window in which the follow-up policy could still write to them.
+            phrase = detect_opt_out(message.text)
+            if phrase is not None:
+                await record_explicit_opt_out(
+                    self._session,
+                    lead_id=lead.id,
+                    phrase=phrase,
+                    source_inbox_id=row.id,
+                )
+                await record_audit(
+                    self._session,
+                    actor_type="Contact",
+                    actor_id=lead.wa_id,
+                    action="RecordExplicitOptOut",
+                    subject_type="Lead",
+                    subject_id=str(lead.id),
+                    details={"phrase": phrase, "channel": "WhatsApp"},
+                    commit=False,
+                )
+
             await self._session.commit()
         except IntegrityError:
             # Two concurrent webhook deliveries of the same wamid raced. The
@@ -175,7 +204,9 @@ class InboxService:
     async def _lead(self, message: InboundMessage) -> Lead:
         lead = (
             await self._session.execute(
-                select(Lead).where(Lead.wa_id == message.from_wa_id)
+                select(Lead)
+                .where(Lead.wa_id == message.from_wa_id)
+                .with_for_update()
             )
         ).scalar_one_or_none()
         if lead is not None:

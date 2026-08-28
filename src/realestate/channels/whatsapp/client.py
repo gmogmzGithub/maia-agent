@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 from enum import Enum
 
 import httpx
@@ -159,10 +160,21 @@ class WhatsAppClient:
             }
 
         expires_at = payload.get("expires_at")
+        # Meta documents 0 or an absent field as "never expires". Anything else
+        # non-integer is not that — it is a payload we do not understand, and
+        # reporting it as a healthy non-expiring token would be a guess.
         if expires_at in (0, None):
             return {"status": "ok", "detail": "token valid, no expiry"}
+        if not isinstance(expires_at, int):
+            return {
+                "status": "unknown",
+                "detail": (
+                    f"Meta reported expires_at={expires_at!r}, which is not a "
+                    "timestamp. The token may be valid; its expiry is unreadable."
+                ),
+            }
 
-        expiry = datetime.fromtimestamp(int(expires_at), tz=UTC)
+        expiry = datetime.fromtimestamp(expires_at, tz=UTC)
         hours = (expiry - datetime.now(tz=UTC)).total_seconds() / 3600
         if hours <= 0:
             return {
@@ -189,7 +201,26 @@ class WhatsAppClient:
         }
         return await self._post("/messages", payload)
 
-    async def _post(self, path: str, payload: dict) -> SendResult:
+    async def send_template(
+        self,
+        to_wa_id: str,
+        template_id: str,
+        language_code: str,
+    ) -> SendResult:
+        """Send one exact template already approved for this WABA."""
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": normalize_recipient(to_wa_id),
+            "type": "template",
+            "template": {
+                "name": template_id,
+                "language": {"code": language_code},
+            },
+        }
+        return await self._post("/messages", payload)
+
+    async def _post(self, path: str, payload: dict[str, Any]) -> SendResult:
         if not self.configured:
             return SendResult(
                 outcome=SendOutcome.FAILED_PERMANENT,

@@ -4,7 +4,7 @@ status: accepted
 
 # Separate the Property Catalog from runtime truth
 
-`src/properties` is Maia's public-safe, source-controlled Property Catalog, while
+`src/properties` is Product's public-safe, source-controlled Property Catalog, while
 PostgreSQL and accepted immutable artifacts remain runtime truth. Property Documents
 from the catalog or a manual administrative submission must pass through the same
 Product-owned validation and acceptance boundary; Hermes continues to request facts

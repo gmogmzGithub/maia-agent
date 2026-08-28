@@ -119,13 +119,13 @@ Create the one local environment file:
 cp .env.example .env
 ```
 
-In `.env`, fill these three required local secrets with different values from
-`openssl rand -hex 32`:
+In `.env`, fill the two shared local secrets with different values from
+`openssl rand -hex 32`, then configure at least one local Basic-auth account:
 
 ```text
 HERMES_DASHBOARD_SESSION_TOKEN=
 PLUGIN_API_TOKEN=
-DEVELOPER_BASIC_PASSWORD=
+DEVELOPER_BASIC_CREDENTIALS_JSON={"developer":"replace-with-a-secret"}
 ```
 
 Add `ANTHROPIC_API_KEY` when you want real model conversations. Meta, Telegram,

@@ -7,6 +7,7 @@ writing differently-shaped history while both claiming to be "the audit trail".
 
 from __future__ import annotations
 
+from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from realestate.db.models import AuditEvent
@@ -19,10 +20,18 @@ async def record_audit(
     actor_id: str,
     action: str,
     subject_id: str,
-    details: dict,
+    details: dict[str, Any],
     subject_type: str = "Property",
+    commit: bool = True,
 ) -> None:
-    """Append one audit row and commit it."""
+    """Append one audit row.
+
+    Commits by default, because most callers record history about a mutation
+    that has already landed. Pass ``commit=False`` when the audit row belongs to
+    a transaction the caller is still assembling — an opt-out recorded while the
+    message that expressed it is still being persisted must not become durable
+    on its own.
+    """
     session.add(
         AuditEvent(
             actor_type=actor_type,
@@ -33,4 +42,5 @@ async def record_audit(
             details=details,
         )
     )
-    await session.commit()
+    if commit:
+        await session.commit()

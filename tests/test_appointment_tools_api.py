@@ -35,12 +35,13 @@ from realestate.db.models import (
     Conversation,
     Lead,
     LeadEngagementCycle,
+    OutboundDecision,
     Property,
 )
 from realestate.domain.appointments import AppointmentPolicy
 from realestate.domain.inbox import InboxService
 from realestate.domain.properties import ArtifactStore, PropertyService
-from tests.conftest import DATABASE_URL, env, requires_postgres
+from tests.conftest import DATABASE_URL, age_pending_inbox, env, requires_postgres
 from tests.fixtures import webhooks
 from tests.fixtures.stubs import SCHEDULE, StubCalendar
 
@@ -358,13 +359,21 @@ async def test_a_confirmed_appointment_can_be_cancelled_by_the_same_sales_sessio
     client, app = wired
     start = a_candidate((await ask_slots(client)).json())
     booked = (await book(client, reference="casa-roble", start=start)).json()
+    await age_pending_inbox(app.state.database)
+    async with app.state.database.session_scope() as session:
+        conversation = (await session.execute(select(Conversation))).scalar_one()
+        assert await InboxService(session).claim(conversation.id) is not None
 
     body = (await cancel(client)).json()
 
     assert body["result"] == "cancelled"
+    assert body["lead_notified"] is True
     assert body["appointment_reference"] == booked["appointment_reference"]
     assert body["reschedule_prompt_required"] is True
     assert app.state.calendar.deleted == [f"evt-{booked['appointment_reference']}"]
+    async with app.state.database.session_scope() as session:
+        decision = (await session.execute(select(OutboundDecision))).scalar_one()
+    assert len(decision.trigger_inbox_ids) == 1
 
 
 async def test_the_attendee_name_is_display_only_and_carries_no_authority(

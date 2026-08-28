@@ -12,6 +12,7 @@ import hashlib
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -128,7 +129,7 @@ def customer_availability_message(reason: str | None) -> str:
         PropertyInactiveReason.RESERVED.value: (
             "La propiedad está reservada y no está disponible por el momento."
         ),
-    }.get(reason, "La propiedad no está disponible por el momento.")
+    }.get(reason or "", "La propiedad no está disponible por el momento.")
 
 
 async def resolve_property(session: AsyncSession, reference: str) -> Property | None:
@@ -412,7 +413,7 @@ class PropertyService:
         actor_id: str,
         action: str,
         subject_id: str,
-        details: dict,
+        details: dict[str, Any],
         subject_type: str = "Property",
     ) -> None:
         await record_audit(
@@ -429,7 +430,7 @@ class PropertyService:
 
     async def get_property_information(
         self, reference: str, role: AgentRole, actor_id: str = ""
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Resolve `get_property_information` under role-aware policy (P-053).
 
         ``reference`` is a readable Property Key or the Lead-facing name. A
@@ -449,7 +450,7 @@ class PropertyService:
         )
         return result
 
-    async def _property_information(self, reference: str, role: AgentRole) -> dict:
+    async def _property_information(self, reference: str, role: AgentRole) -> dict[str, Any]:
         prop = await self._resolve(reference)
         if prop is None:
             return {"result": "not_found"}

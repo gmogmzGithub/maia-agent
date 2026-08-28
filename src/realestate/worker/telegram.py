@@ -18,6 +18,7 @@ import logging
 from datetime import UTC, datetime
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from realestate.channels.telegram.client import TelegramClient, TelegramUpdate
 from realestate.db.engine import Database
@@ -127,9 +128,9 @@ class TelegramAdminWorker:
             )
 
         async with self._database.session_scope() as session:
-            record = await session.get(AdminMessage, message_id)
-            if record is not None:
-                record.processed_at = datetime.now(tz=UTC)
+            stored = await session.get(AdminMessage, message_id)
+            if stored is not None:
+                stored.processed_at = datetime.now(tz=UTC)
                 await session.commit()
 
     async def _run_admin_turn(self, update: TelegramUpdate, message_id: str) -> str:
@@ -172,7 +173,12 @@ class TelegramAdminWorker:
     def _channel_key(self, update: TelegramUpdate) -> str:
         return f"{CHANNEL}:{update.chat_id}"
 
-    async def _bind(self, session, update: TelegramUpdate, hermes_session_id: str) -> None:  # noqa: ANN001
+    async def _bind(
+        self,
+        session: AsyncSession,
+        update: TelegramUpdate,
+        hermes_session_id: str,
+    ) -> None:
         await bind_channel_session(
             session,
             role=AgentRole.ADMINISTRATIVE,

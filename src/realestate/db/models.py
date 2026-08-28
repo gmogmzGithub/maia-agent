@@ -16,6 +16,7 @@ from __future__ import annotations
 import enum
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
     BigInteger,
@@ -29,8 +30,9 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
-    text,
 )
+# Aliased: ``InboxMessage.text`` shadows the bare name inside that class body.
+from sqlalchemy import text as sql_text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -132,7 +134,7 @@ class PropertyDocumentVersion(Base):
     byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
     # The parsed front matter, kept for audit and for compact administrative
     # views. The artifact remains the authoritative content.
-    document_metadata: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    document_metadata: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     accepted_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -157,7 +159,7 @@ class AuditEvent(Base):
     action: Mapped[str] = mapped_column(String(80), nullable=False)
     subject_type: Mapped[str] = mapped_column(String(40), nullable=False)
     subject_id: Mapped[str] = mapped_column(String(200), nullable=False)
-    details: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    details: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
 
     __table_args__ = (Index("ix_audit_events_subject", "subject_type", "subject_id"),)
 
@@ -209,6 +211,11 @@ class LeadEngagementCycle(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
+    # The follow-up sweep asks for live cycles on every poll interval.
+    __table_args__ = (
+        Index("ix_lead_engagement_cycles_active", "expires_at", "started_at"),
+    )
+
     def is_active(self, now: datetime) -> bool:
         return now < self.expires_at
 
@@ -243,20 +250,31 @@ class Conversation(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
+    # PostgreSQL does not index a foreign key on its own, and the gate's
+    # service-window lookup joins through this column on every request.
+    __table_args__ = (Index("ix_conversations_lead", "lead_id"),)
+
 
 class LeadFollowUpStatus(str, enum.Enum):
-    """Product-originated Facebook lead follow-up lifecycle."""
+    """Product-originated lead follow-up lifecycle."""
 
     ENQUEUED = "Enqueued"
     SKIPPED = "Skipped"
+    # The Outbound Eligibility Gate refused the send (ADR-0045). The attempt is
+    # recorded rather than dropped, so a follow-up that never went out is
+    # visible to the operation together with the decision that stopped it.
+    BLOCKED = "Blocked"
 
 
 class LeadFollowUp(Base):
-    """One deterministic WhatsApp follow-up for one Lead cycle day.
+    """One follow-up attempt for one Lead cycle day under one named policy.
 
-    Broker Demo's 28-day Facebook lead cadence is product policy, not model
-    memory. The row is the idempotency record that prevents a worker restart
-    from creating a second WhatsApp follow-up for the same cycle/day.
+    The cadence is a *versioned pilot hypothesis*, not database truth, so the
+    valid days live in ``domain/followups.py`` rather than in a CHECK
+    constraint: changing the hypothesis must not require a schema migration,
+    and rows written under an earlier version must stay readable. The row is
+    also the idempotency record that prevents a worker restart from creating a
+    second follow-up for the same cycle/day.
     """
 
     __tablename__ = "lead_followups"
@@ -272,12 +290,22 @@ class LeadFollowUp(Base):
     )
     day_number: Mapped[int] = mapped_column(Integer, nullable=False)
     channel: Mapped[str] = mapped_column(String(20), nullable=False, default="WhatsApp")
+    # Which named cadence hypothesis produced this attempt. Retained so a report
+    # written after the policy changes can still explain why the day was chosen.
+    policy_id: Mapped[str] = mapped_column(String(60), nullable=False)
+    policy_version: Mapped[int] = mapped_column(Integer, nullable=False)
     due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default=LeadFollowUpStatus.ENQUEUED.value
     )
     outbox_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("outbox_messages.id", ondelete="SET NULL"), nullable=True
+    )
+    # The eligibility decision that allowed or refused this attempt (ADR-0045).
+    decision_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("outbound_decisions.id", ondelete="SET NULL"),
+        nullable=True,
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -287,13 +315,10 @@ class LeadFollowUp(Base):
     )
 
     __table_args__ = (
-        CheckConstraint(
-            "day_number IN (1, 5, 7, 14, 18, 22, 26, 28)",
-            name="ck_lead_followups_day",
-        ),
         CheckConstraint("channel = 'WhatsApp'", name="ck_lead_followups_channel"),
         CheckConstraint(
-            "status IN ('Enqueued', 'Skipped')", name="ck_lead_followups_status"
+            "status IN ('Enqueued', 'Skipped', 'Blocked')",
+            name="ck_lead_followups_status",
         ),
         UniqueConstraint(
             "cycle_id", "day_number", "channel", name="uq_lead_followup_cycle_day"
@@ -334,7 +359,7 @@ class InboxMessage(Base):
     persisted_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
-    raw_message: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    raw_message: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default=InboxStatus.PENDING.value
     )
@@ -357,6 +382,12 @@ class InboxMessage(Base):
         ),
         # The claim query: pending messages of one Conversation in arrival order.
         Index("ix_inbox_messages_lane", "conversation_id", "status", "sent_at"),
+        # The eligibility gate's most-recent-inbound lookups (ADR-0045).
+        Index(
+            "ix_inbox_messages_recent",
+            "conversation_id",
+            sql_text("persisted_at DESC"),
+        ),
     )
 
 
@@ -410,7 +441,7 @@ class InboxGroup(Base):
             "uq_active_group_per_conversation",
             "conversation_id",
             unique=True,
-            postgresql_where=text("status = 'Processing'"),
+            postgresql_where=sql_text("status = 'Processing'"),
         ),
     )
 
@@ -447,7 +478,7 @@ class OutboxMessage(Base):
     to_wa_id: Mapped[str] = mapped_column(String(32), nullable=False)
     kind: Mapped[str] = mapped_column(String(40), nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
-    covered_inbox_ids: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    covered_inbox_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default=OutboxStatus.PENDING.value
     )
@@ -468,6 +499,12 @@ class OutboxMessage(Base):
             name="ck_outbox_messages_status",
         ),
         Index("ix_outbox_due", "status", "next_attempt_at"),
+        # The eligibility gate's "did we write last?" lookup (ADR-0045).
+        Index(
+            "ix_outbox_conversation_recent",
+            "conversation_id",
+            sql_text("created_at DESC"),
+        ),
     )
 
 
@@ -486,7 +523,7 @@ class DeliveryStatus(Base):
     provider_message_id: Mapped[str] = mapped_column(String(200), nullable=False)
     status: Mapped[str] = mapped_column(String(40), nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    raw: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    raw: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -495,6 +532,204 @@ class DeliveryStatus(Base):
         UniqueConstraint(
             "provider_message_id", "status", name="uq_delivery_status_event"
         ),
+    )
+
+
+class OutboundInitiation(str, enum.Enum):
+    """Who started an outbound message (ADR-0045).
+
+    The distinction is not cosmetic. A Reactive message answers concrete
+    messages the Contact just sent; a BusinessInitiated one is the operation
+    reaching out. Only the second needs consent, a template, and a purpose that
+    the Contact has not refused.
+    """
+
+    REACTIVE = "Reactive"
+    BUSINESS_INITIATED = "BusinessInitiated"
+
+
+class OutboundOutcome(str, enum.Enum):
+    QUEUED = "Queued"
+    DENIED = "Denied"
+
+
+class ConsentCategory(str, enum.Enum):
+    """WhatsApp message categories, kept separate because consent is per use."""
+
+    MARKETING = "Marketing"
+    UTILITY = "Utility"
+    SERVICE = "Service"
+
+
+class ConsentState(str, enum.Enum):
+    GRANTED = "Granted"
+    REVOKED = "Revoked"
+
+
+class ConsentRecord(Base):
+    """One dated statement about permission to contact one Lead.
+
+    Append-only: a later record supersedes an earlier one for the same
+    (lead, channel, category) rather than editing it, so the evidence of what
+    was permitted *at the time* survives. Product has no production path that
+    writes ``Granted`` yet — capturing marketing consent needs a real form,
+    privacy notice, and legal review — so the gate refuses every send that
+    depends on it (ADR-0045).
+    """
+
+    __tablename__ = "consent_records"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    lead_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("leads.id", ondelete="CASCADE"), nullable=False
+    )
+    channel: Mapped[str] = mapped_column(String(20), nullable=False, default="WhatsApp")
+    category: Mapped[str] = mapped_column(String(20), nullable=False)
+    state: Mapped[str] = mapped_column(String(12), nullable=False)
+    # How Product learned this: which product path recorded it.
+    source: Mapped[str] = mapped_column(String(40), nullable=False)
+    # The Contact's own words when the record came from something they wrote.
+    evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint("channel = 'WhatsApp'", name="ck_consent_records_channel"),
+        CheckConstraint(
+            "category IN ('Marketing', 'Utility', 'Service')",
+            name="ck_consent_records_category",
+        ),
+        CheckConstraint(
+            "state IN ('Granted', 'Revoked')", name="ck_consent_records_state"
+        ),
+        Index(
+            "ix_consent_records_current",
+            "lead_id",
+            "channel",
+            "category",
+            "recorded_at",
+        ),
+    )
+
+
+class SuppressionRecord(Base):
+    """Durable evidence that a Lead must not receive business-initiated contact.
+
+    Deliberately outlives conversation content: the reason not to write to
+    somebody has to survive the expiry of the messages that produced it.
+    Revoking requires a new decision, so the row is closed with ``revoked_at``
+    rather than deleted.
+    """
+
+    __tablename__ = "suppression_records"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    lead_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("leads.id", ondelete="CASCADE"), nullable=False
+    )
+    channel: Mapped[str] = mapped_column(String(20), nullable=False, default="WhatsApp")
+    scope: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="BusinessInitiated"
+    )
+    reason: Mapped[str] = mapped_column(String(40), nullable=False)
+    evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_inbox_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("inbox_messages.id", ondelete="SET NULL"), nullable=True
+    )
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint("channel = 'WhatsApp'", name="ck_suppression_records_channel"),
+        CheckConstraint(
+            "scope IN ('BusinessInitiated', 'All')", name="ck_suppression_records_scope"
+        ),
+        # At most one *active* suppression per Lead and channel, which makes
+        # recording an opt-out idempotent under concurrent webhook deliveries.
+        Index(
+            "uq_suppression_active",
+            "lead_id",
+            "channel",
+            unique=True,
+            postgresql_where=sql_text("revoked_at IS NULL"),
+        ),
+    )
+
+
+class OutboundDecision(Base):
+    """One append-only record of the Outbound Eligibility Gate's answer.
+
+    Every outbound message, reactive or not, produces exactly one of these
+    before it can exist as an Outbox row. Denials are kept too: "we did not
+    write to this person, and here is why" is the operationally interesting
+    fact, and it is the only evidence that the gate ran (ADR-0045).
+    """
+
+    __tablename__ = "outbound_decisions"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
+    )
+    lead_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("leads.id", ondelete="CASCADE"), nullable=True
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    initiation: Mapped[str] = mapped_column(String(20), nullable=False)
+    purpose: Mapped[str] = mapped_column(String(40), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(10), nullable=False)
+    # A stable machine-readable denial code; NULL when the outcome is Queued.
+    reason: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Which inbound messages the caller says this answers. Empty for a
+    # business-initiated message, which is exactly what makes it one.
+    trigger_inbox_ids: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    template_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    template_category: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # When the Meta customer-service window closes, as Product computed it.
+    service_window_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    outbox_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("outbox_messages.id", ondelete="SET NULL"), nullable=True
+    )
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    decided_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "initiation IN ('Reactive', 'BusinessInitiated')",
+            name="ck_outbound_decisions_initiation",
+        ),
+        CheckConstraint(
+            "outcome IN ('Queued', 'Denied')", name="ck_outbound_decisions_outcome"
+        ),
+        CheckConstraint(
+            "(outcome = 'Queued' AND reason IS NULL) OR "
+            "(outcome = 'Denied' AND reason IS NOT NULL)",
+            name="ck_outbound_decisions_reason",
+        ),
+        # At most one *allowed* decision per intent key, mirroring the Outbox's
+        # own uniqueness. Denials repeat freely: refusing the same intent twice
+        # is history, not a conflict.
+        Index(
+            "uq_outbound_decision_queued",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=sql_text("outcome = 'Queued'"),
+        ),
+        Index("ix_outbound_decisions_lead", "lead_id", "decided_at"),
     )
 
 
@@ -530,7 +765,7 @@ class AdminMessage(Base):
     processed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    raw_update: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    raw_update: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
 
 
 class ChannelCursor(Base):
@@ -604,7 +839,7 @@ class AvailabilitySnapshot(Base):
     time_zone: Mapped[str] = mapped_column(String(60), nullable=False)
     # Every computed interval, as ISO strings. The complete snapshot is retained
     # even though one tool result returns at most six (P-059).
-    slots: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    slots: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
 
     __table_args__ = (
         UniqueConstraint(

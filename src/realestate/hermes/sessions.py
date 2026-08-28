@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from realestate.db.models import AgentRole, AgentSession
 from realestate.domain.copy import SPANISH_DAYS
-from realestate.hermes.client import HermesClient
+from realestate.hermes.client import HermesClient, HermesConnection
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +145,7 @@ def role_prompt(text: str, *, role: AgentRole) -> str:
 
 
 async def _attach(
-    rpc,
+    rpc: HermesConnection,
     hermes_session_id: str,
     profile: str,
     seed: list[dict[str, str]] | None = None,

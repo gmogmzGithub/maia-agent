@@ -19,12 +19,17 @@ from datetime import date, datetime, time
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from realestate.config import get_settings
+from realestate.db.engine import Database
 from realestate.db.models import (
     AgentRole,
     AgentSession,
     Conversation,
+    InboxGroup,
+    InboxGroupStatus,
+    InboxMessage,
     PropertyInactiveReason,
     PropertyStatus,
 )
@@ -70,7 +75,9 @@ async def require_plugin_token(authorization: str = Header(default="")) -> None:
         )
 
 
-async def _binding(session, hermes_session_id: str):  # noqa: ANN001, ANN201
+async def _binding(
+    session: AsyncSession, hermes_session_id: str
+) -> AgentSession | None:
     """The AgentSession row the trusted Hermes session id is bound to, or None.
 
     Every authority decision in this module starts here (TC-008): the Role is
@@ -143,7 +150,9 @@ async def plugin_health(
     }
 
 
-async def resolve_admin(request: Request, hermes_session_id: str):
+async def resolve_admin(
+    request: Request, hermes_session_id: str
+) -> AgentSession | None:
     """Resolve an Administrative binding, or None.
 
     Separate from :func:`resolve_role` on purpose: an administrative mutation
@@ -368,24 +377,29 @@ async def list_pending_admin_work(
 # --- Sales appointment tools --------------------------------------------------
 
 
-async def resolve_sales_conversation(request: Request, hermes_session_id: str):
+async def resolve_sales_conversation(
+    request: Request, hermes_session_id: str
+) -> Conversation | None:
     """The Conversation a Sales session belongs to, or None.
 
     Lead, Conversation, cycle, Broker, Calendar, duration, time zone, and
     idempotency identity all come from here — never from a model argument
     (P-061).
     """
-    async with request.app.state.database.session_scope() as session:
+    database: Database = request.app.state.database
+    async with database.session_scope() as session:
         binding = await _binding(session, hermes_session_id)
         if binding is None or binding.role != AgentRole.SALES.value:
             return None
         if binding.cycle_id is None:
             return None
-        return (
-            await session.execute(
-                select(Conversation).where(Conversation.cycle_id == binding.cycle_id)
-            )
-        ).scalar_one_or_none()
+        # ``scalar`` rather than ``execute(...).scalar_one_or_none()``:
+        # SQLAlchemy types the former, so the Conversation stays a Conversation
+        # instead of decaying to Any at the boundary the Model talks to.
+        conversation: Conversation | None = await session.scalar(
+            select(Conversation).where(Conversation.cycle_id == binding.cycle_id)
+        )
+        return conversation
 
 
 class AvailableSlotsRequest(BaseModel):
@@ -547,13 +561,30 @@ async def cancel_appointment(
         return {"result": "forbidden"}
 
     async with request.app.state.database.session_scope() as session:
+        merged = await session.merge(conversation)
+        trigger_inbox_ids = tuple(
+            (
+                await session.execute(
+                    select(InboxMessage.id)
+                    .join(InboxGroup, InboxGroup.id == InboxMessage.group_id)
+                    .where(InboxGroup.conversation_id == merged.id)
+                    .where(
+                        InboxGroup.status == InboxGroupStatus.PROCESSING.value
+                    )
+                    .order_by(InboxMessage.sent_at, InboxMessage.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
         service = AppointmentService(
             session,
             request.app.state.calendar,
             request.app.state.appointment_policy,
         )
         result = await service.cancel(
-            conversation=await session.merge(conversation),
+            conversation=merged,
+            trigger_inbox_ids=trigger_inbox_ids,
             reference=payload.reference,
         )
         logger.debug(

@@ -25,6 +25,7 @@ import secrets
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
@@ -39,10 +40,17 @@ from realestate.db.models import (
     Conversation,
     Lead,
     LeadEngagementCycle,
+    OutboundInitiation,
     Property,
     PropertyStatus,
 )
-from realestate.domain.outbox import OutboxKind, OutboxService
+from realestate.domain.outbound import (
+    Denied,
+    OutboundIntent,
+    OutboundMessaging,
+    Purpose,
+)
+from realestate.domain.outbox import OutboxKind
 from realestate.domain.availability import (
     Interval,
     WeeklySchedule,
@@ -70,7 +78,7 @@ def _reference() -> str:
     return f"APT-{secrets.token_hex(4).upper()}"
 
 
-def _to_json(slots: list[Interval], zone: ZoneInfo | None = None) -> list[dict]:
+def _to_json(slots: list[Interval], zone: ZoneInfo | None = None) -> list[dict[str, Any]]:
     """Serialise intervals, optionally normalising to one zone.
 
     Candidates the Model sees must always carry the Broker's offset so the same
@@ -87,7 +95,7 @@ def _to_json(slots: list[Interval], zone: ZoneInfo | None = None) -> list[dict]:
     ]
 
 
-def _from_json(rows: list[dict]) -> list[Interval]:
+def _from_json(rows: list[dict[str, Any]]) -> list[Interval]:
     return [
         Interval(
             start=datetime.fromisoformat(r["start"]), end=datetime.fromisoformat(r["end"])
@@ -118,7 +126,7 @@ class AppointmentService:
         date_to: date | None = None,
         time_from: time | None = None,
         time_to: time | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Filter this Conversation-and-Property snapshot, creating it if needed."""
         prop = await self._resolve_active(reference)
         if isinstance(prop, dict):
@@ -152,7 +160,9 @@ class AppointmentService:
             "candidates": _to_json(candidates, self._policy.schedule.zone),
         }
 
-    async def _resolve_active(self, reference: str):  # noqa: ANN202
+    async def _resolve_active(
+        self, reference: str
+    ) -> Property | dict[str, Any]:
         prop = await resolve_property(self._session, reference)
         if prop is None:
             return {"result": "not_found"}
@@ -196,7 +206,7 @@ class AppointmentService:
         conversation: Conversation,
         prop: Property,
         existing: AvailabilitySnapshot | None,
-    ):  # noqa: ANN202
+    ) -> tuple[AvailabilitySnapshot, list[Interval]] | dict[str, Any]:
         """One Calendar read for the whole horizon, then persist every interval.
 
         Returns ``(snapshot, slots)``, or a refusal dict when Calendar was
@@ -258,7 +268,7 @@ class AppointmentService:
         reference: str,
         start: datetime,
         attendee_name: str | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         cycle = await self._session.get(LeadEngagementCycle, conversation.cycle_id)
         if cycle is None or not cycle.is_active(_now()):
             return {"result": "conversation_expired"}
@@ -309,8 +319,10 @@ class AppointmentService:
             # method: reading an expired attribute from it would emit IO with no
             # greenlet to run it on, and the loser of the race would crash
             # instead of reporting the winner's outcome.
-            prop = await self._session.get(Property, property_uuid)
-            return self._result_for(again, prop)
+            found = await self._session.get(Property, property_uuid)
+            if found is None:  # pragma: no cover - the row was just read
+                raise RuntimeError(f"Property {property_uuid} vanished mid-booking.")
+            return self._result_for(again, found)
 
         lead = await self._session.get(Lead, conversation.lead_id)
         event = await self._calendar.create_event(
@@ -342,8 +354,9 @@ class AppointmentService:
         self,
         *,
         conversation: Conversation,
+        trigger_inbox_ids: tuple[uuid.UUID, ...],
         reference: str | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Cancel this Lead conversation's own future confirmed appointment."""
         cycle = await self._session.get(LeadEngagementCycle, conversation.cycle_id)
         if cycle is None or not cycle.is_active(_now()):
@@ -397,22 +410,36 @@ class AppointmentService:
         row.resolved_at = row.resolved_at or row.cancelled_at
         await self._session.commit()
 
+        notified = lead is not None
         if lead is not None:
-            await OutboxService(self._session).enqueue(
-                conversation=conversation,
-                to_wa_id=lead.wa_id,
-                body=cancellation_message(
-                    property_name=prop.name if prop else "la propiedad",
-                    starts_at=row.starts_at,
-                    schedule=self._policy.schedule,
-                ),
-                kind=OutboxKind.APPOINTMENT_CANCELLATION,
-                idempotency_key=f"appointment-cancellation:{row.id}",
-                covered_inbox_ids=[],
+            # Reached through the Hermes cancel tool, so the Contact is asking
+            # for this in an open conversation. It is still put to the gate: if
+            # the tool ran long after their last message the window may have
+            # closed, and a send that Meta would reject must fail here instead.
+            confirmation = await OutboundMessaging(self._session).request(
+                OutboundIntent(
+                    conversation=conversation,
+                    body=cancellation_message(
+                        property_name=prop.name if prop else "la propiedad",
+                        starts_at=row.starts_at,
+                        schedule=self._policy.schedule,
+                    ),
+                    purpose=Purpose.APPOINTMENT_CANCELLATION,
+                    initiation=OutboundInitiation.REACTIVE,
+                    trigger_inbox_ids=trigger_inbox_ids,
+                    idempotency_key=f"appointment-cancellation:{row.id}",
+                )
             )
+            await self._session.commit()
+            if isinstance(confirmation, Denied):
+                # The visit is cancelled either way — that already happened in
+                # Calendar. What the Contact was not told is reported, so the
+                # tool's answer cannot imply a message that never went out.
+                notified = False
 
         return {
             "result": "cancelled",
+            "lead_notified": notified,
             "appointment_reference": row.reference,
             "property_id": prop.property_key if prop else None,
             "property_name": prop.name if prop else None,
@@ -422,7 +449,7 @@ class AppointmentService:
             "reschedule_prompt_required": True,
         }
 
-    def _summary_for(self, row: Appointment) -> dict:
+    def _summary_for(self, row: Appointment) -> dict[str, Any]:
         return {
             "appointment_reference": row.reference,
             "start": self._local(row.starts_at),
@@ -478,7 +505,7 @@ class AppointmentService:
         conversation: Conversation,
         prop: Property,
         existing: AvailabilitySnapshot | None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """One Calendar refresh, replacing the stale snapshot (P-062).
 
         Part of resolving this booking attempt — not permission to poll. If the
@@ -508,7 +535,7 @@ class AppointmentService:
         """
         return moment.astimezone(self._policy.schedule.zone).isoformat()
 
-    def _result_for(self, attempt: Appointment, prop: Property) -> dict:
+    def _result_for(self, attempt: Appointment, prop: Property) -> dict[str, Any]:
         if attempt.status == AppointmentStatus.CONFIRMED.value:
             return {
                 "result": "confirmed",
@@ -576,8 +603,8 @@ NEEDS_REVIEW_MESSAGE = (
 # rendered from the persisted row — the same source Calendar was written from.
 
 
-LEAD_NOTICE_CONFIRMATION = "AppointmentConfirmation"
-LEAD_NOTICE_NEEDS_REVIEW = "AppointmentNeedsReview"
+LEAD_NOTICE_CONFIRMATION = OutboxKind.APPOINTMENT_CONFIRMATION
+LEAD_NOTICE_NEEDS_REVIEW = OutboxKind.APPOINTMENT_NEEDS_REVIEW
 
 
 @dataclass(frozen=True)

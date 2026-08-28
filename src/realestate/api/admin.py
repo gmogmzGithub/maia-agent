@@ -341,7 +341,9 @@ async def _read_document(
     )
 
 
-async def _render_submission(request: Request, editing_key: str | None, developer: str) -> HTMLResponse:
+async def _render_submission(
+    request: Request, editing_key: str | None, developer: str
+) -> HTMLResponse | RedirectResponse:
     form = await request.form()
     values = _submitted_values(form)
     property_key = editing_key or slugify_property_name(str(values.get("name", "")))
@@ -404,8 +406,11 @@ async def new_property(_: str = Depends(require_developer)) -> HTMLResponse:
     return _form_page(values=dict(NEW_PROPERTY_DEFAULTS), editing_key=None)
 
 
-@router.post("/properties", response_class=HTMLResponse)
-async def create_property(request: Request, developer: str = Depends(require_developer)) -> HTMLResponse:
+# ``response_model=None``: the handler returns a page on a validation error
+# and a redirect on success, and FastAPI cannot build a response model from that
+# union. The class stays declared for the successful HTML case.
+@router.post("/properties", response_class=HTMLResponse, response_model=None)
+async def create_property(request: Request, developer: str = Depends(require_developer)) -> HTMLResponse | RedirectResponse:
     return await _render_submission(request, None, developer)
 
 
@@ -422,7 +427,7 @@ async def property_detail(request: Request, property_key: str, saved: int = 0, _
         name, status, reason, address = prop.name, prop.status, prop.inactive_reason, prop.visit_address
         number = version.version if version else 0
     banner = '<div class="ok">La propiedad y su nueva versión se guardaron correctamente.</div>' if saved else ""
-    return _layout(name, f'<h1>{_e(name)}</h1>{banner}<div class="actions"><a class="button" href="/admin/properties/{_e(property_key)}/edit">Editar</a><a class="button secondary" href="/admin/properties">Volver</a></div><section class="card"><p><strong>Property ID:</strong> {_e(property_key)}</p><p><strong>Disponibilidad:</strong> {_e(status)} · {_e(REASON_LABELS.get(reason,"Sin razón"))}</p><p><strong>Versión:</strong> {number}</p><p><strong>Visitas futuras confirmadas:</strong> {visits}</p><p><strong>Dirección exacta para visitas:</strong> {_e(address or "No capturada")}</p></section><section class="card"><h2>Documento aprobado</h2><pre>{_e(markdown)}</pre></section>')
+    return _layout(name, f'<h1>{_e(name)}</h1>{banner}<div class="actions"><a class="button" href="/admin/properties/{_e(property_key)}/edit">Editar</a><a class="button secondary" href="/admin/properties">Volver</a></div><section class="card"><p><strong>Property ID:</strong> {_e(property_key)}</p><p><strong>Disponibilidad:</strong> {_e(status)} · {_e(REASON_LABELS.get(reason or "", "Sin razón"))}</p><p><strong>Versión:</strong> {number}</p><p><strong>Visitas futuras confirmadas:</strong> {visits}</p><p><strong>Dirección exacta para visitas:</strong> {_e(address or "No capturada")}</p></section><section class="card"><h2>Documento aprobado</h2><pre>{_e(markdown)}</pre></section>')
 
 
 @router.get("/properties/{property_key}/edit", response_class=HTMLResponse)
@@ -448,8 +453,10 @@ async def edit_property(request: Request, property_key: str, _: str = Depends(re
     return _form_page(values=values, editing_key=property_key)
 
 
-@router.post("/properties/{property_key}", response_class=HTMLResponse)
-async def update_property(request: Request, property_key: str, developer: str = Depends(require_developer)) -> HTMLResponse:
+@router.post(
+    "/properties/{property_key}", response_class=HTMLResponse, response_model=None
+)
+async def update_property(request: Request, property_key: str, developer: str = Depends(require_developer)) -> HTMLResponse | RedirectResponse:
     return await _render_submission(request, property_key, developer)
 
 

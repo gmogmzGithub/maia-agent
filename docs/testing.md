@@ -47,11 +47,18 @@ With the Compose runtime running:
 ```bash
 docker compose up --build -d
 docker compose exec product ruff check src plugin tests migrations
+docker compose exec product mypy
 docker compose exec product pytest -m 'not live_provider' --strict-markers --cov
 ```
 
-The measured packages, the report format, and the coverage floor come from
-`pyproject.toml`, so this is the same gate CI applies.
+The measured packages, the report format, the coverage floor, and the
+type-checked paths all come from `pyproject.toml`, so this is the same gate CI
+applies.
+
+`mypy` runs in `--strict` mode and is a required gate rather than advice. It is
+what makes a union return such as `OutboundMessaging.request`'s
+`Queued | Denied` an enforced contract: reading `outbox_id` off a refusal, or
+`reason` off an approval, fails here instead of shipping (ADR-0045).
 
 The tests selected by that command do not call Meta, Anthropic, Google, or
 Telegram. CI additionally blanks those credentials and disables the background

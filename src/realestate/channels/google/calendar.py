@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from typing import Any
 from datetime import datetime
 from enum import Enum
 
@@ -63,12 +64,19 @@ class GoogleCalendar:
     def configured(self) -> bool:
         return bool(self._credentials_path and self._calendar_id)
 
-    def _client(self):  # noqa: ANN202
+    def _client(self) -> Any:
+        """The Google client, typed as ``Any`` on purpose.
+
+        ``googleapiclient`` ships neither stubs nor a ``py.typed`` marker, so its
+        dynamically built service object cannot be described. Confining that to
+        this one accessor keeps the untyped surface at the boundary: every value
+        taken from it is narrowed before it leaves this module.
+        """
         if self._service is None:
             from google.oauth2 import service_account
             from googleapiclient.discovery import build
 
-            credentials = service_account.Credentials.from_service_account_file(
+            credentials = service_account.Credentials.from_service_account_file(  # type: ignore[no-untyped-call]
                 self._credentials_path, scopes=SCOPES
             )
             self._service = build(
@@ -166,7 +174,8 @@ class GoogleCalendar:
                 .insert(calendarId=self._calendar_id, body=body)
                 .execute()
             )
-            return created["id"]
+            event_id = created["id"]
+            return str(event_id)
 
         try:
             event_id = await asyncio.to_thread(insert)
@@ -189,7 +198,7 @@ class GoogleCalendar:
         if not self.configured:
             return EventResult(CalendarOutcome.FAILED, detail="not configured")
 
-        def search() -> dict | None:
+        def search() -> dict[str, Any] | None:
             response = (
                 self._client()
                 .events()

@@ -39,8 +39,12 @@ class Settings(BaseSettings):
     plugin_api_token: str = Field(default="", alias="PLUGIN_API_TOKEN")
 
     # --- Property Document ingestion (P-045, P-051) --------------------------
-    # One fixed Developer credential for the upload page and endpoint. There is
-    # no web-user account, registration, recovery, or login-session subsystem.
+    # Local Basic-auth secrets for the operational write surface. The JSON
+    # mapping supports the current local setup; the pair is its single-account
+    # compatibility fallback. Neither creates product Roles or web sessions.
+    developer_basic_credentials_json: str = Field(
+        default="", alias="DEVELOPER_BASIC_CREDENTIALS_JSON"
+    )
     developer_basic_user: str = Field(default="", alias="DEVELOPER_BASIC_USER")
     developer_basic_password: str = Field(default="", alias="DEVELOPER_BASIC_PASSWORD")
     # Immutable content-addressed artifacts for accepted documents (P-050).
@@ -128,4 +132,4 @@ class Settings(BaseSettings):
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    return Settings()  # type: ignore[call-arg]
+    return Settings()

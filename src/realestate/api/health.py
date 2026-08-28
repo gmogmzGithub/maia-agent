@@ -11,6 +11,8 @@ import asyncio
 
 from fastapi import APIRouter, Request, Response, status
 
+from realestate.hermes.client import HermesClient
+
 router = APIRouter(tags=["health"])
 
 
@@ -56,7 +58,10 @@ async def health(request: Request, response: Response) -> dict[str, object]:
 
 @router.get("/health/hermes")
 async def hermes_health(request: Request, response: Response) -> dict[str, object]:
-    result = await request.app.state.hermes.check_health()
+    # ``app.state`` is untyped by design in Starlette, so the client is named
+    # here rather than letting Any leak into the response body's type.
+    hermes: HermesClient = request.app.state.hermes
+    result = await hermes.check_health()
     if not result.ok:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     return result.as_dict()

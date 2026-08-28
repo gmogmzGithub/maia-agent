@@ -22,6 +22,7 @@ from realestate.db.models import (
     AppointmentStatus,
     AvailabilitySnapshot,
     Conversation,
+    InboxMessage,
     Lead,
     LeadEngagementCycle,
     Property,
@@ -106,8 +107,20 @@ async def book(database, service, start: str, **kwargs) -> dict:
 async def cancel(database, service, **kwargs) -> dict:
     async with database.session_scope() as session:
         conversation = await session.merge(await conversation_of(database))
+        trigger_ids = tuple(
+            (
+                await session.execute(
+                    select(InboxMessage.id).where(
+                        InboxMessage.conversation_id == conversation.id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
         return await (await service(session)).cancel(
             conversation=conversation,
+            trigger_inbox_ids=trigger_ids,
             **kwargs,
         )
 

@@ -9,6 +9,8 @@ stub sender.
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -88,6 +90,31 @@ async def test_the_send_targets_the_configured_phone_number() -> None:
     body = seen[0].read().decode()
     # The recipient is normalised on the way out (Mexican 521 prefix).
     assert normalize_recipient("5215550001112") in body
+
+
+async def test_a_template_send_uses_meta_template_payload_not_free_form_text() -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return accepted(request)
+
+    client = whatsapp(handler)
+    try:
+        result = await client.send_template(
+            "5215550001112", "seguimiento_dia_1", "es_MX"
+        )
+    finally:
+        await client.aclose()
+
+    assert result.outcome is SendOutcome.SENT
+    payload = json.loads(seen[0].read())
+    assert payload["type"] == "template"
+    assert payload["template"] == {
+        "name": "seguimiento_dia_1",
+        "language": {"code": "es_MX"},
+    }
+    assert "text" not in payload
 
 
 # -- Status classification ----------------------------------------------------

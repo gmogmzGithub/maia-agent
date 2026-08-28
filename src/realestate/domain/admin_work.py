@@ -8,27 +8,38 @@ transition.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+import logging
+from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from realestate.channels.google.calendar import CalendarOutcome, GoogleCalendar
+from realestate.channels.google.calendar import (
+    CalendarOutcome,
+    EventResult,
+    GoogleCalendar,
+)
 from realestate.db.models import (
     Appointment,
     AppointmentStatus,
     Conversation,
     InactiveReviewStatus,
-    InboxMessage,
     Lead,
     LeadNotificationStatus,
+    OutboundInitiation,
     Property,
 )
 from realestate.domain.administration import Administrator
 from realestate.domain.appointments import NEEDS_REVIEW_MESSAGE, confirmation_message
 from realestate.domain.audit import record_audit
 from realestate.domain.availability import WeeklySchedule
-from realestate.domain.outbox import OutboxKind, OutboxService
+from realestate.domain.outbound import (
+    Denied,
+    OutboundIntent,
+    OutboundMessaging,
+    Purpose,
+)
 
 APPOINTMENT_NEEDS_REVIEW = "AppointmentNeedsReview"
 PENDING_MANUAL_NOTIFICATION = "PendingManualAppointmentNotification"
@@ -44,7 +55,8 @@ MARK_COMPLETE = "MarkComplete"
 ALLOWED_ACTIONS = frozenset(
     {CONFIRM, REJECT, MARK_NOTIFIED, HANDLE_MANUALLY, MARK_COMPLETE}
 )
-CUSTOMER_SERVICE_WINDOW = timedelta(hours=24)
+
+logger = logging.getLogger(__name__)
 
 
 def _now() -> datetime:
@@ -73,7 +85,7 @@ class AdminWorkService:
         self._calendar = calendar
         self._schedule = schedule
 
-    async def list_pending(self) -> dict:
+    async def list_pending(self) -> dict[str, Any]:
         rows = (
             (
                 await self._session.execute(
@@ -83,7 +95,7 @@ class AdminWorkService:
             .scalars()
             .all()
         )
-        items: list[dict] = []
+        items: list[dict[str, Any]] = []
         for row in rows:
             prop = await self._session.get(Property, row.property_uuid)
             base = {
@@ -138,7 +150,7 @@ class AdminWorkService:
 
     async def resolve(
         self, reference: str, action: str, actor: Administrator
-    ) -> dict:
+    ) -> dict[str, Any]:
         if action not in ALLOWED_ACTIONS:
             return {"result": "invalid_action"}
         row = (
@@ -182,20 +194,26 @@ class AdminWorkService:
             conversation = await self._session.get(Conversation, row.conversation_id)
             lead = await self._session.get(Lead, row.lead_id)
             if conversation is not None and lead is not None:
-                await OutboxService(self._session).enqueue(
-                    conversation=conversation,
-                    to_wa_id=lead.wa_id,
-                    body=NEEDS_REVIEW_MESSAGE,
-                    kind="AppointmentNeedsReview",
-                    idempotency_key=f"appointment-needs-review:{row.id}",
-                    covered_inbox_ids=[],
+                # Nobody asked for this notice: recovery decided to send it, so
+                # it is business-initiated even though it concerns the Contact's
+                # own booking. Outside the service window it is refused, and the
+                # appointment simply stays visible as review work.
+                notice = await OutboundMessaging(self._session).request(
+                    OutboundIntent(
+                        conversation=conversation,
+                        body=NEEDS_REVIEW_MESSAGE,
+                        purpose=Purpose.APPOINTMENT_NEEDS_REVIEW,
+                        initiation=OutboundInitiation.BUSINESS_INITIATED,
+                        idempotency_key=f"appointment-needs-review:{row.id}",
+                    )
                 )
-                row.lead_notice_at = _now()
+                if not isinstance(notice, Denied):
+                    row.lead_notice_at = _now()
         if rows:
             await self._session.commit()
         return len(rows)
 
-    async def _resolve_booking(self, row: Appointment, action: str) -> dict:
+    async def _resolve_booking(self, row: Appointment, action: str) -> dict[str, Any]:
         if row.status != AppointmentStatus.NEEDS_REVIEW.value:
             if row.status in (
                 AppointmentStatus.CONFIRMED.value,
@@ -236,7 +254,7 @@ class AdminWorkService:
             "lead_notification": notification,
         }
 
-    async def _event_matches(self, row: Appointment, evidence) -> bool:  # noqa: ANN001
+    async def _event_matches(self, row: Appointment, evidence: EventResult) -> bool:
         if evidence.start != row.starts_at or evidence.end != row.ends_at:
             return False
         # The deterministic event title includes the persisted Property name.
@@ -250,20 +268,6 @@ class AdminWorkService:
         lead = await self._session.get(Lead, row.lead_id)
         prop = await self._session.get(Property, row.property_uuid)
         if conversation is None or lead is None or prop is None:
-            row.resolution_notification_status = (
-                LeadNotificationStatus.PENDING_MANUAL.value
-            )
-            return LeadNotificationStatus.PENDING_MANUAL.value
-
-        latest = (
-            await self._session.execute(
-                select(InboxMessage.persisted_at)
-                .where(InboxMessage.conversation_id == conversation.id)
-                .order_by(InboxMessage.persisted_at.desc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-        if latest is None or latest < _now() - CUSTOMER_SERVICE_WINDOW:
             row.resolution_notification_status = (
                 LeadNotificationStatus.PENDING_MANUAL.value
             )
@@ -283,18 +287,28 @@ class AdminWorkService:
                 schedule=self._schedule,
             )
         )
-        await OutboxService(self._session).enqueue(
-            conversation=conversation,
-            to_wa_id=lead.wa_id,
-            body=body,
-            kind=OutboxKind.APPOINTMENT_RESOLUTION,
-            idempotency_key=f"appointment-resolution:{row.id}:{row.status}",
-            covered_inbox_ids=[],
+        # The Administrator resolved this, not the Contact, so the notice is
+        # business-initiated. The gate owns the service-window question that
+        # this method used to answer for itself; a refusal becomes the existing
+        # manual path rather than a message that silently never arrives.
+        outcome = await OutboundMessaging(self._session).request(
+            OutboundIntent(
+                conversation=conversation,
+                body=body,
+                purpose=Purpose.APPOINTMENT_RESOLUTION,
+                initiation=OutboundInitiation.BUSINESS_INITIATED,
+                idempotency_key=f"appointment-resolution:{row.id}:{row.status}",
+            )
         )
+        if isinstance(outcome, Denied):
+            row.resolution_notification_status = (
+                LeadNotificationStatus.PENDING_MANUAL.value
+            )
+            return LeadNotificationStatus.PENDING_MANUAL.value
         row.resolution_notification_status = LeadNotificationStatus.QUEUED.value
         return LeadNotificationStatus.QUEUED.value
 
-    async def _mark_notified(self, row: Appointment) -> dict:
+    async def _mark_notified(self, row: Appointment) -> dict[str, Any]:
         if (
             row.resolution_notification_status
             != LeadNotificationStatus.PENDING_MANUAL.value
@@ -305,14 +319,14 @@ class AdminWorkService:
         await self._session.commit()
         return {"result": "resolved", "reference": row.reference}
 
-    async def _handle_manually(self, row: Appointment) -> dict:
+    async def _handle_manually(self, row: Appointment) -> dict[str, Any]:
         if row.inactive_review_status != InactiveReviewStatus.PENDING.value:
             return {"result": "conflict"}
         row.inactive_review_status = InactiveReviewStatus.HANDLING_MANUALLY.value
         await self._session.commit()
         return {"result": "resolved", "reference": row.reference}
 
-    async def _complete_manual_cancellation(self, row: Appointment) -> dict:
+    async def _complete_manual_cancellation(self, row: Appointment) -> dict[str, Any]:
         if (
             row.inactive_review_status
             != InactiveReviewStatus.HANDLING_MANUALLY.value
@@ -330,7 +344,7 @@ class AdminWorkService:
         return {"result": "resolved", "reference": row.reference}
 
     async def _audit(
-        self, row: Appointment, actor: Administrator, action: str, result: dict
+        self, row: Appointment, actor: Administrator, action: str, result: dict[str, Any]
     ) -> None:
         await record_audit(
             self._session,
