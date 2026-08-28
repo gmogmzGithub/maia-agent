@@ -1,0 +1,169 @@
+"""Where an inbound message becomes commercial work.
+
+One message from an unknown number has to produce, atomically: a Contact, a
+Property Need to hang interpretations on, a Demand Opportunity with its first
+attribution preserved, and a stage that says the conversation has begun. If any
+of that lands without the rest, the operation has a person nobody is accountable
+for — the exact failure the stage exists to prevent.
+
+So this runs inside the transaction that persists the message. It never commits.
+:class:`~realestate.domain.inbox.InboxService` calls it after the Inbox row is
+flushed and before its own commit, which means a message and the commercial
+record it created are durable together or not at all.
+
+It is deliberately conservative about stage. A message moves ``New`` to
+``In Conversation`` and nothing further: qualification needs confirmed criteria
+(ADR-0031), and a Dormant Opportunity is not reactivated by an inbound message
+because reactivation is an Administrator's judgement (ADR-0021).
+"""
+
+from __future__ import annotations
+
+import logging
+import uuid
+from dataclasses import dataclass
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from realestate.db.models import (
+    Conversation,
+    Lead,
+    Opportunity,
+    OpportunityKind,
+    OpportunityOriginSource,
+    OpportunityStage,
+)
+from realestate.domain.commercial.actors import Actor
+from realestate.domain.commercial.identity import ChannelIdentity, CommercialIdentity
+from realestate.domain.commercial.needs import PropertyNeeds
+from realestate.domain.commercial.opportunities import (
+    AdvanceStage,
+    OpenOpportunity,
+    OpportunityManagement,
+    OriginFacts,
+)
+from realestate.domain.commercial.organization import OrganizationDirectory
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class IntakeResult:
+    """What the inbound message resolved to."""
+
+    contact_id: uuid.UUID
+    opportunity_id: uuid.UUID
+    stage: OpportunityStage
+    contact_created: bool
+    opportunity_created: bool
+
+
+class CommercialIntake:
+    """The seam between the WhatsApp Inbox and the commercial record."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def record_inbound(
+        self,
+        *,
+        lead: Lead,
+        conversation: Conversation,
+        inbox_id: uuid.UUID,
+    ) -> IntakeResult:
+        """Resolve the Contact and its Opportunity for one inbound message.
+
+        Never commits. Idempotent: the command keys are derived from the Inbox
+        row, so a webhook Meta delivers twice produces one Contact, one
+        Opportunity and one stage transition.
+        """
+        actor = Actor.product(lead.organization_id, "CommercialIntake")
+        identity = ChannelIdentity.whatsapp(
+            wa_id=lead.wa_id,
+            lead_id=lead.id,
+            profile_name=lead.profile_name,
+        )
+        resolved = await CommercialIdentity(self._session).resolve(
+            identity, organization_id=actor.organization_id
+        )
+
+        management = OpportunityManagement(self._session)
+        existing = await management.open_demand_for_contact(resolved.contact_id)
+        if existing is None:
+            need = await PropertyNeeds(self._session).open(
+                actor, contact_id=resolved.contact_id
+            )
+            opened = await management.record(
+                actor,
+                OpenOpportunity(
+                    contact_id=resolved.contact_id,
+                    kind=OpportunityKind.DEMAND,
+                    property_need_id=need.id,
+                    origin=OriginFacts(
+                        source=OpportunityOriginSource.WHATSAPP_INBOUND,
+                        channel="WhatsApp",
+                        property_uuid=conversation.property_uuid,
+                        first_conversation_id=conversation.id,
+                        first_inbox_id=inbox_id,
+                    ),
+                    # Keyed on the Contact, not the message: the first message
+                    # opens the pursuit and every later one continues it.
+                    command_key=f"intake-open:{resolved.contact_id}",
+                ),
+            )
+            opportunity_id = opened.opportunity_id
+            stage = opened.stage
+            created = opened.created
+        else:
+            opportunity_id = existing.id
+            stage = OpportunityStage(existing.stage)
+            created = False
+
+        await management.note_interaction(opportunity_id)
+
+        if stage is OpportunityStage.NEW:
+            advanced = await management.record(
+                actor,
+                AdvanceStage(
+                    opportunity_id=opportunity_id,
+                    to_stage=OpportunityStage.IN_CONVERSATION,
+                    reason="InboundMessage",
+                    # Keyed on the message so a redelivered webhook replays
+                    # rather than recording a second transition.
+                    command_key=f"intake-converse:{inbox_id}",
+                ),
+            )
+            stage = advanced.stage
+
+        return IntakeResult(
+            contact_id=resolved.contact_id,
+            opportunity_id=opportunity_id,
+            stage=stage,
+            contact_created=resolved.created,
+            opportunity_created=created,
+        )
+
+    async def organization_id(self) -> uuid.UUID:
+        """The Organization inbound work belongs to.
+
+        The webhook carries no Organization: Meta knows a phone number, not a
+        brokerage. Answered by
+        :meth:`~realestate.domain.commercial.organization.OrganizationDirectory.organization_id`,
+        which is the single place that mapping will land — not restated here,
+        because two copies of "which Organization is this" is how a later fix
+        gets applied to one path and silently missed on the other.
+        """
+        return await OrganizationDirectory(self._session).organization_id()
+
+    async def opportunity_for_conversation(
+        self, conversation: Conversation
+    ) -> Opportunity | None:
+        """The Opportunity a conversation currently belongs to, if any."""
+        contact_id = await CommercialIdentity(self._session).contact_for_lead(
+            conversation.lead_id
+        )
+        if contact_id is None:
+            return None
+        return await OpportunityManagement(self._session).open_demand_for_contact(
+            contact_id
+        )

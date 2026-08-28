@@ -38,7 +38,11 @@ from realestate.hermes.sessions import (
     find_role_session,
     session_for_cycle,
 )
-from tests.conftest import DATABASE_URL, requires_postgres
+from tests.conftest import (
+    DATABASE_URL,
+    larevia_organization_id,
+    requires_postgres,
+)
 
 pytestmark = requires_postgres
 
@@ -58,7 +62,10 @@ async def database():
 
 async def a_cycle(database) -> uuid.UUID:
     async with database.session_scope() as session:
-        lead = Lead(wa_id=f"5215550{uuid.uuid4().int % 100000:05d}")
+        lead = Lead(
+            organization_id=await larevia_organization_id(session),
+            wa_id=f"5215550{uuid.uuid4().int % 100000:05d}",
+        )
         session.add(lead)
         await session.flush()
         cycle = LeadEngagementCycle(

@@ -47,11 +47,18 @@ With the Compose runtime running:
 ```bash
 docker compose up --build -d
 docker compose exec product ruff check src plugin tests migrations
+docker compose exec product mypy
 docker compose exec product pytest -m 'not live_provider' --strict-markers --cov
 ```
 
-The measured packages, the report format, and the coverage floor come from
-`pyproject.toml`, so this is the same gate CI applies.
+The measured packages, the report format, the coverage floor, and the
+type-checked paths all come from `pyproject.toml`, so this is the same gate CI
+applies.
+
+`mypy` runs in `--strict` mode and is a required gate rather than advice. It is
+what makes a union return such as `OutboundMessaging.request`'s
+`Queued | Denied` an enforced contract: reading `outbox_id` off a refusal, or
+`reason` off an approval, fails here instead of shipping (ADR-0045).
 
 The tests selected by that command do not call Meta, Anthropic, Google, or
 Telegram. CI additionally blanks those credentials and disables the background
@@ -79,6 +86,9 @@ creates provider-side effects.
 |---|---:|---|
 | Unit and domain tests | Yes | Policy, parsing, retries, ambiguity, copy, and authorization |
 | Database/API/worker integration tests | Yes | PostgreSQL contracts, Inbox/Outbox, plugin calls, sessions, and recovery |
-| Vertical system scenario | Yes | WhatsApp Lead inquiry through booking and Broker notification |
+| Commercial domain tests | Yes | Contact resolution, stages, qualification, assignment races, Next Actions, retention |
+| Migration tests | Yes | Revisions 0012 and 0013 on an empty and a legacy database, upgrade and downgrade |
+| Operator surface tests | Yes | Mexican Spanish, accessibility, empty states, refusals, and that no CRM screen can send |
+| Vertical system scenario | Yes | WhatsApp inquiry through booking and Broker notification, and Inbox to Next Action |
 | Live model evaluation | No | Hermes/model tool choice, grounding, and conversational quality |
 | Manual channel rehearsal | No | Real Meta, Google Calendar, and Telegram configuration and delivery |

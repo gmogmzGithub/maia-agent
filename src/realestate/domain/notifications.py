@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -270,7 +270,7 @@ class BrokerNotificationService:
             lead=lead,
         )
 
-    async def _confirmed_on(self, day) -> list[_Visit]:  # noqa: ANN001 - datetime.date
+    async def _confirmed_on(self, day: date) -> list[_Visit]:
         """Every Confirmed visit whose *local* start falls on ``day``."""
         zone = self._schedule.zone
         start = datetime.combine(day, datetime.min.time(), tzinfo=zone)

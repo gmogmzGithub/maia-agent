@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from realestate.db.models import (
@@ -56,7 +57,7 @@ class AdministrationService:
         status: str,
         actor: Administrator,
         inactive_reason: str | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         """Move one Property between `Active` and `Inactive`.
 
         Repeating the current status is idempotent and returns ``unchanged``
@@ -137,7 +138,7 @@ class AdministrationService:
             "affected_confirmed_appointments": affected,
         }
 
-    async def list_properties(self) -> dict:
+    async def list_properties(self) -> dict[str, Any]:
         """Compact inventory for an administrator. No document prose (P-066)."""
         rows = (
             await self._session.execute(
@@ -151,7 +152,7 @@ class AdministrationService:
         properties = []
         for prop in rows:
             record = await accepted_version(self._session, prop)
-            metadata: dict = record.document_metadata if record else {}
+            metadata: dict[str, Any] = record.document_metadata if record else {}
             properties.append(
                 {
                     "property_id": prop.property_key,
@@ -169,7 +170,7 @@ class AdministrationService:
             )
         return {"result": "found", "properties": properties}
 
-    async def list_active_properties_for_sales(self) -> dict:
+    async def list_active_properties_for_sales(self) -> dict[str, Any]:
         """Active, customer-safe inventory summaries for the Sales Role.
 
         Sales may answer an explicit request for available options, but must not
@@ -189,7 +190,7 @@ class AdministrationService:
         properties = []
         for prop in rows:
             record = await accepted_version(self._session, prop)
-            metadata: dict = record.document_metadata if record else {}
+            metadata: dict[str, Any] = record.document_metadata if record else {}
             properties.append(
                 {
                     "property_id": prop.property_key,
@@ -224,7 +225,7 @@ class AdministrationService:
         return {property_uuid: int(total) for property_uuid, total in rows}
 
     @staticmethod
-    def _confirmed_query(statement):  # noqa: ANN001, ANN205
+    def _confirmed_query(statement: Select[Any]) -> Select[Any]:
         """The one definition of "a future Confirmed Appointment"."""
         return statement.where(
             Appointment.status == AppointmentStatus.CONFIRMED.value
@@ -248,7 +249,7 @@ class AdministrationService:
                 row.inactive_review_status = InactiveReviewStatus.PENDING.value
 
     async def _audit(
-        self, actor: Administrator, *, action: str, property_key: str, details: dict
+        self, actor: Administrator, *, action: str, property_key: str, details: dict[str, Any]
     ) -> None:
         # P-065: an administrative mutation always carries the message it came from.
         await record_audit(

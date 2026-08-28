@@ -67,6 +67,82 @@ model already has. This reverses an earlier position that revalidating before
 every ordinary reply was unnecessary; the cost is one extra tool call on turns
 that discuss a property.
 
+## The Commercial System of Record
+
+Product owns the commercial truth beneath the conversation: who the person is,
+what they want, who is responsible, what is owed, and how it ended. Those live in
+`domain/commercial/` as deep modules — a small interface over the transactions,
+invariants, idempotency and audit the capability actually needs — and the
+routers, workers and templates above them hold none of those rules.
+
+| Seam | The only way to |
+|---|---|
+| `CommercialIdentity.resolve` | turn a channel identity into a Contact |
+| `PropertyNeeds` | record what the Contact wants, and how confirmed it is |
+| `OpportunityManagement.record` | open an Opportunity or change its stage |
+| `Assignment.assign` | decide who is responsible, or make the absence visible |
+| `NextActions.schedule` / `.complete` | owe and discharge the next action |
+| `CommercialInbox.query` | read anything an operator surface shows |
+| `CommercialIntake.record_inbound` | cross from the WhatsApp Inbox into commercial work |
+| `ConversationRetention` / `CommercialMaintenance` | apply the rules that are about time |
+| `OrganizationDirectory` | resolve the Organization and who belongs to it |
+
+Four separations are structural rather than conventional, each enforced by the
+schema:
+
+- an **Organization** owns commercial data, so nothing is implicitly global;
+- a **Contact** is a person across time, distinct from the channel identity Meta
+  authenticates and from the Conversation they happen to be having;
+- a **commercial stage** says where the pursuit stands and nothing else —
+  assignment, appointments, consent and Do Not Contact are their own state;
+- an **inferred criterion** is Pending until the Contact confirms it.
+
+The races that matter are guarded by partial unique indexes, not by service-layer
+checks: one open assignment per Opportunity, one Pending Next Action, one open
+queue entry, one current value per named criterion, one open exception, one
+default Advisor per Organization. Terminal outcomes are guarded by CHECK
+constraints, so a conversational inference cannot satisfy them by accident.
+
+Intake runs inside the transaction that persists the inbound message. A Contact
+or an Opportunity that outlived the message which produced it would be a record
+of something that never durably happened.
+
+The time-driven rules are paced rather than polled. `CommercialMaintenance` knows
+what they are; `CommercialUpkeepWorker` is the object that lives long enough to
+remember when they last ran, and it holds them to a 15-minute interval. The
+background loop ticks once a second and these rules have 28- and 90-day horizons,
+so without the guard the pass would scan roughly 86,400 times a day to discover
+there was nothing to do — the same reason the Broker notifier owns its own
+cadence.
+
+## Operator Surfaces
+
+`/crm` is server-rendered, Mexican Spanish, and needs no JavaScript: every action
+is a form submission, so the surfaces stay usable on a slow phone and testable
+without a browser. Authentication is the existing HTTP Basic credential;
+authorization resolves it to an Organization member row (ADR-0046). Property
+administration and document upload go through the same resolution and require the
+Administrator role — before this cut they accepted any configured credential
+without looking at a role at all.
+
+Every mutating form carries a hidden idempotency key minted when the page was
+rendered, so a double click, an impatient refresh or a retried request replays
+the command the domain already recorded instead of repeating it. The shell,
+including the table renderer that carries the caption and header scopes, is
+shared with the Property surfaces so one screen cannot quietly lose the
+accessibility guarantees the others are tested for.
+
+The panel reports Follow-up Coverage with its gaps attached. The Inbox,
+Opportunities, Contacts and Assignment Queue read exclusively through
+`CommercialInbox`, which is also where Organization scoping, role visibility,
+expired message bodies and communication restrictions are applied once.
+
+Denied outbound decisions and an active Do Not Contact are shown to the operator
+with the reason. Showing them is the point — an operator who cannot see why a
+message did not go out concludes the system is broken — and none of these
+surfaces can send anything: the Stage 1 eligibility gate has no entry point in
+the CRM router.
+
 ## Tool Boundary
 
 The standalone Hermes plugin is deliberately thin. It exposes typed tools to
@@ -81,7 +157,7 @@ That keeps the agent interface clear:
 
 ## Current Local Topology
 
-Docker Compose runs the Stage 0 topology as three containers:
+Docker Compose runs the topology as three containers:
 
 - `db`: PostgreSQL and the durable Product state;
 - `product`: FastAPI and the in-process background workers;

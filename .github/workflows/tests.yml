@@ -65,6 +65,12 @@ jobs:
       - name: Lint
         run: docker compose exec -T product ruff check src plugin tests migrations
 
+      # A required gate, not advisory. The product's claim is deterministic
+      # authority; a union like ``Queued | Denied`` only enforces that if
+      # reading ``outbox_id`` off a refusal fails here.
+      - name: Type-check
+        run: docker compose exec -T product mypy
+
       # The measured packages and the coverage floor live in pyproject.toml so
       # this command and the one in docs/testing.md cannot drift apart.
       - name: Run every token-free test

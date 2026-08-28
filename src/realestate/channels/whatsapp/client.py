@@ -18,10 +18,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 from enum import Enum
 
 import httpx
 
+
+from realestate.domain.text import fold_mexican_mobile
 
 class SendOutcome(str, Enum):
     SENT = "sent"
@@ -53,20 +56,16 @@ KEEPALIVE_EXPIRY_SECONDS = 15.0
 def normalize_recipient(wa_id: str) -> str:
     """Return the form Meta accepts as a send target.
 
-    Mexican mobile numbers carry a legacy ``1`` after the country code. Meta
-    reports inbound senders as ``521XXXXXXXXXX`` but rejects that same string as
-    a send target on the test number's allowlist, which stores
-    ``52XXXXXXXXXX``. Observed directly: replying to the exact ``wa_id`` Meta
-    gave us failed with ``131030 Recipient phone number not in allowed list``,
-    while the un-prefixed form delivered.
+    The numbering rule itself lives in :func:`~realestate.domain.text.fold_mexican_mobile`,
+    shared with the Contact duplicate detector: the send target and the
+    "is this the same person" question must never disagree about Mexico's
+    optional ``1``.
 
-    Only ``521`` + 10 digits is touched. Everything else is returned unchanged,
-    so this cannot silently mangle another country's numbering.
+    The fallback is this function's own: an identifier with no digits at all is
+    returned verbatim rather than as an empty string, because Meta rejecting a
+    malformed recipient is a better outcome than Product sending to "".
     """
-    digits = "".join(c for c in wa_id if c.isdigit())
-    if len(digits) == 13 and digits.startswith("521"):
-        return "52" + digits[3:]
-    return digits or wa_id
+    return fold_mexican_mobile(wa_id) or wa_id
 
 
 class WhatsAppClient:
@@ -159,10 +158,21 @@ class WhatsAppClient:
             }
 
         expires_at = payload.get("expires_at")
+        # Meta documents 0 or an absent field as "never expires". Anything else
+        # non-integer is not that — it is a payload we do not understand, and
+        # reporting it as a healthy non-expiring token would be a guess.
         if expires_at in (0, None):
             return {"status": "ok", "detail": "token valid, no expiry"}
+        if not isinstance(expires_at, int):
+            return {
+                "status": "unknown",
+                "detail": (
+                    f"Meta reported expires_at={expires_at!r}, which is not a "
+                    "timestamp. The token may be valid; its expiry is unreadable."
+                ),
+            }
 
-        expiry = datetime.fromtimestamp(int(expires_at), tz=UTC)
+        expiry = datetime.fromtimestamp(expires_at, tz=UTC)
         hours = (expiry - datetime.now(tz=UTC)).total_seconds() / 3600
         if hours <= 0:
             return {
@@ -189,7 +199,26 @@ class WhatsAppClient:
         }
         return await self._post("/messages", payload)
 
-    async def _post(self, path: str, payload: dict) -> SendResult:
+    async def send_template(
+        self,
+        to_wa_id: str,
+        template_id: str,
+        language_code: str,
+    ) -> SendResult:
+        """Send one exact template already approved for this WABA."""
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": normalize_recipient(to_wa_id),
+            "type": "template",
+            "template": {
+                "name": template_id,
+                "language": {"code": language_code},
+            },
+        }
+        return await self._post("/messages", payload)
+
+    async def _post(self, path: str, payload: dict[str, Any]) -> SendResult:
         if not self.configured:
             return SendResult(
                 outcome=SendOutcome.FAILED_PERMANENT,

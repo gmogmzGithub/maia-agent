@@ -28,6 +28,8 @@ dev = [
     "anyio==4.11.0",
     "pytest-cov==7.0.0",
     "ruff==0.12.12",
+    "mypy==1.18.2",
+    "types-PyYAML==6.0.12.20250915",
 ]
 
 [build-system]
@@ -37,6 +39,27 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["realestate*"]
+
+[tool.mypy]
+# The product's claim is deterministic authority beneath a probabilistic model.
+# A union return like ``Queued | Denied`` only carries that claim if a caller
+# cannot read ``outbox_id`` off a refusal, and only a checker can enforce that.
+# Strict from the start: a permissive baseline with a promised ratchet never
+# gets ratcheted.
+python_version = "3.12"
+strict = true
+files = ["src/realestate", "plugin/realestate_hermes_plugin"]
+# Product code says what it means; the annotations are the point.
+disallow_any_generics = true
+warn_unreachable = true
+pretty = true
+
+[[tool.mypy.overrides]]
+# Google's client libraries ship neither stubs nor a py.typed marker. Confined
+# to the two boundary modules that actually touch them, so an untyped value
+# cannot silently spread into the domain.
+module = ["googleapiclient.*", "google.oauth2.*", "google.auth.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

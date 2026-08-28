@@ -29,7 +29,7 @@ def _result(payload: dict[str, Any]) -> str:
 
 
 def _safe_body(body: dict[str, Any]) -> dict[str, Any]:
-    safe = dict(body)
+    safe: dict[str, Any] = dict(body)
     if "attendee_name" in safe:
         safe["attendee_name"] = "<redacted>"
     return safe
@@ -76,7 +76,7 @@ def _forward(tool: str, body: dict[str, Any], kwargs: dict[str, Any]) -> str:
     return _result(payload)
 
 
-def _text(args: dict, key: str) -> str | None:
+def _text(args: dict[str, Any], key: str) -> str | None:
     """The trimmed string *key*, or None when the Model omitted or blanked it."""
     value = args.get(key)
     if not isinstance(value, str) or not value.strip():
@@ -84,7 +84,7 @@ def _text(args: dict, key: str) -> str | None:
     return value.strip()
 
 
-def get_property_information(args: dict, **kwargs: Any) -> str:
+def get_property_information(args: dict[str, Any], **kwargs: Any) -> str:
     reference = _text(args, "reference")
     if reference is None:
         logger.warning("Tool call rejected locally: get_property_information missing reference")
@@ -97,7 +97,7 @@ def get_property_information(args: dict, **kwargs: Any) -> str:
     return _forward("get_property_information", {"reference": reference}, kwargs)
 
 
-def set_property_status(args: dict, **kwargs: Any) -> str:
+def set_property_status(args: dict[str, Any], **kwargs: Any) -> str:
     reference = _text(args, "reference")
     status = args.get("status")
     inactive_reason = args.get("inactive_reason")
@@ -136,15 +136,15 @@ def set_property_status(args: dict, **kwargs: Any) -> str:
     )
 
 
-def list_properties(args: dict, **kwargs: Any) -> str:
+def list_properties(args: dict[str, Any], **kwargs: Any) -> str:
     return _forward("list_properties", {}, kwargs)
 
 
-def list_pending_admin_work(args: dict, **kwargs: Any) -> str:
+def list_pending_admin_work(args: dict[str, Any], **kwargs: Any) -> str:
     return _forward("list_pending_admin_work", {}, kwargs)
 
 
-def resolve_pending_admin_work(args: dict, **kwargs: Any) -> str:
+def resolve_pending_admin_work(args: dict[str, Any], **kwargs: Any) -> str:
     reference = _text(args, "reference")
     action = args.get("action")
     if reference is None:
@@ -166,7 +166,7 @@ def resolve_pending_admin_work(args: dict, **kwargs: Any) -> str:
     )
 
 
-def get_available_slots(args: dict, **kwargs: Any) -> str:
+def get_available_slots(args: dict[str, Any], **kwargs: Any) -> str:
     reference = _text(args, "reference")
     if reference is None:
         logger.warning("Tool call rejected locally: get_available_slots missing reference")
@@ -179,7 +179,7 @@ def get_available_slots(args: dict, **kwargs: Any) -> str:
     return _forward("get_available_slots", body, kwargs)
 
 
-def book_appointment(args: dict, **kwargs: Any) -> str:
+def book_appointment(args: dict[str, Any], **kwargs: Any) -> str:
     reference = _text(args, "reference")
     start = _text(args, "start")
     if reference is None:
@@ -197,7 +197,7 @@ def book_appointment(args: dict, **kwargs: Any) -> str:
     return _forward("book_appointment", body, kwargs)
 
 
-def cancel_appointment(args: dict, **kwargs: Any) -> str:
+def cancel_appointment(args: dict[str, Any], **kwargs: Any) -> str:
     body: dict[str, Any] = {}
     if (reference := _text(args, "reference")) is not None:
         body["reference"] = reference

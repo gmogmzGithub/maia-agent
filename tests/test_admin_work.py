@@ -83,6 +83,7 @@ async def appointment(database: Database, *, status: str) -> Appointment:
         prop = (await session.execute(select(Property))).scalar_one()
         start = datetime.now(tz=UTC) + timedelta(days=2)
         row = Appointment(
+            organization_id=conversation.organization_id,
             reference=f"APT-{status.upper()}",
             idempotency_key=f"apt:test:{status}",
             conversation_id=conversation.id,
@@ -162,6 +163,9 @@ async def test_closed_customer_window_creates_manual_notification_work(recovery)
     row = await appointment(database, status=AppointmentStatus.NEEDS_REVIEW.value)
     async with database.session_scope() as session:
         message = (await session.execute(select(InboxMessage))).scalars().one()
+        # Meta measures its window from when the Contact sent the message, so
+        # that is what the gate reads (ADR-0045).
+        message.sent_at = datetime.now(tz=UTC) - timedelta(hours=25)
         message.persisted_at = datetime.now(tz=UTC) - timedelta(hours=25)
         await session.commit()
     calendar.find_result = EventResult(CalendarOutcome.OK)

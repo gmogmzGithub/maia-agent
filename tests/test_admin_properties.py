@@ -14,11 +14,16 @@ from realestate.config import get_settings
 from realestate.db.engine import Database
 from realestate.db.models import AuditEvent, Property, PropertyDocumentVersion
 from realestate.domain.properties import ArtifactStore, CatalogStore
-from tests.conftest import DATABASE_URL, env, requires_postgres, reset_property_inventory
+from tests.conftest import (
+    DATABASE_URL,
+    provision_property_administrator,
+    requires_postgres,
+    reset_property_inventory,
+)
 
 pytestmark = requires_postgres
 
-DEVELOPER = BasicAuth(env("DEVELOPER_BASIC_USER"), env("DEVELOPER_BASIC_PASSWORD"))
+DEVELOPER = BasicAuth("developer", "test-developer-password")
 
 
 def property_form(**overrides: object) -> dict[str, object]:
@@ -94,13 +99,18 @@ def land_property_form(**overrides: object) -> dict[str, object]:
 
 
 @pytest.fixture
-async def wired(tmp_path: Path):
+async def wired(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv(
+        "DEVELOPER_BASIC_CREDENTIALS_JSON",
+        '{"developer":"test-developer-password"}',
+    )
     get_settings.cache_clear()
     database = Database(DATABASE_URL)
     async with database.session_scope() as session:
         await reset_property_inventory(session)
         await session.execute(delete(AuditEvent))
         await session.commit()
+        await provision_property_administrator(session)
 
     app = create_app(get_settings())
     app.state.database = database

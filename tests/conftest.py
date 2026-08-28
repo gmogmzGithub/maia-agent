@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import socket
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -151,6 +152,78 @@ if _port_open(*_hostport(DATABASE_URL, 5433)):
     _ensure_test_database()
 
 
+def migration_config(url: str):  # noqa: ANN201
+    """An Alembic config pointed at one database, built programmatically.
+
+    Not from alembic.ini, for the reason ``_ensure_test_database`` gives above:
+    ``fileConfig`` silences every logger the ini does not mention.
+    """
+    from alembic.config import Config
+
+    config = Config()
+    config.set_main_option("script_location", str(REPO_ROOT / "migrations"))
+    config.set_main_option("sqlalchemy.url", url)
+    return config
+
+
+def recreate_database(name: str) -> str:
+    """Drop and recreate one database, returning its URL.
+
+    Shared by the migration suites, which each need a database nobody else is
+    connected to so they can walk revisions in both directions.
+    """
+    import psycopg
+    from sqlalchemy.engine import make_url
+
+    def url_for(database: str) -> str:
+        return (
+            make_url(DATABASE_URL)
+            .set(database=database)
+            .render_as_string(hide_password=False)
+        )
+
+    admin = url_for("postgres").replace("postgresql+psycopg://", "postgresql://")
+    with psycopg.connect(admin, autocommit=True) as connection:
+        connection.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+        connection.execute(f'CREATE DATABASE "{name}"')
+    return url_for(name)
+
+
+@contextmanager
+def database_at_revision(name: str, revision: str):  # noqa: ANN201
+    """A fresh database migrated to *revision*, with its Alembic config.
+
+    Yields ``(config, engine)``. The ``DATABASE_URL`` swap and the settings
+    cache clear are the delicate part — ``migrations/env.py`` reads the URL from
+    settings — so they live here once rather than in each migration suite.
+    """
+    import os
+
+    from alembic import command
+    from sqlalchemy import create_engine
+
+    from realestate.config import get_settings
+
+    url = recreate_database(name)
+    previous = os.environ.get("DATABASE_URL")
+    os.environ["DATABASE_URL"] = url
+    get_settings.cache_clear()
+    config = migration_config(url)
+    engine = None
+    try:
+        command.upgrade(config, revision)
+        engine = create_engine(url, future=True)
+        yield config, engine
+    finally:
+        if engine is not None:
+            engine.dispose()
+        if previous is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = previous
+        get_settings.cache_clear()
+
+
 @pytest.fixture(scope="session", autouse=True)
 def product_logs_reach_caplog():
     """Let caplog see the product's log lines.
@@ -182,6 +255,43 @@ def hermes_token() -> str:
 @pytest.fixture(scope="session")
 def plugin_token() -> str:
     return env("PLUGIN_API_TOKEN")
+
+
+async def larevia_organization_id(session):  # noqa: ANN001, ANN201
+    """The Organization every commercial fixture row belongs to (ADR-0019).
+
+    Created by migration 0012, not by fixtures: a test that invented its own
+    Organization would not be exercising the scoping the product actually uses.
+    """
+    from sqlalchemy import select
+
+    from realestate.db.models import LAREVIA_SLUG, Organization
+
+    organization_id = await session.scalar(
+        select(Organization.id).where(Organization.slug == LAREVIA_SLUG)
+    )
+    assert organization_id is not None, "run `alembic upgrade head` on the test database"
+    return organization_id
+
+
+async def provision_property_administrator(session) -> None:  # noqa: ANN001
+    """Give the ``developer`` login an Administrator member row.
+
+    The Property surfaces authenticate exactly as they always did, but
+    authorization now resolves the login to an Organization member and refuses
+    anything that does not administer (ADR-0046). A fixture that skipped this
+    would be asserting on a 403.
+    """
+    from realestate.domain.commercial.organization import (
+        DirectoryPlan,
+        OrganizationDirectory,
+    )
+
+    await OrganizationDirectory(session).reconcile(
+        DirectoryPlan(
+            administrators=("developer",), advisors=(), default_advisor=None
+        )
+    )
 
 
 async def reset_property_inventory(session) -> None:  # noqa: ANN001

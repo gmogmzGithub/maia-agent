@@ -14,7 +14,12 @@ from realestate.config import get_settings
 from realestate.db.engine import Database
 from realestate.db.models import AgentRole, AuditEvent, Property
 from realestate.domain.properties import ArtifactStore, CatalogStore, PropertyService
-from tests.conftest import DATABASE_URL, env, requires_postgres, reset_property_inventory
+from tests.conftest import (
+    DATABASE_URL,
+    provision_property_administrator,
+    requires_postgres,
+    reset_property_inventory,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures"
 V1 = (FIXTURES / "casa-roble.md").read_bytes()
@@ -22,18 +27,23 @@ V2 = (FIXTURES / "casa-roble-v2.md").read_bytes()
 
 pytestmark = requires_postgres
 
-DEVELOPER = BasicAuth(env("DEVELOPER_BASIC_USER"), env("DEVELOPER_BASIC_PASSWORD"))
+DEVELOPER = BasicAuth("developer", "test-developer-password")
 
 
 @pytest.fixture
-async def wired(tmp_path: Path):
+async def wired(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """An HTTP client plus the app it drives, sharing one real database."""
+    monkeypatch.setenv(
+        "DEVELOPER_BASIC_CREDENTIALS_JSON",
+        '{"developer":"test-developer-password"}',
+    )
     get_settings.cache_clear()
     database = Database(DATABASE_URL)
     async with database.session_scope() as session:
         await reset_property_inventory(session)
         await session.execute(delete(AuditEvent))
         await session.commit()
+        await provision_property_administrator(session)
 
     app = create_app(get_settings())
     app.state.database = database
@@ -173,6 +183,7 @@ async def test_an_unconfigured_developer_credential_is_a_503_not_an_open_page(
     """A missing credential must never degrade into "no authentication needed":
     this route is reachable while the webhook is exposed through the tunnel."""
     get_settings.cache_clear()
+    monkeypatch.setenv("DEVELOPER_BASIC_CREDENTIALS_JSON", "")
     monkeypatch.setenv("DEVELOPER_BASIC_USER", "")
 
     response = await app_client.get("/upload", auth=DEVELOPER)
@@ -186,6 +197,8 @@ async def test_an_unconfigured_developer_password_is_a_503_too(
     app_client, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     get_settings.cache_clear()
+    monkeypatch.setenv("DEVELOPER_BASIC_CREDENTIALS_JSON", "")
+    monkeypatch.setenv("DEVELOPER_BASIC_USER", "")
     monkeypatch.setenv("DEVELOPER_BASIC_PASSWORD", "")
 
     response = await app_client.post(

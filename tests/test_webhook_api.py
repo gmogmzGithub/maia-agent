@@ -21,13 +21,17 @@ from realestate.channels.whatsapp.signature import SIGNATURE_HEADER, compute_sig
 from realestate.config import get_settings
 from realestate.db.engine import Database
 from realestate.db.models import (
+    AuditEvent,
+    ConsentRecord,
     Conversation,
     DeliveryStatus,
     InboxMessage,
     InboxStatus,
     Lead,
     LeadEngagementCycle,
+    OutboundDecision,
     OutboxMessage,
+    SuppressionRecord,
 )
 from realestate.domain.properties import ArtifactStore
 from tests.conftest import DATABASE_URL, env, requires_postgres
@@ -43,7 +47,11 @@ async def wired(tmp_path: Path):
     get_settings.cache_clear()
     database = Database(DATABASE_URL)
     async with database.session_scope() as session:
+        await session.execute(delete(AuditEvent))
         await session.execute(delete(DeliveryStatus))
+        await session.execute(delete(OutboundDecision))
+        await session.execute(delete(SuppressionRecord))
+        await session.execute(delete(ConsentRecord))
         await session.execute(delete(OutboxMessage))
         await session.execute(delete(InboxMessage))
         await session.execute(delete(Conversation))
@@ -154,6 +162,31 @@ async def test_an_authenticated_message_is_persisted_before_acknowledgement(
     assert message.text == "hola, informes?"
     assert message.status == InboxStatus.PENDING.value
     assert message.from_wa_id == webhooks.LEAD_WA_ID
+
+
+async def test_an_authenticated_opt_out_is_atomic_with_inbox_acceptance(wired) -> None:
+    client, app = wired
+
+    response = await post(
+        client,
+        webhooks.text_message(wamid="wamid.OPTOUT", body="Ya no me escriban"),
+    )
+
+    assert response.status_code == 200
+    async with app.state.database.session_scope() as session:
+        message = (await session.execute(select(InboxMessage))).scalar_one()
+        suppression = (await session.execute(select(SuppressionRecord))).scalar_one()
+        consent = (await session.execute(select(ConsentRecord))).scalar_one()
+        audit = (
+            await session.execute(
+                select(AuditEvent).where(AuditEvent.action == "RecordExplicitOptOut")
+            )
+        ).scalar_one()
+
+    assert suppression.source_inbox_id == message.id
+    assert suppression.reason == "ExplicitOptOut"
+    assert consent.state == "Revoked"
+    assert audit.subject_id == str(suppression.lead_id)
 
 
 async def test_the_complete_meta_object_is_retained(wired) -> None:

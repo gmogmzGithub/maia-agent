@@ -70,7 +70,8 @@ def _text_of(message: dict[str, Any]) -> str | None:
         interactive = message.get("interactive") or {}
         for key in ("button_reply", "list_reply"):
             if isinstance(interactive.get(key), dict):
-                return interactive[key].get("title")
+                title = interactive[key].get("title")
+                return title if isinstance(title, str) else None
     return None
 
 

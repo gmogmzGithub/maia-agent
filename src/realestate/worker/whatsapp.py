@@ -20,6 +20,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from realestate.channels.whatsapp.client import WhatsAppClient
 from realestate.db.engine import Database
@@ -30,6 +31,7 @@ from realestate.db.models import (
     InboxMessage,
     Lead,
     LeadEngagementCycle,
+    OutboundInitiation,
     OutboxMessage,
     OutboxStatus,
 )
@@ -46,9 +48,16 @@ from realestate.domain.inbox import (
     combined_text,
 )
 from realestate.domain.copy import canonicalize
+from realestate.domain.outbound import (
+    DeliveryDenied,
+    Denied,
+    OutboundIntent,
+    OutboundMessaging,
+    Purpose,
+    TemplateDelivery,
+)
 from realestate.domain.outbox import (
     PROCESSING_FAILURE_BODY,
-    OutboxKind,
     OutboxService,
 )
 from realestate.channels.whatsapp.formatting import to_whatsapp_markup
@@ -138,7 +147,7 @@ class WhatsAppWorker:
 
     async def _run_hermes_turn(
         self,
-        session,  # AsyncSession
+        session: AsyncSession,
         inbox: InboxService,
         group: ClaimedGroup,
         cycle: LeadEngagementCycle,
@@ -156,7 +165,7 @@ class WhatsAppWorker:
 
         # Local to this call: the worker instance is shared across concurrently
         # processed Conversations, so this must never live on ``self``.
-        offered: list = []
+        offered: list[InboxMessage] = []
 
         async def offer_late_messages() -> str | None:
             """Offer newly persisted fragments to the live turn.
@@ -205,7 +214,7 @@ class WhatsAppWorker:
         return turn.text
 
     async def _recovery_seed(
-        self, session, cycle: LeadEngagementCycle, lead: Lead | None
+        self, session: AsyncSession, cycle: LeadEngagementCycle, lead: Lead | None
     ) -> tuple[list[dict[str, str]], int]:
         """Rebuild settled Sales history from Product truth when Hermes lost it.
 
@@ -263,7 +272,7 @@ class WhatsAppWorker:
 
     async def _settle(
         self,
-        session,  # AsyncSession
+        session: AsyncSession,
         inbox: InboxService,
         group: ClaimedGroup,
         conversation: Conversation,
@@ -296,20 +305,33 @@ class WhatsAppWorker:
             await inbox.fail(group)
             return
 
-        body, kind = self._release(conversation, reply, notice)
+        body, purpose = self._release(conversation, reply, notice)
 
-        lead_wa_id = group.messages[0].from_wa_id
-        outbox = OutboxService(session)
-        enqueued = await outbox.enqueue(
-            conversation=conversation,
-            to_wa_id=lead_wa_id,
-            body=body,
-            kind=kind,
-            # One reply per Inbox group, whatever happens upstream.
-            idempotency_key=f"reply:{group.group_id}",
-            covered_inbox_ids=group.inbox_ids,
-            inbox_group_id=group.group_id,
+        outcome = await OutboundMessaging(session).request(
+            OutboundIntent(
+                conversation=conversation,
+                body=body,
+                purpose=purpose,
+                # This answers the exact messages in the group, and says which.
+                initiation=OutboundInitiation.REACTIVE,
+                trigger_inbox_ids=tuple(group.inbox_ids),
+                # One reply per Inbox group, whatever happens upstream.
+                idempotency_key=f"reply:{group.group_id}",
+                inbox_group_id=group.group_id,
+            )
         )
+        if isinstance(outcome, Denied):
+            # The lane still closes: the messages were processed and the answer
+            # was withheld on purpose, so replaying them cannot help. The gate
+            # has already recorded and logged why.
+            await session.commit()
+            await inbox.settle(group)
+            return
+
+        # Committed here, as the previous committing enqueue did: the reply must
+        # survive even if the lease is lost before settlement below.
+        await session.commit()
+
         if notice is not None:
             # Persisted immediately: without it, the next turn would release the
             # same confirmation again under a different group key.
@@ -321,13 +343,13 @@ class WhatsAppWorker:
             logger.warning(
                 "Lost the lease for %s before settlement; outbox row %s stands",
                 conversation.id,
-                enqueued.outbox_id,
+                outcome.outbox_id,
             )
 
     def _release(
         self, conversation: Conversation, reply: str, notice: LeadNotice | None
-    ) -> tuple[str, str]:
-        """The exact body to release, and what kind of message it is."""
+    ) -> tuple[str, Purpose]:
+        """The exact body to release, and what that body is for."""
         if notice is not None:
             logger.info(
                 "Releasing the deterministic %s for appointment %s to %s; the "
@@ -337,7 +359,7 @@ class WhatsAppWorker:
                 conversation.id,
                 reply.strip()[:120],
             )
-            return to_whatsapp_markup(notice.body), notice.kind
+            return to_whatsapp_markup(notice.body), Purpose(notice.kind)
 
         # Restore the approved wording of any accepted message the Model
         # reworded. Canonicalisation only rewrites copy it already emitted; it
@@ -349,11 +371,11 @@ class WhatsAppWorker:
                 conversation.id,
                 "; ".join(m[:40] for m in canonical.replaced),
             )
-        return to_whatsapp_markup(canonical.text), OutboxKind.AGENT_REPLY
+        return to_whatsapp_markup(canonical.text), Purpose.AGENT_REPLY
 
     async def _handle_failure(
         self,
-        session,  # AsyncSession
+        session: AsyncSession,
         inbox: InboxService,
         group: ClaimedGroup,
         conversation: Conversation,
@@ -374,15 +396,18 @@ class WhatsAppWorker:
         # A deterministic, non-model-generated acknowledgement. It does not
         # claim the message was handled, and it does not mark the failed Inbox
         # work as successful (P-035).
-        await OutboxService(session).enqueue(
-            conversation=conversation,
-            to_wa_id=group.messages[0].from_wa_id,
-            body=PROCESSING_FAILURE_BODY,
-            kind=OutboxKind.PROCESSING_FAILURE,
-            idempotency_key=f"processing-failure:{group.group_id}",
-            covered_inbox_ids=group.inbox_ids,
-            inbox_group_id=group.group_id,
+        await OutboundMessaging(session).request(
+            OutboundIntent(
+                conversation=conversation,
+                body=PROCESSING_FAILURE_BODY,
+                purpose=Purpose.PROCESSING_FAILURE,
+                initiation=OutboundInitiation.REACTIVE,
+                trigger_inbox_ids=tuple(group.inbox_ids),
+                idempotency_key=f"processing-failure:{group.group_id}",
+                inbox_group_id=group.group_id,
+            )
         )
+        await session.commit()
 
     # -- Outbox -----------------------------------------------------------
 
@@ -397,7 +422,20 @@ class WhatsAppWorker:
                 )
             due = await outbox.claim_due()
             for row in due:
-                result = await self._whatsapp.send_text(row.to_wa_id, row.body)
+                delivery = await OutboundMessaging(session).prepare_delivery(row)
+                if isinstance(delivery, DeliveryDenied):
+                    continue
+                if isinstance(delivery, TemplateDelivery):
+                    result = await self._whatsapp.send_template(
+                        delivery.to_wa_id,
+                        delivery.template_id,
+                        delivery.language_code,
+                    )
+                else:
+                    result = await self._whatsapp.send_text(
+                        delivery.to_wa_id,
+                        delivery.body,
+                    )
                 await outbox.record_result(row, result)
                 if result.conclusive and result.provider_message_id:
                     logger.info(

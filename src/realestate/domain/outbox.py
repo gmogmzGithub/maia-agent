@@ -13,6 +13,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -32,12 +33,19 @@ RETRY_DELAYS_SECONDS = (0, 5, 30)
 
 
 class OutboxKind(str):
-    """Why a message exists. Deterministic kinds are never model-authored."""
+    """What a delivered row is. Deterministic kinds are never model-authored.
+
+    Kind labels the persisted message. It does not say whether the message was
+    allowed to be sent, and it must never be used to infer that: proactivity is
+    carried by ``OutboundIntent.initiation`` (ADR-0045), not by reading a kind.
+    """
 
     AGENT_REPLY = "AgentReply"
     PROCESSING_FAILURE = "ProcessingFailureNotice"
+    APPOINTMENT_CONFIRMATION = "AppointmentConfirmation"
     APPOINTMENT_RESOLUTION = "AppointmentResolution"
     APPOINTMENT_CANCELLATION = "AppointmentCancellation"
+    APPOINTMENT_NEEDS_REVIEW = "AppointmentNeedsReview"
     LEAD_FOLLOW_UP = "LeadFollowUp"
 
 
@@ -68,7 +76,7 @@ class OutboxService:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def enqueue(
+    async def stage(
         self,
         *,
         conversation: Conversation,
@@ -79,16 +87,24 @@ class OutboxService:
         covered_inbox_ids: list[uuid.UUID],
         inbox_group_id: uuid.UUID | None = None,
     ) -> Enqueued:
-        """Persist one outbound intent. Repeating the key is a no-op."""
-        existing = (
-            await self._session.execute(
-                select(OutboxMessage).where(
-                    OutboxMessage.idempotency_key == idempotency_key
-                )
+        """Persist one outbound row *without committing*.
+
+        The committing :meth:`enqueue` cannot be the only option: the eligibility
+        decision that authorised a message, the Outbox row itself, and the
+        caller's own record of the attempt have to land or fail together
+        (ADR-0045). Staging leaves the transaction boundary to the caller.
+
+        Repeating the key is a no-op within this transaction. Two transactions
+        racing on the same key are arbitrated by the unique constraint when they
+        commit, which callers already handle.
+        """
+        existing: uuid.UUID | None = await self._session.scalar(
+            select(OutboxMessage.id).where(
+                OutboxMessage.idempotency_key == idempotency_key
             )
-        ).scalar_one_or_none()
+        )
         if existing is not None:
-            return Enqueued(outbox_id=existing.id, created=False)
+            return Enqueued(outbox_id=existing, created=False)
 
         row = OutboxMessage(
             conversation_id=conversation.id,
@@ -102,20 +118,59 @@ class OutboxService:
             next_attempt_at=_now(),
         )
         self._session.add(row)
+        await self._session.flush()
+        return Enqueued(outbox_id=row.id, created=True)
+
+    async def enqueue(
+        self,
+        *,
+        conversation: Conversation,
+        to_wa_id: str,
+        body: str,
+        kind: str,
+        idempotency_key: str,
+        covered_inbox_ids: list[uuid.UUID],
+        inbox_group_id: uuid.UUID | None = None,
+    ) -> Enqueued:
+        """Stage one outbound row and commit it.
+
+        Reserved for tests and recovery tooling that legitimately own their own
+        transaction. Product code reaches the Outbox through
+        ``OutboundMessaging.request``, which is the only path that establishes
+        whether the message may be sent at all.
+
+        Expressed in terms of :meth:`stage` rather than repeating it: the row
+        this writes and the row the gate writes must not be able to differ.
+        """
         try:
+            staged = await self.stage(
+                conversation=conversation,
+                to_wa_id=to_wa_id,
+                body=body,
+                kind=kind,
+                idempotency_key=idempotency_key,
+                covered_inbox_ids=covered_inbox_ids,
+                inbox_group_id=inbox_group_id,
+            )
+            if not staged.created:
+                return staged
             await self._session.commit()
         except IntegrityError:
+            # The pre-check is advisory; the unique index is the guarantee. The
+            # race can surface at the staging flush or at the commit, and both
+            # mean the same thing: report the winner's row rather than raise.
             await self._session.rollback()
-            again = (
-                await self._session.execute(
-                    select(OutboxMessage).where(
-                        OutboxMessage.idempotency_key == idempotency_key
-                    )
+            again = await self._session.scalar(
+                select(OutboxMessage).where(
+                    OutboxMessage.idempotency_key == idempotency_key
                 )
-            ).scalar_one()
+            )
+            if again is None:  # pragma: no cover - the key just conflicted
+                raise RuntimeError(
+                    f"Outbox key {idempotency_key!r} conflicted but is absent."
+                )
             return Enqueued(outbox_id=again.id, created=False)
-
-        return Enqueued(outbox_id=row.id, created=True)
+        return staged
 
     async def claim_due(self, limit: int = 10) -> list[OutboxMessage]:
         """Take due Pending rows and mark them Sending under a row lock."""
@@ -219,7 +274,7 @@ class OutboxService:
         provider_message_id: str,
         status: str,
         occurred_at: datetime,
-        raw: dict,
+        raw: dict[str, Any],
     ) -> bool:
         """Reconcile a Meta delivery callback onto its Outbox row.
 

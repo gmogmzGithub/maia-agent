@@ -327,11 +327,11 @@ class HermesClient:
 
     # -- Connection ------------------------------------------------------
 
-    def session(self) -> "_HermesConnection":
-        return _HermesConnection(self)
+    def session(self) -> "HermesConnection":
+        return HermesConnection(self)
 
 
-class _HermesConnection:
+class HermesConnection:
     """One authenticated JSON-RPC WebSocket, used as an async context manager."""
 
     def __init__(self, client: HermesClient) -> None:
@@ -339,7 +339,7 @@ class _HermesConnection:
         self._ws: Any = None
         self._next_id = 0
 
-    async def __aenter__(self) -> "_HermesConnection":
+    async def __aenter__(self) -> "HermesConnection":
         try:
             logger.debug("Opening Hermes JSON-RPC WebSocket")
             self._ws = await asyncio.wait_for(
@@ -447,6 +447,8 @@ class _HermesConnection:
                     "result" in frame,
                     "error" in frame,
                 )
+            if not isinstance(frame, dict):
+                raise ValueError(f"Hermes sent a {type(frame).__name__}, not an object")
             return frame
         except (TypeError, ValueError) as exc:
             raise HermesUnavailable(
@@ -525,17 +527,20 @@ class _HermesConnection:
         except (TypeError, ValueError):
             logger.warning("Ignored non-JSON frame while waiting for Hermes event")
             return None
-        if frame.get("method") == "event" and isinstance(frame.get("params"), dict):
-            params = frame["params"]
-            payload = params.get("payload") if isinstance(params, dict) else None
+        if not isinstance(frame, dict):
+            logger.warning("Ignored a non-object frame while polling Hermes")
+            return None
+        params = frame.get("params")
+        if frame.get("method") == "event" and isinstance(params, dict):
+            payload = params.get("payload")
             logger.debug(
                 "Hermes event received (type=%r, session_id=%r, tool=%r, status=%r)",
                 params.get("type"),
                 params.get("session_id"),
-                (payload or {}).get("name") if isinstance(payload, dict) else None,
-                (payload or {}).get("status") if isinstance(payload, dict) else None,
+                payload.get("name") if isinstance(payload, dict) else None,
+                payload.get("status") if isinstance(payload, dict) else None,
             )
-            return frame["params"]
+            return params
         logger.debug("Ignored non-event Hermes frame while polling (keys=%s)", list(frame))
         return None
 

@@ -22,6 +22,7 @@ from realestate.db.models import (
     AppointmentStatus,
     AvailabilitySnapshot,
     Conversation,
+    InboxMessage,
     Lead,
     LeadEngagementCycle,
     Property,
@@ -106,8 +107,20 @@ async def book(database, service, start: str, **kwargs) -> dict:
 async def cancel(database, service, **kwargs) -> dict:
     async with database.session_scope() as session:
         conversation = await session.merge(await conversation_of(database))
+        trigger_ids = tuple(
+            (
+                await session.execute(
+                    select(InboxMessage.id).where(
+                        InboxMessage.conversation_id == conversation.id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
         return await (await service(session)).cancel(
             conversation=conversation,
+            trigger_inbox_ids=trigger_ids,
             **kwargs,
         )
 
@@ -494,6 +507,7 @@ async def test_the_loser_of_an_idempotency_race_reports_the_winners_outcome(
     async def another_worker_wins_first(self, conversation, prop, slot, attendee_name):  # noqa: ANN001, ANN202
         async with database.session_scope() as other:
             row = Appointment(
+                organization_id=conversation.organization_id,
                 reference="APT-COMPETITOR",
                 idempotency_key=(
                     f"apt:{conversation.id}:{prop.id}:{slot.start.isoformat()}"

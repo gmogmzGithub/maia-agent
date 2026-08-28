@@ -19,7 +19,13 @@ authorization, persistence, delivery, retries, and business authority.
 - Grounded property Q&A from accepted, versioned property documents.
 - Appointment scheduling against Google Calendar availability.
 - Telegram-based administrative workflows for exceptional cases.
-- Deterministic 28-day follow-up cadence for Facebook/WhatsApp leads.
+- One eligibility gate above the Outbox, so no outbound message can exist
+  without a recorded decision authorising it.
+- A commercial system of record — Contacts, needs, Opportunities, assignment and
+  next actions — behind small module interfaces, with the races that matter
+  guarded by database constraints rather than service-layer checks.
+- Server-rendered Mexican Spanish operator surfaces that show refused outbound
+  decisions and communication restrictions without any path to send.
 - A standalone Hermes plugin that exposes typed product operations without
   giving the agent direct database or Calendar credentials.
 - Recovery-oriented tests around persistence, sessions, tools, workers,
@@ -63,23 +69,29 @@ classifies uncertain outcomes for review.
 
 ## Current Status
 
-Maia is a local Stage 0 product prototype. The core product paths are
-implemented and test-covered locally:
+Maia is a local product prototype. The core product paths are implemented and
+test-covered locally:
 
 - property document ingestion and replacement;
 - grounded sales conversations through Hermes;
-- WhatsApp webhook and outbound delivery workflow;
+- WhatsApp webhook and outbound delivery workflow, gated on one recorded
+  eligibility decision per message;
 - appointment availability, booking, cancellation, and broker notifications;
 - Telegram administration;
-- follow-up scheduling and durable worker processing;
+- an operational CRM: one brokerage organization, administrator and advisor
+  roles, contacts, needs with confirmed and pending criteria, opportunities with
+  explicit stages and evidence-bearing outcomes, deterministic assignment, and
+  next actions;
+- conversation-content expiry kept separate from commercial history;
 - Docker Compose packaging for a single-host local topology.
 
 Not claimed yet:
 
 - production deployment;
 - multi-tenant operation;
-- CRM integration;
 - paid lead acquisition;
+- proactive follow-up delivery, which stays refused until real consent capture
+  and approved WhatsApp templates exist;
 - legal/privacy readiness for real customer data;
 - horizontal scaling or managed cloud operations.
 
@@ -119,13 +131,13 @@ Create the one local environment file:
 cp .env.example .env
 ```
 
-In `.env`, fill these three required local secrets with different values from
-`openssl rand -hex 32`:
+In `.env`, fill the two shared local secrets with different values from
+`openssl rand -hex 32`, then configure at least one local Basic-auth account:
 
 ```text
 HERMES_DASHBOARD_SESSION_TOKEN=
 PLUGIN_API_TOKEN=
-DEVELOPER_BASIC_PASSWORD=
+DEVELOPER_BASIC_CREDENTIALS_JSON={"developer":"replace-with-a-secret"}
 ```
 
 Add `ANTHROPIC_API_KEY` when you want real model conversations. Meta, Telegram,
