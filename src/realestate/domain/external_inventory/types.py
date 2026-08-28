@@ -9,6 +9,8 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
+from realestate.domain.service_area import SERVICE_AREA
+
 
 class IntendedAction(str, enum.Enum):
     RECOMMEND = "Recommend"
@@ -21,7 +23,7 @@ class MatchQuality(str, enum.Enum):
     APPROXIMATE = "Approximate"
 
 
-SERVICE_AREA = frozenset({"Guadalajara", "Zapopan", "Tlaquepaque"})
+
 
 
 @dataclass(frozen=True)
@@ -42,6 +44,17 @@ class InventorySearchCriteria:
             )
         if self.limit < 1 or self.limit > 50:
             raise ValueError("El límite debe estar entre 1 y 50.")
+
+    def price_in_range(self, price: Decimal) -> bool:
+        """Whether one offer price satisfies the requested bounds.
+
+        On the criteria rather than beside each caller because the Organization
+        and external ladders both ask it, and a bound they answered differently
+        would rank the two inventories against different rules.
+        """
+        if self.min_price is not None and price < self.min_price:
+            return False
+        return self.max_price is None or price <= self.max_price
 
 
 @dataclass(frozen=True)

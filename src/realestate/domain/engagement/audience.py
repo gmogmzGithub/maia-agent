@@ -5,9 +5,9 @@ from __future__ import annotations
 import hashlib
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from realestate.db.models import (
@@ -17,12 +17,15 @@ from realestate.db.models import (
     ContactChannelIdentity,
     Conversation,
     DevelopmentCampaign,
-    MarketingTouch,
     PropertyNeed,
     SuppressionRecord,
 )
 from realestate.domain.commercial.actors import Actor, NotFound
 from realestate.domain.commercial.needs import INTENT, SERVICE_AREA, PropertyNeeds
+from realestate.domain.engagement.frequency import (
+    FREQUENCY_CAP_REACHED,
+    frequency_cap_reached,
+)
 from realestate.domain.engagement.consent import DEVELOPMENT_SCOPE, MarketingConsent
 from realestate.domain.text import fold_phrase
 
@@ -161,17 +164,15 @@ class Audience:
                 if not consent.granted:
                     reasons.append(consent.reason)
 
-            touches = await self._session.scalar(
-                select(func.count(MarketingTouch.id))
-                .where(MarketingTouch.organization_id == campaign.organization_id)
-                .where(MarketingTouch.contact_id == need.contact_id)
-                .where(
-                    MarketingTouch.recorded_at
-                    >= at - timedelta(days=campaign.frequency_window_days)
-                )
-            )
-            if (touches or 0) >= campaign.frequency_cap:
-                reasons.append("FrequencyCapReached")
+            if await frequency_cap_reached(
+                self._session,
+                organization_id=campaign.organization_id,
+                contact_id=need.contact_id,
+                at=at,
+                window_days=campaign.frequency_window_days,
+                cap=campaign.frequency_cap,
+            ):
+                reasons.append(FREQUENCY_CAP_REACHED)
             if not reasons and included >= campaign.max_recipients:
                 reasons.append("AudienceLimitReached")
 

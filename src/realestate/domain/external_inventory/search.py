@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime
-from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -120,7 +119,7 @@ def _own_match(
         prices = [offer.price_amount for offer in relevant if offer.price_amount is not None]
         if not prices:
             approximate = True
-        elif not any(_in_range(price, criteria) for price in prices):
+        elif not any(criteria.price_in_range(price) for price in prices):
             return None
     if criteria.min_bedrooms is not None:
         value = listing.listing_facts.get(
@@ -131,9 +130,3 @@ def _own_match(
         elif value < criteria.min_bedrooms:
             return None
     return MatchQuality.APPROXIMATE if approximate else MatchQuality.EXACT
-
-
-def _in_range(price: Decimal, criteria: InventorySearchCriteria) -> bool:
-    if criteria.min_price is not None and price < criteria.min_price:
-        return False
-    return criteria.max_price is None or price <= criteria.max_price

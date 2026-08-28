@@ -156,8 +156,7 @@ class Settings(BaseSettings):
         default="https://api.easybroker.com/v1", alias="EASYBROKER_BASE_URL"
     )
     # Fail closed until the account owner has confirmed the separate API MLS
-    # plan and Guillermo explicitly activates it. Presence of a key is not MLS
-    # authority.
+    # plan and explicitly activates it. Presence of a key is not MLS authority.
     easybroker_mls_access_confirmed: bool = Field(
         default=False, alias="EASYBROKER_MLS_ACCESS_CONFIRMED"
     )

@@ -53,7 +53,9 @@ from realestate.db.models import (
 from realestate.domain.outbox import OutboxService
 from realestate.domain.audit import record_audit
 from realestate.domain.engagement.consent import (
-    BROAD_REAL_ESTATE_SCOPE,
+    consent_covers_scope,
+    consent_evidence_complete,
+    consent_expired,
     DEVELOPMENT_SCOPE,
     LISTING_MATCH_SCOPE,
 )
@@ -345,7 +347,8 @@ class OutboundMessaging:
                 "Template identifier and category must be supplied together.",
             )
         elif intent.template_id is not None:
-            refusal = await self._template_refusal(intent, at=intent.requested_at)
+            resolved = await self._resolve_template(intent, at=intent.requested_at)
+            refusal = resolved if isinstance(resolved, Refusal) else None
         elif window is None or intent.requested_at >= window:
             refusal = Refusal(
                 DenialReason.SERVICE_WINDOW_CLOSED,
@@ -519,11 +522,12 @@ class OutboundMessaging:
                 "The queued template identifier and category are incomplete.",
             )
         if intent.template_id is not None:
-            refusal = await self._template_refusal(intent, at=moment)
-            if refusal is not None:
-                return await self._block_delivery(row, refusal.reason, refusal.detail)
-            approved = await self._approved_template(intent, at=moment)
-            assert approved is not None
+            resolved = await self._resolve_template(intent, at=moment)
+            if isinstance(resolved, Refusal):
+                return await self._block_delivery(
+                    row, resolved.reason, resolved.detail
+                )
+            approved = resolved
             return TemplateDelivery(
                 to_wa_id=row.to_wa_id,
                 template_id=intent.template_id,
@@ -673,10 +677,15 @@ class OutboundMessaging:
             return None
         return ApprovedTemplate(evidence.category, evidence.language)
 
-    async def _template_refusal(
+    async def _resolve_template(
         self, intent: OutboundIntent, *, at: datetime
-    ) -> Refusal | None:
-        """Whether the supplied template may carry this message."""
+    ) -> Refusal | ApprovedTemplate:
+        """The template that may carry this message, or why none may.
+
+        Returns the approval itself rather than a bare refusal so the caller does
+        not have to look it up a second time and assert the two agreed. The
+        lookup is the same provider-evidence query either way.
+        """
         approved = await self._approved_template(intent, at=at)
         if approved is None:
             return Refusal(
@@ -701,7 +710,7 @@ class OutboundMessaging:
                 f"Template {intent.template_id!r} is approved for "
                 f"{approved.category.value}, not {intent.template_category.value}.",
             )
-        return None
+        return approved
 
     async def _lead(self, conversation: Conversation) -> Lead | None:
         lead: Lead | None = await self._session.scalar(
@@ -758,20 +767,16 @@ class OutboundMessaging:
         if latest is None or latest.state != ConsentState.GRANTED.value:
             return False
         moment = at or _now()
-        if latest.expires_at is not None and latest.expires_at <= moment:
+        # The same predicates Stage 7 planning applies, so the gate that decides
+        # whether a message may leave cannot drift from the one that decided the
+        # audience was reachable in the first place.
+        if consent_expired(latest, moment):
             return False
-        if required_scope is not None:
-            if not all(
-                (
-                    (latest.business_name or "").strip(),
-                    (latest.scope or "").strip(),
-                    (latest.notice_version or "").strip(),
-                    (latest.evidence_locator or "").strip(),
-                )
-            ):
-                return False
-            if latest.scope not in {required_scope, BROAD_REAL_ESTATE_SCOPE}:
-                return False
+        if required_scope is not None and not (
+            consent_evidence_complete(latest)
+            and consent_covers_scope(latest, required_scope)
+        ):
+            return False
         return True
 
     async def _contact_replied(self, intent: OutboundIntent) -> bool:

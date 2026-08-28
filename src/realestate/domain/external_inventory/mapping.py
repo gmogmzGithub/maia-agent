@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import unicodedata
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from realestate.domain.text import strip_diacritics
 from realestate.db.models import (
     ExternalCandidateState,
     ExternalInventoryScope,
@@ -62,11 +62,19 @@ class MappedCandidate:
     source_agent: str | None
     source_url: str | None
     source_collaboration_authorized: bool | None
-    source_commission_known: bool
     source_commission: dict[str, Any] | None
     mapping_issues: tuple[str, ...]
     withdrawn: bool
     offers: tuple[MappedOffer, ...]
+
+    @property
+    def source_commission_known(self) -> bool:
+        """Whether the source stated a commission this mapping could read.
+
+        Derived rather than stored: it was only ever true when a commission
+        survived ``_commission``, and a second field could disagree with it.
+        """
+        return self.source_commission is not None
 
 
 def map_easybroker(
@@ -122,7 +130,6 @@ def map_easybroker(
     if commission_value is None:
         commission_value = payload.get("share_commission")
     commission = _commission(commission_value)
-    commission_known = commission_value is not None and commission is not None
     collaboration = payload.get("collaboration_authorized")
     source_collaboration_authorized = (
         collaboration if isinstance(collaboration, bool) else None
@@ -163,7 +170,6 @@ def map_easybroker(
         source_agent=agent,
         source_url=_text(payload.get("url")),
         source_collaboration_authorized=source_collaboration_authorized,
-        source_commission_known=commission_known,
         source_commission=commission,
         mapping_issues=tuple(dict.fromkeys(issues)),
         withdrawn=withdrawn,
@@ -317,14 +323,13 @@ def _datetime(value: object) -> datetime | None:
 
 
 def _key(value: str | None) -> str:
+    """Fold a source label for comparison, treating ``_`` and ``-`` as spaces.
+
+    The accent and case folds come from :mod:`realestate.domain.text` so a
+    character taught there is understood here too; only the separator rule is
+    specific to the provider's slug-shaped labels.
+    """
     if value is None:
         return ""
-    decomposed = unicodedata.normalize("NFKD", value)
-    return " ".join(
-        "".join(character for character in decomposed if not unicodedata.combining(character))
-        .strip()
-        .lower()
-        .replace("_", "-")
-        .replace("-", " ")
-        .split()
-    )
+    folded = strip_diacritics(value).casefold().replace("_", " ").replace("-", " ")
+    return " ".join(folded.split())

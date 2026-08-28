@@ -119,8 +119,6 @@ class InventoryMatching:
     @classmethod
     def _one(cls, need: NeedSnapshot, listing: ListingMatchInput) -> MatchProposal:
         explanation: list[MatchExplanation] = []
-        approximate = False
-        contradicted = False
 
         if need.is_stale:
             explanation.append(
@@ -131,7 +129,6 @@ class InventoryMatching:
                     "Contradiction",
                 )
             )
-            contradicted = True
         if need.missing_required:
             explanation.append(
                 MatchExplanation(
@@ -141,7 +138,6 @@ class InventoryMatching:
                     "Contradiction",
                 )
             )
-            contradicted = True
 
         intent = need.confirmed.get(INTENT, "")
         compatible = {
@@ -158,7 +154,6 @@ class InventoryMatching:
                 "Exact" if operation_ok else "Contradiction",
             )
         )
-        contradicted = contradicted or not operation_ok
 
         area = need.confirmed.get(SERVICE_AREA, "")
         location = listing.public_location or ""
@@ -168,10 +163,8 @@ class InventoryMatching:
             area_result = "Exact"
         elif expected_area & observed_area:
             area_result = "Approximate"
-            approximate = True
         else:
             area_result = "Contradiction"
-            contradicted = True
         explanation.append(
             MatchExplanation(
                 SERVICE_AREA, area, location or "No informada", area_result
@@ -181,7 +174,6 @@ class InventoryMatching:
         requested_range = _money_range(need.confirmed.get(ECONOMIC_RANGE, ""))
         if requested_range is None or not listing.prices:
             price_result = "Approximate"
-            approximate = True
         else:
             low, high = requested_range
             price = min(listing.prices)
@@ -189,10 +181,8 @@ class InventoryMatching:
                 price_result = "Exact"
             elif low * Decimal("0.9") <= price <= high * Decimal("1.1"):
                 price_result = "Approximate"
-                approximate = True
             else:
                 price_result = "Contradiction"
-                contradicted = True
         explanation.append(
             MatchExplanation(
                 ECONOMIC_RANGE,
@@ -217,12 +207,10 @@ class InventoryMatching:
             actual = _integer_fact(listing.facts, *fact_names)
             if actual is None:
                 result = "Approximate"
-                approximate = True
             elif actual >= minimum:
                 result = "Exact"
             else:
                 result = "Contradiction"
-                contradicted = True
             explanation.append(
                 MatchExplanation(
                     criterion,
@@ -232,10 +220,18 @@ class InventoryMatching:
                 )
             )
 
+        # Read back off the explanation rather than tracked beside it: the two
+        # could disagree, and the explanation is what an operator is shown.
+        results = {item.result for item in explanation}
+        contradicted = "Contradiction" in results
         return MatchProposal(
             listing_id=listing.listing_id,
             eligible=not contradicted,
-            kind=None if contradicted else ("Approximate" if approximate else "Exact"),
+            kind=(
+                None
+                if contradicted
+                else ("Approximate" if "Approximate" in results else "Exact")
+            ),
             rule_version=MATCH_RULE_VERSION,
             explanation=tuple(explanation),
         )

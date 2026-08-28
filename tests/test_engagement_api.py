@@ -66,9 +66,14 @@ async def test_surface_requires_an_administrator_and_is_mexican_spanish(wired) -
 
     assert page.status_code == 200
     assert "Reactivación y campañas" in page.text
-    assert "Consentimiento:</strong> Denied" in page.text
+    assert "Consentimiento:</strong> No otorgado" in page.text
+    assert "Costo potencial:</strong>" in page.text
     assert "Buscar coincidencias; no enviar" in page.text
     assert "Enviar a todos" not in page.text
+    # The surface claims Mexican Spanish, so no durable English enum value may
+    # reach it: these are the provider and state words the page renders.
+    for untranslated in ("Denied", "Approved", "Draft", "Excluded", "Paused"):
+        assert untranslated not in page.text
 
 
 async def test_admin_workflow_renders_explanations_without_contact_pii(wired) -> None:
@@ -130,7 +135,8 @@ async def test_admin_workflow_renders_explanations_without_contact_pii(wired) ->
     assert "activación real" in activation.text
 
     page = await client.get("/crm/reactivacion", auth=ADMIN)
-    assert "MarketingActivationNotApproved" in page.text
+    assert "Activación real de Marketing no aprobada" in page.text
+    assert "MarketingActivationNotApproved" not in page.text
     assert "Vista previa y resultados por referencia" in page.text
     assert "Cumple los criterios" in page.text
     assert state.lead.wa_id not in page.text

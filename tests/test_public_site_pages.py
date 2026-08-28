@@ -314,6 +314,8 @@ async def test_server_rendered_search_detail_gallery_and_local_discovery() -> No
 
     assert home.status_code == 200
     assert "Acompañamiento inmobiliario" in home.text
+    assert "hero-photo" in home.text
+    assert f'src="/media/{MEDIA_ID}?w=960"' in home.text
     assert '<html lang="es-MX"' in home.text
     assert "<main id=\"contenido\">" in home.text
     assert "autoplay" not in home.text.casefold()
@@ -460,6 +462,7 @@ async def test_media_robots_sitemap_security_and_frontend_budgets() -> None:
     assert len(css.content) < 40_000
     assert len(javascript.content) < 16_000
     assert len(home.content) < 90_000
+    assert b"letter-spacing: -" not in css.content
     assert b"@media (prefers-reduced-motion: reduce)" in css.content
     assert b":focus-visible" in css.content
     assert b"localStorage" in javascript.content

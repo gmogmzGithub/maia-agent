@@ -627,6 +627,62 @@ class RecordingResponder:
         return WebsiteReply(self.reply, turn.hermes_session_id or "hermes-web-1")
 
 
+async def test_maia_may_point_to_whatsapp_but_not_ask_for_contact_details(
+    database: Database,
+) -> None:
+    """The site prompt tells Maia to hand off to WhatsApp, so saying so must survive.
+
+    The reply guard used to match the bare word, which discarded exactly the
+    answers a Website Conversation exists to produce.
+    """
+    async with database.session_scope() as session:
+        admin = await actor_for(session, ADMIN_LOGIN)
+        published = await publish_listing(session, admin, "maia")
+        actor = await product_actor(session)
+
+        handoff_reply = (
+            "Con gusto. Para agendar una visita, continúa por el WhatsApp oficial."
+        )
+        allowed = await WebsiteConversation(
+            session, actor, RecordingResponder(handoff_reply)
+        ).handle(
+            WebsiteCommand(
+                "¿Puedo agendar una visita?",
+                "website-handoff-invite",
+                listing_ids=(published.listing_id,),
+            ),
+            at=MOMENT,
+        )
+        assert allowed.reply == handoff_reply
+        assert allowed.requires_verified_channel is False
+
+        solicited = await WebsiteConversation(
+            session, actor, RecordingResponder("Dame tu teléfono y te contacto.")
+        ).handle(
+            WebsiteCommand(
+                "Quiero más información",
+                "website-model-solicits-pii",
+                listing_ids=(published.listing_id,),
+            ),
+            at=MOMENT,
+        )
+        assert solicited.requires_verified_channel is True
+        assert "Dame tu teléfono" not in solicited.reply
+
+        echoed = await WebsiteConversation(
+            session, actor, RecordingResponder("Marca al 33 1234 5678 directamente.")
+        ).handle(
+            WebsiteCommand(
+                "¿Tienen teléfono?",
+                "website-model-echoes-number",
+                listing_ids=(published.listing_id,),
+            ),
+            at=MOMENT,
+        )
+        assert echoed.requires_verified_channel is True
+        assert "33 1234 5678" not in echoed.reply
+
+
 async def test_website_conversation_rejects_pii_and_uses_only_eligible_context(
     database: Database,
 ) -> None:

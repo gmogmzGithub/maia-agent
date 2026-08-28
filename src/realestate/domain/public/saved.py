@@ -379,7 +379,4 @@ class SavedCollections:
 
     @staticmethod
     def _selection_token(collection: SavedCollection, command_key: str) -> str:
-        digest = hashlib.sha256(
-            f"{collection.access_token_hash}:{command_key}".encode("utf-8")
-        ).hexdigest()
-        return f"ss-{digest}"
+        return f"ss-{token_hash(f'{collection.access_token_hash}:{command_key}')}"

@@ -28,8 +28,17 @@ MAX_MESSAGE_CHARS = 2_000
 MAX_CONTEXT_LISTINGS = 12
 _PHONE = re.compile(r"(?<!\d)(?:\+?52\s*)?(?:\d[\s().-]*){10,13}(?!\d)")
 _EMAIL = re.compile(r"\b[^\s@]+@[^\s@]+\.[^\s@]+\b", re.IGNORECASE)
+# Maia must not ask for identity, but the site prompt explicitly instructs her to
+# send people to the official WhatsApp channel, and a Website Conversation exists
+# to "lead toward a verified WhatsApp handoff". Matching the bare nouns therefore
+# discarded exactly the answers the role is for. Only a request for a contact
+# detail is refused; naming the channel is the wanted behaviour.
 _MODEL_PII_REQUEST = re.compile(
-    r"\b(?:tel[eé]fono|celular|correo|e-?mail|whatsapp)\b", re.IGNORECASE
+    r"\b(?:d[ae]me|comp[aá]rte(?:me|nos)?|env[ií]a(?:me|nos)?|escr[ií]be(?:me|nos)?|"
+    r"proporci[oó]na(?:me|nos)?|d[ée]ja(?:me|nos)?|nec[ei]sito|necesitamos|"
+    r"cu[aá]l es|reg[ií]stra)\b[^.?!\n]{0,40}?"
+    r"\b(?:tel[eé]fono|celular|correo|e-?mail|n[uú]mero de contacto)\b",
+    re.IGNORECASE,
 )
 _PRIVACY_REPLY = (
     "Para proteger tus datos, no escribas aquí tu teléfono ni correo. "
@@ -151,7 +160,11 @@ class WebsiteConversation:
         )
         safe_reply = reply.text.strip()
         requires_verified = False
-        if not safe_reply or _MODEL_PII_REQUEST.search(safe_reply):
+        if (
+            not safe_reply
+            or _contains_pii(safe_reply)
+            or _MODEL_PII_REQUEST.search(safe_reply)
+        ):
             safe_reply = _PRIVACY_REPLY
             requires_verified = True
         expires = at + CONTENT_LIFETIME

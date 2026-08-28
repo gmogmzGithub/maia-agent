@@ -115,6 +115,23 @@ def document(
 
 
 def home(listings: list[dict[str, Any]]) -> str:
+    featured = listings[0] if listings else None
+    featured_cover = (
+        next(
+            (item for item in featured.get("media", []) if item.get("is_cover")),
+            None,
+        )
+        if featured
+        else None
+    )
+    featured_visual = (
+        f"""<figure class="hero-photo">
+    {responsive_image(featured_cover, featured.get("title"), loading="eager", priority=True)}
+    <figcaption><span>{escape(featured.get("public_location") or "Área Metropolitana de Guadalajara")}</span>{escape(featured.get("title"))}</figcaption>
+  </figure>"""
+        if featured_cover and featured
+        else '<div class="hero-photo hero-photo-empty" aria-hidden="true"><span>L</span></div>'
+    )
     cards = cards_grid(listings, surface="Homepage")
     inventory = (
         f"<div class=\"listing-grid\">{cards}</div>"
@@ -126,16 +143,19 @@ def home(listings: list[dict[str, Any]]) -> str:
     )
     return f"""
 <section class="hero">
-  <p class="eyebrow">Larevia · Guadalajara</p>
-  <h1>Acompañamiento inmobiliario<br>que sí continúa.</h1>
-  <p class="hero-copy">Explora inventario autorizado o cuéntale a Maia qué estás buscando.</p>
-  <div class="hero-actions">
-    <a class="button button-primary" href="/maia">Cuéntale a Maia qué estás buscando</a>
-    <a class="button button-secondary" href="/propiedades">Explorar propiedades</a>
+  <div class="hero-copy-block">
+    <p class="eyebrow">Larevia · Guadalajara</p>
+    <h1>Acompañamiento inmobiliario<br>que sí continúa.</h1>
+    <p class="hero-copy">Explora inventario autorizado o cuéntale a Maia qué estás buscando.</p>
+    <div class="hero-actions">
+      <a class="button button-primary" href="/maia">Cuéntale a Maia qué estás buscando</a>
+      <a class="button button-secondary" href="/propiedades">Explorar propiedades</a>
+    </div>
+    <div class="service-route" aria-label="Zona inicial de servicio">
+      <span>Guadalajara</span><span>Zapopan</span><span>Tlaquepaque</span>
+    </div>
   </div>
-  <div class="service-route" aria-label="Zona inicial de servicio">
-    <span>Guadalajara</span><span>Zapopan</span><span>Tlaquepaque</span>
-  </div>
+  {featured_visual}
 </section>
 <section class="section-shell promise-grid" aria-labelledby="como-acompanamos">
   <div><p class="eyebrow">Una ruta clara</p><h2 id="como-acompanamos">Busca, conversa y solicita una visita</h2></div>

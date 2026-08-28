@@ -12,12 +12,13 @@ import hashlib
 import json
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Protocol
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from realestate.domain.clock import utc_now
 from realestate.db.models import (
     ApprovedMessageTemplate,
     ConsentCategory,
@@ -119,7 +120,7 @@ class TemplateRegistry:
         at: datetime | None = None,
     ) -> TemplateSyncResult:
         actor.require_administrator()
-        moment = at or datetime.now(tz=UTC)
+        moment = at or utc_now()
         if not source.configured:
             raise TemplateSourceUnavailable(
                 "Faltan META_ACCESS_TOKEN o META_WABA_ID; no se verificó ninguna plantilla."

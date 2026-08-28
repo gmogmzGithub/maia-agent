@@ -905,8 +905,8 @@ Implemented locally:
 - allowlisted public funnel events without free text, keystrokes, session replay,
   advertising identifiers, or behavioral profiles;
 - automated public-site domain, boundary, SSR, migration, recovery, accessibility,
-  security-header, and frontend-budget checks, plus desktop and narrow-mobile
-  browser acceptance.
+  security-header, and frontend-budget checks. Desktop and narrow-mobile browser
+  acceptance remains manual: no browser automation exists in this repository.
 - a stable external-inventory module, read-only EasyBroker HTTP adapter, strict
   Guadalajara/Zapopan/Tlaquepaque filter, lossless candidate Listing/Offer
   mapping, page/cursor translation, bounded retry/rate-limit handling, and

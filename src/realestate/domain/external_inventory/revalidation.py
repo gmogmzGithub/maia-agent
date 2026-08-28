@@ -23,10 +23,10 @@ from realestate.domain.audit import record_audit
 from realestate.domain.commercial.actors import Actor, NotFound
 from realestate.domain.external_inventory.inventory import ExternalInventory
 from realestate.domain.external_inventory.ports import InventorySourceError
+from realestate.domain.service_area import SERVICE_AREA
 from realestate.domain.external_inventory.types import (
     IntendedAction,
     RevalidationDecision,
-    SERVICE_AREA,
 )
 
 

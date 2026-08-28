@@ -15,9 +15,9 @@ from realestate.db.models import ListingOffer, OfferAvailability
 from realestate.domain.catalog.eligibility import EligibilityPurpose
 from realestate.domain.catalog.projection import AuthorizedListing, CatalogProjection
 from realestate.domain.commercial.actors import Actor
+from realestate.domain.service_area import SERVICE_AREA
 
 ALLOWED_OPERATIONS = frozenset({"Sale", "Rental", "Presale"})
-ALLOWED_ZONES = frozenset({"Guadalajara", "Zapopan", "Tlaquepaque"})
 ALLOWED_SORTS = frozenset({"relevance", "recent", "price_asc", "price_desc"})
 
 
@@ -38,7 +38,7 @@ class SearchQuery:
         property_type = (self.property_type or "").strip() or None
         if operation is not None and operation not in ALLOWED_OPERATIONS:
             raise ValueError("La operación no es válida.")
-        if zone is not None and zone not in ALLOWED_ZONES:
+        if zone is not None and zone not in SERVICE_AREA:
             raise ValueError("La zona está fuera del área de servicio.")
         if self.sort not in ALLOWED_SORTS:
             raise ValueError("El orden no es válido.")

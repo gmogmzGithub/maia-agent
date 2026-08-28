@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from realestate.domain.clock import utc_now
 from realestate.db.engine import Database
 from realestate.db.models import (
     CampaignAudienceMember,
@@ -21,6 +22,10 @@ from realestate.db.models import (
     PropertyNeed,
     ReactivationCandidate,
     ReactivationCandidateStatus,
+)
+from realestate.domain.engagement.frequency import (
+    FREQUENCY_CAP_REACHED,
+    frequency_cap_reached,
 )
 from realestate.domain.outbound import (
     Denied,
@@ -58,7 +63,7 @@ class EngagementWorker:
     async def tick(self, *, now: datetime | None = None) -> int:
         if not self._activation_approved:
             return 0
-        moment = now or datetime.now(tz=UTC)
+        moment = now or utc_now()
         async with self._database.session_scope() as session:
             candidate = await self._candidate(session, moment)
             campaign = await self._campaign(session, moment)
@@ -161,18 +166,16 @@ class EngagementWorker:
             campaign.updated_at = moment
             return 0
 
-        touches = await session.scalar(
-            select(func.count(MarketingTouch.id))
-            .where(MarketingTouch.organization_id == campaign.organization_id)
-            .where(MarketingTouch.contact_id == member.contact_id)
-            .where(
-                MarketingTouch.recorded_at
-                >= moment - timedelta(days=campaign.frequency_window_days)
-            )
-        )
-        if (touches or 0) >= campaign.frequency_cap:
+        if await frequency_cap_reached(
+            session,
+            organization_id=campaign.organization_id,
+            contact_id=member.contact_id,
+            at=moment,
+            window_days=campaign.frequency_window_days,
+            cap=campaign.frequency_cap,
+        ):
             member.status = CampaignAudienceStatus.DENIED.value
-            member.reasons = ["FrequencyCapReached"]
+            member.reasons = [FREQUENCY_CAP_REACHED]
             member.resolved_at = moment
             await session.flush()
             return 1

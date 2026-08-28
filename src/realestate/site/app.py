@@ -10,6 +10,7 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlencode
 
@@ -136,7 +137,7 @@ def create_site_app(
     )
     site.state.settings = configuration
     site.state.gateway = product
-    assets = __file__.replace("app.py", "assets")
+    assets = Path(__file__).parent / "assets"
     site.mount("/assets", StaticFiles(directory=assets), name="public-assets")
 
     @site.get("/", response_class=HTMLResponse)
@@ -342,19 +343,22 @@ def create_site_app(
         if result.status_code != 200:
             return Response(status_code=404, headers={"X-Robots-Tag": "noindex"})
         width = min((480, 960, 1440), key=lambda candidate: abs(candidate - w))
+        etag = f'"{result.headers.get("etag", str(media_id)).strip(chr(34))}-{width}"'
+        headers = {
+            "Cache-Control": "public, no-cache",
+            "ETag": etag,
+            "X-Content-Type-Options": "nosniff",
+        }
+        # The rendition is decided by the upstream ETag and the width alone, so a
+        # revalidation can be answered before Pillow runs. Without this every
+        # conditional request paid a full LANCZOS resize and WEBP encode to
+        # produce bytes the browser already had.
+        if request.headers.get("if-none-match") == etag:
+            return Response(status_code=304, headers=headers)
         content, content_type = await asyncio.to_thread(
             _responsive_image, result.content, result.content_type, width
         )
-        etag = result.headers.get("etag", str(media_id)).strip('"')
-        return Response(
-            content,
-            media_type=content_type,
-            headers={
-                "Cache-Control": "public, no-cache",
-                "ETag": f'"{etag}-{width}"',
-                "X-Content-Type-Options": "nosniff",
-            },
-        )
+        return Response(content, media_type=content_type, headers=headers)
 
     @site.get("/guardadas", response_class=HTMLResponse)
     async def saved(request: Request) -> HTMLResponse:

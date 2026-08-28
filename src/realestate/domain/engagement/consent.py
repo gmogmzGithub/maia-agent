@@ -17,6 +17,34 @@ DEVELOPMENT_SCOPE = "DevelopmentAnnouncements"
 BROAD_REAL_ESTATE_SCOPE = "RealEstateMarketing"
 
 
+
+def consent_expired(record: ConsentRecord, at: datetime) -> bool:
+    """Whether a grant has lapsed by ``at``."""
+    return record.expires_at is not None and record.expires_at <= at
+
+
+def consent_evidence_complete(record: ConsentRecord) -> bool:
+    """Whether the record names who collected the consent, under what notice.
+
+    A grant without a business name, a scope, a notice version and a locator for
+    the evidence is not something the operation could show a regulator, so it is
+    not something Product will message on.
+    """
+    return all(
+        (
+            (record.business_name or "").strip(),
+            (record.notice_version or "").strip(),
+            (record.evidence_locator or "").strip(),
+            (record.scope or "").strip(),
+        )
+    )
+
+
+def consent_covers_scope(record: ConsentRecord, scope: str) -> bool:
+    """Whether the recorded scope authorises this particular use."""
+    return record.scope in {scope, BROAD_REAL_ESTATE_SCOPE}
+
+
 @dataclass(frozen=True)
 class ConsentDecision:
     granted: bool
@@ -50,18 +78,11 @@ class MarketingConsent:
         )
         if row is None or row.state != ConsentState.GRANTED.value:
             return ConsentDecision(False, "MarketingConsentMissing")
-        if row.expires_at is not None and row.expires_at <= at:
+        if consent_expired(row, at):
             return ConsentDecision(False, "MarketingConsentExpired", row.id)
-        if not all(
-            (
-                (row.business_name or "").strip(),
-                (row.notice_version or "").strip(),
-                (row.evidence_locator or "").strip(),
-                (row.scope or "").strip(),
-            )
-        ):
+        if not consent_evidence_complete(row):
             return ConsentDecision(False, "MarketingConsentEvidenceIncomplete", row.id)
-        if row.scope not in {scope, BROAD_REAL_ESTATE_SCOPE}:
+        if not consent_covers_scope(row, scope):
             return ConsentDecision(False, "MarketingConsentScopeMismatch", row.id)
         return ConsentDecision(True, "Granted", row.id)
 

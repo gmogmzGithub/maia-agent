@@ -8,11 +8,21 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from realestate.api.operator import require_administrator, shell, tag
-from realestate.api.ui import empty, escape, flash, local, table
-from realestate.db.models import ExternalInventoryScope, ListingAvailability
+from realestate.api.operator import (
+    redirect_back,
+    require_administrator,
+    shell,
+    tag,
+)
+from realestate.api.ui import errors_box, escape, flash, local, table
+from realestate.db.models import (
+    ExternalCandidateState,
+    ExternalInventoryScope,
+    InventorySourceStatus,
+    ListingAvailability,
+)
 from realestate.domain.clock import utc_now
-from realestate.domain.commercial.actors import Actor, CommercialError
+from realestate.domain.commercial.actors import Actor, CommercialError, NotFound
 from realestate.domain.external_inventory.health import InventorySourceHealth
 from realestate.domain.external_inventory.inventory import ExternalInventory
 from realestate.domain.external_inventory.types import (
@@ -22,6 +32,68 @@ from realestate.domain.external_inventory.types import (
 
 router = APIRouter(prefix="/crm/inventario-externo", tags=["inventario-externo"])
 ACTIVE = "/crm/inventario-externo"
+
+
+# Every operator-visible value is Mexican Spanish: the provider speaks English
+# enum values and snake_case fault codes, and an Administrator reading this page
+# must never be shown either. Unknown codes fall back to the raw string so a new
+# provider fault stays visible instead of rendering blank.
+STATUS_LABELS = {
+    InventorySourceStatus.DISABLED.value: "Desactivada",
+    InventorySourceStatus.NEVER_SYNCED.value: "Sin sincronizar",
+    InventorySourceStatus.HEALTHY.value: "Sin incidencias",
+    InventorySourceStatus.PARTIAL.value: "Parcial",
+    InventorySourceStatus.RATE_LIMITED.value: "Límite de consultas alcanzado",
+    InventorySourceStatus.FAILED.value: "Con fallas",
+}
+SCOPE_LABELS = {
+    ExternalInventoryScope.ORGANIZATION.value: "Propia de la organización",
+    ExternalInventoryScope.COLLABORATOR.value: "De colaborador",
+}
+AUTHORITY_LABELS = {
+    ExternalCandidateState.AUTHORIZED.value: "Autorizada",
+    ExternalCandidateState.PENDING.value: "Autoridad pendiente",
+    ExternalCandidateState.DENIED.value: "Autoridad negada",
+}
+AVAILABILITY_LABELS = {
+    ListingAvailability.AVAILABLE.value: "Disponible",
+    ListingAvailability.RESERVED.value: "Reservada",
+    ListingAvailability.SOLD.value: "Vendida",
+    ListingAvailability.RENTED.value: "Rentada",
+    ListingAvailability.TEMPORARILY_UNAVAILABLE.value: "No disponible temporalmente",
+    ListingAvailability.UNKNOWN.value: "Por confirmar",
+}
+ERROR_LABELS = {
+    "retention_not_confirmed": "Falta confirmar el permiso de retención",
+    "credential_missing": "Falta la credencial",
+    "mls_not_confirmed": "Falta confirmar el acceso API MLS",
+    "invalid_credential": "Credencial rechazada",
+    "plan_or_permission_denied": "El plan o los permisos no autorizan la consulta",
+    "rate_limited": "Límite de consultas alcanzado",
+    "provider_error": "Error del proveedor",
+    "invalid_response": "Respuesta inválida del proveedor",
+    "invalid_cursor": "Cursor de paginación inválido",
+    "not_found": "La publicación ya no existe en la fuente",
+    "access_denied": "La cuenta no puede leer esta fuente",
+    "transport": "No se pudo contactar al proveedor",
+    "partial_records": "Algunos registros no se pudieron leer",
+}
+ISSUE_LABELS = {
+    "missing_title": "sin título",
+    "missing_attribution": "sin atribución",
+    "missing_operations": "sin operación",
+    "missing_or_invalid_updated_at": "sin fecha de actualización válida",
+    "missing_or_unknown_municipality": "municipio ausente o fuera de zona",
+    "unknown_availability": "disponibilidad desconocida",
+}
+
+
+def _label(mapping: dict[str, str], value: str) -> str:
+    return mapping.get(value, value)
+
+
+def _issues(codes: tuple[str, ...]) -> str:
+    return ", ".join(_label(ISSUE_LABELS, code) for code in codes)
 
 
 def _inventory(
@@ -36,15 +108,16 @@ def _page(
     rows: tuple[AdministrationCandidateView, ...],
     *,
     message: str | None = None,
+    error: str | None = None,
 ) -> HTMLResponse:
     health_content = (
         '<section class="card"><h2>Salud de EasyBroker</h2><div class="grid">'
-        f"<p><strong>Estado</strong><br>{tag(health.status, 'ok' if health.status == 'Healthy' else 'warn')}</p>"
+        f"<p><strong>Estado</strong><br>{tag(_label(STATUS_LABELS, health.status), 'ok' if health.status == InventorySourceStatus.HEALTHY.value else 'warn')}</p>"
         f"<p><strong>Credencial</strong><br>{escape('Configurada' if health.credential_configured else 'No configurada')}</p>"
         f"<p><strong>Acceso API MLS</strong><br>{escape('Confirmado' if health.mls_access_confirmed else 'No confirmado')}</p>"
         f"<p><strong>Permiso de retención</strong><br>{escape('Confirmado' if health.retention_permission_confirmed else 'No confirmado')}</p>"
         f"<p><strong>Último éxito</strong><br>{escape(local(health.last_success_at))}</p>"
-        f"<p><strong>Último error</strong><br>{escape(health.last_error_code or '—')}</p>"
+        f"<p><strong>Último error</strong><br>{escape(_label(ERROR_LABELS, health.last_error_code) if health.last_error_code else '—')}</p>"
         f"<p><strong>Conteos</strong><br>{health.fetched_count} leídos · {health.accepted_count} en zona · {health.rejected_count} rechazados</p>"
         "</div>"
         '<form method="post" action="/crm/inventario-externo/sincronizar">'
@@ -56,11 +129,11 @@ def _page(
     body_rows = "".join(
         "<tr>"
         f"<td><strong>{escape(row.title or 'Sin título')}</strong><br><span class='muted'>{escape(row.source_listing_id)}</span></td>"
-        f"<td>{escape(row.municipality or 'Fuera o sin confirmar')}<br>{escape(row.source_scope)}</td>"
-        f"<td>{tag(row.authority_state)}<br>{escape(row.availability)}</td>"
+        f"<td>{escape(row.municipality or 'Fuera o sin confirmar')}<br>{escape(_label(SCOPE_LABELS, row.source_scope))}</td>"
+        f"<td>{tag(_label(AUTHORITY_LABELS, row.authority_state))}<br>{escape(_label(AVAILABILITY_LABELS, row.availability))}</td>"
         f"<td>{escape(row.attribution or 'Sin atribución')}<br>{escape('Comisión conocida' if row.commission_known else 'Comisión pendiente')}</td>"
         f"<td>{escape(local(row.observed_at))}<br><span class='muted'>Vence {escape(local(row.freshness_deadline))}</span></td>"
-        f"<td>{escape(', '.join(row.mapping_issues) or 'Sin incidencias de mapping')}<br>{escape(', '.join(row.changed_fields) or 'Sin cambios pendientes')}</td>"
+        f"<td>{escape(_issues(row.mapping_issues) or 'Sin incidencias de lectura')}<br>{escape(', '.join(row.changed_fields) or 'Sin cambios pendientes')}</td>"
         f"<td>{_controls(row)}</td>"
         "</tr>"
         for row in rows
@@ -71,14 +144,15 @@ def _page(
         body_rows,
         empty_message="Todavía no hay candidatos externos indexados.",
         empty_hint="Confirma primero la cuenta, el plan API MLS y los permisos operativos.",
-    ) if rows else empty(
-        "Todavía no hay candidatos externos indexados.",
-        "Confirma primero la cuenta, el plan API MLS y los permisos operativos.",
     )
     return shell(
         actor,
         "Inventario externo",
-        flash(message) + '<p class="lead">EasyBroker es una fuente secundaria de sólo lectura. Sus registros no crean ni sustituyen Listings autoritativos.</p>' + health_content + candidates,
+        flash(message)
+        + errors_box([error] if error else [])
+        + '<p class="lead">EasyBroker es una fuente secundaria de sólo lectura. Sus registros no crean ni sustituyen Listings autoritativos.</p>'
+        + health_content
+        + candidates,
         active=ACTIVE,
     )
 
@@ -113,7 +187,10 @@ def _controls(row: AdministrationCandidateView) -> str:
 
 @router.get("", response_class=HTMLResponse)
 async def external_inventory_page(
-    request: Request, actor: Actor = Depends(require_administrator)
+    request: Request,
+    actor: Actor = Depends(require_administrator),
+    guardado: str = "",
+    error: str = "",
 ) -> HTMLResponse:
     async with request.app.state.database.session_scope() as session:
         source = request.app.state.easybroker
@@ -125,7 +202,7 @@ async def external_inventory_page(
             retention_permission_confirmed=source.retention_permission_confirmed,
         ).read(source.source_name)
         rows = await _inventory(request, session, actor).list_for_administration()
-    return _page(actor, health, rows, message=request.query_params.get("mensaje"))
+    return _page(actor, health, rows, message=guardado or None, error=error or None)
 
 
 @router.post("/sincronizar")
@@ -136,9 +213,12 @@ async def synchronize_external_inventory(
         result = await _inventory(request, session, actor).synchronize(
             ExternalInventoryScope.COLLABORATOR, at=utc_now()
         )
-    return RedirectResponse(
-        f"{ACTIVE}?mensaje={result.status}%3A+{result.accepted}+en+zona%2C+{result.rejected}+rechazados",
-        status_code=303,
+    return redirect_back(
+        ACTIVE,
+        saved=(
+            f"{_label(STATUS_LABELS, result.status)}: {result.accepted} en zona, "
+            f"{result.rejected} rechazados"
+        ),
     )
 
 
@@ -148,16 +228,18 @@ async def refresh_external_candidate(
     request: Request,
     actor: Actor = Depends(require_administrator),
 ) -> RedirectResponse:
-    async with request.app.state.database.session_scope() as session:
-        inventory = _inventory(request, session, actor)
-        rows = await inventory.list_for_administration()
-        row = next((candidate for candidate in rows if candidate.listing_id == listing_id), None)
-        if row is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
-        result = await inventory.refresh(row.source_listing_id, at=utc_now())
-    return RedirectResponse(
-        f"{ACTIVE}?mensaje=Actualizada%3A+{escape(', '.join(result.changed_fields) or 'sin cambios')}",
-        status_code=303,
+    try:
+        async with request.app.state.database.session_scope() as session:
+            result = await _inventory(request, session, actor).refresh_candidate(
+                listing_id, at=utc_now()
+            )
+    except NotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=exc.message
+        ) from exc
+    return redirect_back(
+        ACTIVE,
+        saved=f"Actualizada: {', '.join(result.changed_fields) or 'sin cambios'}",
     )
 
 
@@ -193,7 +275,7 @@ async def confirm_external_evidence(
             )
     except CommercialError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
-    return RedirectResponse(f"{ACTIVE}?mensaje=Evidencia+registrada", status_code=303)
+    return redirect_back(ACTIVE, saved="Evidencia registrada")
 
 
 @router.post("/limpiar")
@@ -202,6 +284,4 @@ async def cleanup_external_cache(
 ) -> RedirectResponse:
     async with request.app.state.database.session_scope() as session:
         count = await _inventory(request, session, actor).purge_due(at=utc_now())
-    return RedirectResponse(
-        f"{ACTIVE}?mensaje={count}+candidatos+retirados+limpiados", status_code=303
-    )
+    return redirect_back(ACTIVE, saved=f"{count} candidatos retirados limpiados")

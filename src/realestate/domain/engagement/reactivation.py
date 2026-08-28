@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from realestate.domain.clock import utc_now
 from realestate.db.models import (
     ConsentCategory,
-    MarketingTouch,
     Opportunity,
     OpportunityStage,
     PropertyNeed,
@@ -33,6 +33,12 @@ from realestate.domain.commercial.actors import (
 )
 from realestate.domain.commercial.needs import PropertyNeeds
 from realestate.domain.engagement.audience import latest_route
+from realestate.domain.engagement.frequency import (
+    FREQUENCY_CAP_REACHED,
+    REACTIVATION_CAP,
+    REACTIVATION_WINDOW_DAYS,
+    frequency_cap_reached,
+)
 from realestate.domain.engagement.consent import LISTING_MATCH_SCOPE, MarketingConsent
 from realestate.domain.engagement.matching import (
     MATCH_RULE_VERSION,
@@ -112,7 +118,7 @@ class Reactivation:
         self, listing_id: uuid.UUID, *, at: datetime | None = None
     ) -> tuple[ReactivationCandidateView, ...]:
         self._actor.require_administrator()
-        moment = at or datetime.now(tz=UTC)
+        moment = at or utc_now()
         listing = await CatalogProjection(
             self._session, self._actor
         ).get_authorized_listing(
@@ -179,7 +185,7 @@ class Reactivation:
         self, command: AuthorizeReactivation, *, at: datetime | None = None
     ) -> ReactivationCandidate:
         self._actor.require_administrator()
-        moment = at or datetime.now(tz=UTC)
+        moment = at or utc_now()
         row = await self._locked(command.candidate_id)
         if row.status != ReactivationCandidateStatus.PENDING.value:
             raise InvalidTransition("Sólo un candidato pendiente puede autorizarse.")
@@ -224,14 +230,15 @@ class Reactivation:
             denial = denial or "TemplateNotApproved"
         elif template.body_text.strip() != command.message_preview.strip():
             denial = denial or "TemplateContentMismatch"
-        touches = await self._session.scalar(
-            select(func.count(MarketingTouch.id))
-            .where(MarketingTouch.organization_id == self._actor.organization_id)
-            .where(MarketingTouch.contact_id == need.contact_id)
-            .where(MarketingTouch.recorded_at >= moment - timedelta(days=30))
-        )
-        if (touches or 0) >= 1:
-            denial = denial or "FrequencyCapReached"
+        if await frequency_cap_reached(
+            self._session,
+            organization_id=self._actor.organization_id,
+            contact_id=need.contact_id,
+            at=moment,
+            window_days=REACTIVATION_WINDOW_DAYS,
+            cap=REACTIVATION_CAP,
+        ):
+            denial = denial or FREQUENCY_CAP_REACHED
 
         row.reviewed_by = self._actor.member_id
         row.reviewed_at = moment
@@ -285,7 +292,7 @@ class Reactivation:
         at: datetime | None,
     ) -> ReactivationCandidate:
         self._actor.require_administrator()
-        moment = at or datetime.now(tz=UTC)
+        moment = at or utc_now()
         row = await self._locked(candidate_id)
         allowed = {
             ReactivationCandidateStatus.REJECTED: {

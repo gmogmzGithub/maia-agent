@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta
-from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import delete, select
@@ -35,6 +34,7 @@ from realestate.domain.external_inventory.ports import (
     SourceAccessDenied,
     SourceNotFound,
 )
+from realestate.domain.service_area import SERVICE_AREA
 from realestate.domain.external_inventory.types import (
     AdministrationCandidateView,
     CandidateOfferView,
@@ -42,7 +42,6 @@ from realestate.domain.external_inventory.types import (
     InventorySearchCriteria,
     MatchQuality,
     RefreshResult,
-    SERVICE_AREA,
     SyncResult,
 )
 from realestate.domain.clock import utc_now
@@ -321,6 +320,28 @@ class ExternalInventory:
             error_code=health.last_error_code,
         )
 
+    async def refresh_candidate(
+        self, listing_id: uuid.UUID, *, at: datetime
+    ) -> RefreshResult:
+        """Refresh one indexed candidate addressed by the id the CRM shows.
+
+        The operator surface holds a listing id, not a source id. Resolving that
+        here keeps the translation one scoped query instead of making callers
+        page the whole administration projection to read a single field.
+        """
+        self._actor.require_administrator()
+        source_listing_id = await self._session.scalar(
+            select(ExternalListingCandidate.source_listing_id).where(
+                ExternalListingCandidate.id == listing_id,
+                ExternalListingCandidate.organization_id
+                == self._actor.organization_id,
+                ExternalListingCandidate.source == self._source.source_name,
+            )
+        )
+        if source_listing_id is None:
+            raise NotFound("La ficha externa no existe.")
+        return await self.refresh(source_listing_id, at=at)
+
     async def refresh(
         self, source_listing_id: str, *, at: datetime
     ) -> RefreshResult:
@@ -563,6 +584,7 @@ class ExternalInventory:
             )
         old_offer_signature: tuple[tuple[object, ...], ...] = ()
         old_values: dict[str, object] = {}
+        created = False
         if row is not None:
             old_values = _candidate_signature(row)
             old_offers = list(
@@ -574,61 +596,28 @@ class ExternalInventory:
             )
             old_offer_signature = _offer_signature(old_offers)
         else:
+            # Only the fields an update deliberately never touches: identity, the
+            # opening review posture, and the provenance values below that a
+            # later sync may only fill in, never clear.
+            created = True
             row = ExternalListingCandidate(
                 organization_id=self._actor.organization_id,
                 source=SOURCE,
                 source_listing_id=mapped.source_listing_id,
-                source_scope=mapped.source_scope,
-                source_status=mapped.source_status,
-                source_updated_at=mapped.source_updated_at,
-                observed_at=mapped.observed_at,
-                freshness_deadline=mapped.freshness_deadline,
-                payload_checksum=mapped.payload_checksum,
-                raw_payload=mapped.raw_payload,
-                provenance=mapped.provenance,
-                title=mapped.title,
-                description=mapped.description,
-                public_location=mapped.public_location,
-                municipality=mapped.municipality,
-                location_precision=mapped.location_precision,
-                property_type=mapped.property_type,
-                facts=mapped.facts,
-                availability=mapped.availability,
                 attribution=mapped.attribution,
-                source_agency=mapped.source_agency,
-                source_agent=mapped.source_agent,
-                source_url=mapped.source_url,
                 authority_state=initial_authority(mapped),
                 collaboration_authorized=mapped.source_collaboration_authorized,
                 commission_known=mapped.source_commission_known,
                 commission=mapped.source_commission,
                 commercial_review_state=FactsReviewState.PENDING.value,
-                mapping_issues=list(mapped.mapping_issues),
                 changed_fields=[],
             )
+
+        _apply_mapped(row, mapped)
+        if created:
             self._session.add(row)
             await self._session.flush()
 
-        row.source_scope = mapped.source_scope
-        row.source_status = mapped.source_status
-        row.source_updated_at = mapped.source_updated_at
-        row.observed_at = mapped.observed_at
-        row.freshness_deadline = mapped.freshness_deadline
-        row.payload_checksum = mapped.payload_checksum
-        row.raw_payload = mapped.raw_payload
-        row.provenance = mapped.provenance
-        row.title = mapped.title
-        row.description = mapped.description
-        row.public_location = mapped.public_location
-        row.municipality = mapped.municipality
-        row.location_precision = mapped.location_precision
-        row.property_type = mapped.property_type
-        row.facts = mapped.facts
-        row.availability = mapped.availability
-        row.source_agency = mapped.source_agency
-        row.source_agent = mapped.source_agent
-        row.source_url = mapped.source_url
-        row.mapping_issues = list(mapped.mapping_issues)
         if mapped.attribution is not None:
             row.attribution = mapped.attribution
         if mapped.source_collaboration_authorized is not None:
@@ -721,6 +710,34 @@ def _source_id(payload: dict[str, Any]) -> str | None:
     return None
 
 
+def _apply_mapped(row: ExternalListingCandidate, mapped: MappedCandidate) -> None:
+    """Copy every field a sync always overwrites from the mapped payload.
+
+    Shared by the insert and the update so adding a column teaches both; the two
+    hand-written lists this replaced had to be diffed to see they agreed.
+    """
+    row.source_scope = mapped.source_scope
+    row.source_status = mapped.source_status
+    row.source_updated_at = mapped.source_updated_at
+    row.observed_at = mapped.observed_at
+    row.freshness_deadline = mapped.freshness_deadline
+    row.payload_checksum = mapped.payload_checksum
+    row.raw_payload = mapped.raw_payload
+    row.provenance = mapped.provenance
+    row.title = mapped.title
+    row.description = mapped.description
+    row.public_location = mapped.public_location
+    row.municipality = mapped.municipality
+    row.location_precision = mapped.location_precision
+    row.property_type = mapped.property_type
+    row.facts = mapped.facts
+    row.availability = mapped.availability
+    row.source_agency = mapped.source_agency
+    row.source_agent = mapped.source_agent
+    row.source_url = mapped.source_url
+    row.mapping_issues = list(mapped.mapping_issues)
+
+
 def _candidate_signature(row: ExternalListingCandidate) -> dict[str, object]:
     return {
         "title": row.title,
@@ -785,7 +802,7 @@ def _matches(
         known_prices = [offer.price_amount for offer in relevant if offer.price_amount is not None]
         if not known_prices:
             approximate = True
-        elif not any(_price_in_range(price, criteria) for price in known_prices):
+        elif not any(criteria.price_in_range(price) for price in known_prices):
             return None
     if criteria.min_bedrooms is not None:
         bedrooms = row.facts.get("bedrooms")
@@ -794,12 +811,6 @@ def _matches(
         elif bedrooms < criteria.min_bedrooms:
             return None
     return MatchQuality.APPROXIMATE if approximate else MatchQuality.EXACT
-
-
-def _price_in_range(price: Decimal, criteria: InventorySearchCriteria) -> bool:
-    if criteria.min_price is not None and price < criteria.min_price:
-        return False
-    return criteria.max_price is None or price <= criteria.max_price
 
 
 def _view(

@@ -15,13 +15,14 @@ from __future__ import annotations
 import hmac
 import logging
 from decimal import Decimal
-from datetime import UTC, date, datetime, time
+from datetime import date, datetime, time
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from realestate.domain.clock import utc_now
 from realestate.config import get_settings
 from realestate.db.engine import Database
 from realestate.db.models import (
@@ -46,6 +47,7 @@ from realestate.domain.commercial.handoff import (
 )
 from realestate.domain.appointments import AppointmentService
 from realestate.domain.properties import PropertyService
+from realestate.domain.service_area import service_area_pattern
 from realestate.domain.external_inventory.inventory import ExternalInventory
 from realestate.domain.external_inventory.revalidation import ListingRevalidation
 from realestate.domain.external_inventory.search import AuthorizedInventorySearch
@@ -306,7 +308,7 @@ class InventorySearchRequest(BaseModel):
 
     model_config = {"extra": "forbid"}
 
-    municipality: str = Field(pattern="^(Guadalajara|Zapopan|Tlaquepaque)$")
+    municipality: str = Field(pattern=service_area_pattern())
     operation: str | None = Field(default=None, pattern="^(Sale|Rental|Presale)$")
     property_type: str | None = Field(default=None, min_length=1, max_length=80)
     min_price: Decimal | None = Field(default=None, gt=0)
@@ -336,7 +338,7 @@ async def search_inventory(
                 max_price=payload.max_price,
                 min_bedrooms=payload.min_bedrooms,
             ),
-            at=datetime.now(tz=UTC),
+            at=utc_now(),
         )
         return {
             "result": "found" if rows else "not_found",
@@ -401,7 +403,7 @@ async def revalidate_external_listing(
         if candidate_id is None:
             return {"result": "not_found"}
         decision = await ListingRevalidation(session, actor, external).evaluate(
-            candidate_id, payload.intended_action, datetime.now(tz=UTC)
+            candidate_id, payload.intended_action, utc_now()
         )
         return {
             "result": decision.outcome.lower(),

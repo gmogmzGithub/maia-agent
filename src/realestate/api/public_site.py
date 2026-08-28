@@ -4,15 +4,25 @@ from __future__ import annotations
 
 import hmac
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
-from fastapi import APIRouter, Header, HTTPException, Query, Request, Response, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from realestate.domain.clock import utc_now
 from realestate.db.models import ChannelHandoffPurpose, PublicAnalyticsEventName
 from realestate.domain.catalog.storage import MediaStorageError
 from realestate.domain.commercial.actors import Actor, CommercialError, NotFound
@@ -32,7 +42,25 @@ from realestate.domain.public.website_conversation import (
     WebsiteConversation,
 )
 
-router = APIRouter(prefix="/internal/public-site", tags=["public-site-internal"])
+def require_site_token(request: Request) -> None:
+    """Every route on this router is site-only, so the guard hangs off the router.
+
+    Declared once rather than called per handler: this surface exposes the whole
+    public catalog, saved collections, conversations and handoff minting, and a
+    twelfth route added without the call would be unauthenticated by omission.
+    """
+    expected = request.app.state.settings.site_internal_token
+    supplied = request.headers.get("Authorization", "")
+    wanted = f"Bearer {expected}" if expected else ""
+    if not wanted or not hmac.compare_digest(supplied, wanted):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+
+
+router = APIRouter(
+    prefix="/internal/public-site",
+    tags=["public-site-internal"],
+    dependencies=[Depends(require_site_token)],
+)
 
 
 class SavedBody(BaseModel):
@@ -62,14 +90,6 @@ class EventBody(BaseModel):
     listing_id: uuid.UUID | None = None
     properties: dict[str, str | int | bool] = Field(default_factory=dict)
     occurred_at: datetime
-
-
-def _authorize(request: Request) -> None:
-    expected = request.app.state.settings.site_internal_token
-    supplied = request.headers.get("Authorization", "")
-    wanted = f"Bearer {expected}" if expected else ""
-    if not wanted or not hmac.compare_digest(supplied, wanted):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
 
 
 async def _actor(session: AsyncSession) -> Actor:
@@ -102,7 +122,6 @@ async def catalog(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=12, ge=1, le=24),
 ) -> JSONResponse:
-    _authorize(request)
     try:
         async with request.app.state.database.session_scope() as session:
             result = await PublicCatalog(session, await _actor(session)).search(
@@ -116,7 +135,7 @@ async def catalog(
                     page=page,
                     page_size=page_size,
                 ),
-                at=datetime.now(tz=UTC),
+                at=utc_now(),
             )
             return _json(result)
     except ValueError as exc:
@@ -125,11 +144,10 @@ async def catalog(
 
 @router.get("/listings/{slug}")
 async def listing(request: Request, slug: str) -> JSONResponse:
-    _authorize(request)
     try:
         async with request.app.state.database.session_scope() as session:
             result = await PublicListing(session, await _actor(session)).read(
-                slug, at=datetime.now(tz=UTC)
+                slug, at=utc_now()
             )
             return _json(result, status_code=result.status_code)
     except NotFound as exc:
@@ -138,11 +156,10 @@ async def listing(request: Request, slug: str) -> JSONResponse:
 
 @router.get("/media/{media_id}")
 async def media(request: Request, media_id: uuid.UUID) -> Response:
-    _authorize(request)
     try:
         async with request.app.state.database.session_scope() as session:
             result = await PublicListing(session, await _actor(session)).media(
-                media_id, at=datetime.now(tz=UTC)
+                media_id, at=utc_now()
             )
         content = await request.app.state.media_storage.read(result.storage_key)
     except (NotFound, MediaStorageError) as exc:
@@ -163,10 +180,9 @@ async def saved(
     request: Request,
     token: str | None = Header(default=None, alias="X-Collection-Token"),
 ) -> JSONResponse:
-    _authorize(request)
     async with request.app.state.database.session_scope() as session:
         result = await SavedCollections(session, await _actor(session)).read(
-            token, at=datetime.now(tz=UTC)
+            token, at=utc_now()
         )
         return _json(result)
 
@@ -177,7 +193,6 @@ async def mutate_saved(
     body: SavedBody,
     token: str | None = Header(default=None, alias="X-Collection-Token"),
 ) -> JSONResponse:
-    _authorize(request)
     try:
         async with request.app.state.database.session_scope() as session:
             result = await SavedCollections(session, await _actor(session)).record(
@@ -187,7 +202,7 @@ async def mutate_saved(
                     collection_token=token,
                     listing_id=body.listing_id,
                 ),
-                at=datetime.now(tz=UTC),
+                at=utc_now(),
             )
             await session.commit()
             return _json(result)
@@ -197,11 +212,10 @@ async def mutate_saved(
 
 @router.get("/shared/{token}")
 async def shared(request: Request, token: str) -> JSONResponse:
-    _authorize(request)
     try:
         async with request.app.state.database.session_scope() as session:
             result = await SavedCollections(session, await _actor(session)).shared(
-                token, at=datetime.now(tz=UTC)
+                token, at=utc_now()
             )
             return _json(result)
     except NotFound as exc:
@@ -213,7 +227,6 @@ async def conversation(
     request: Request,
     token: str | None = Header(default=None, alias="X-Conversation-Token"),
 ) -> JSONResponse:
-    _authorize(request)
     async with request.app.state.database.session_scope() as session:
         module = WebsiteConversation(
             session,
@@ -224,7 +237,7 @@ async def conversation(
                 request.app.state.settings.sales_profile,
             ),
         )
-        conversation_id, messages = await module.read(token, at=datetime.now(tz=UTC))
+        conversation_id, messages = await module.read(token, at=utc_now())
         await session.commit()
         return _json({"conversation_id": conversation_id, "messages": messages})
 
@@ -235,7 +248,6 @@ async def converse(
     body: ConversationBody,
     token: str | None = Header(default=None, alias="X-Conversation-Token"),
 ) -> JSONResponse:
-    _authorize(request)
     try:
         async with request.app.state.database.session_scope() as session:
             result = await WebsiteConversation(
@@ -253,7 +265,7 @@ async def converse(
                     conversation_token=token,
                     listing_ids=body.listing_ids,
                 ),
-                at=datetime.now(tz=UTC),
+                at=utc_now(),
             )
             await session.commit()
             return _json(result)
@@ -263,11 +275,10 @@ async def converse(
 
 @router.post("/handoffs")
 async def handoff(request: Request, body: HandoffBody) -> JSONResponse:
-    _authorize(request)
     try:
         async with request.app.state.database.session_scope() as session:
             result = await ChannelHandoff(session, await _actor(session)).create(
-                CreateHandoff(**body.model_dump()), at=datetime.now(tz=UTC)
+                CreateHandoff(**body.model_dump()), at=utc_now()
             )
             await session.commit()
             return _json(result)
@@ -277,7 +288,6 @@ async def handoff(request: Request, body: HandoffBody) -> JSONResponse:
 
 @router.post("/events", status_code=202)
 async def event(request: Request, body: EventBody) -> JSONResponse:
-    _authorize(request)
     try:
         async with request.app.state.database.session_scope() as session:
             recorded = await PublicAnalytics(session, await _actor(session)).record(
@@ -291,11 +301,10 @@ async def event(request: Request, body: EventBody) -> JSONResponse:
 
 @router.get("/discovery/{listing_id}")
 async def discovery(request: Request, listing_id: uuid.UUID) -> JSONResponse:
-    _authorize(request)
     try:
         async with request.app.state.database.session_scope() as session:
             result = await DiscoveryPublication(session, await _actor(session)).project(
-                listing_id, at=datetime.now(tz=UTC)
+                listing_id, at=utc_now()
             )
             return _json(result, status_code=result.status_code)
     except NotFound as exc:

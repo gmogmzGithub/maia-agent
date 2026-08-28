@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from realestate.domain.clock import utc_now
 from realestate.db.models import (
     CampaignAudienceMember,
     ConsentCategory,
@@ -98,7 +99,7 @@ class Campaigns:
         self, command: PlanCampaign, *, at: datetime | None = None
     ) -> CampaignPlan:
         self._actor.require_administrator()
-        moment = at or datetime.now(tz=UTC)
+        moment = at or utc_now()
         development = await self._session.get(Development, command.development_id)
         if development is None:
             raise NotFound("No encontramos ese desarrollo.")
@@ -191,14 +192,14 @@ class Campaigns:
     ) -> tuple[AudienceMemberView, ...]:
         self._actor.require_administrator()
         return await Audience(self._session, self._actor).resolve(
-            campaign_id, at or datetime.now(tz=UTC), persist=False
+            campaign_id, at or utc_now(), persist=False
         )
 
     async def activate(
         self, command: ActivateCampaign, *, at: datetime | None = None
     ) -> CampaignPlan:
         self._actor.require_administrator()
-        moment = at or datetime.now(tz=UTC)
+        moment = at or utc_now()
         if not self._activation_approved:
             raise CampaignDenied(
                 "La activación real sigue Denied hasta aprobar los gates legales, "
@@ -269,7 +270,7 @@ class Campaigns:
         self, command: PauseCampaign, *, at: datetime | None = None
     ) -> DevelopmentCampaign:
         self._actor.require_administrator()
-        moment = at or datetime.now(tz=UTC)
+        moment = at or utc_now()
         row = await self._locked(command.campaign_id)
         if row.status != DevelopmentCampaignStatus.ACTIVE.value:
             raise InvalidTransition("Sólo una campaña activa puede pausarse.")
@@ -284,7 +285,7 @@ class Campaigns:
         self, command: CancelCampaign, *, at: datetime | None = None
     ) -> DevelopmentCampaign:
         self._actor.require_administrator()
-        moment = at or datetime.now(tz=UTC)
+        moment = at or utc_now()
         row = await self._locked(command.campaign_id)
         if row.status == DevelopmentCampaignStatus.CANCELLED.value:
             return row

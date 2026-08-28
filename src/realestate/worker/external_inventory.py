@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
 
+from realestate.domain.clock import utc_now
 from realestate.db.engine import Database
 from realestate.db.models import Organization
 from realestate.domain.commercial.actors import Actor
@@ -29,7 +30,7 @@ class ExternalInventoryCleanupWorker:
         self._last_run: datetime | None = None
 
     async def tick(self, *, now: datetime | None = None) -> int | None:
-        at = now or datetime.now(tz=UTC)
+        at = now or utc_now()
         if self._last_run is not None and at < self._last_run + self._interval:
             return None
         self._last_run = at
