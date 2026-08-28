@@ -97,6 +97,11 @@ routers, workers and templates above them hold none of those rules.
 | `ExternalInventory.search` / `.refresh` | index and read source candidates without creating authoritative Listings |
 | `ListingRevalidation.evaluate` | decide whether one fresh external candidate may be recommended, shared, or scheduled |
 | `InventorySourceHealth.read` | expose sanitized source health without credentials |
+| `InventoryMatching.propose` | explain whether authorized inventory matches confirmed demand |
+| `TemplateRegistry.synchronize` / `.approved` | observe provider truth without local template approval |
+| `Reactivation.discover` / `.authorize` | propose a reviewed Listing match without sending it |
+| `Campaigns.plan` / `.activate` / `.pause` / `.cancel` | control an explicit, bounded Development audience |
+| `Audience.resolve` | apply the same exclusions to dry-run and execution |
 
 Four separations are structural rather than conventional, each enforced by the
 schema:
@@ -125,6 +130,23 @@ background loop ticks once a second and these rules have 28- and 90-day horizons
 so without the guard the pass would scan roughly 86,400 times a day to discover
 there was nothing to do — the same reason the Broker notifier owns its own
 cadence.
+
+Stage 7 engagement is a Product workflow, not a Hermes campaign agent. Matching
+is a pure, versioned comparison of authorized Listing facts against confirmed
+Property Need criteria; it emits criterion-level explanations and refuses stale
+needs. An Administrator may review a Candidate or an explicit Development
+audience, but cannot create consent, approve a Meta template, override
+suppression, or write an Outbox row.
+
+Provider template observations are evidence with a 24-hour Product freshness
+window. Only an exact Approved Marketing name, language and static body is
+consumable. The engagement worker calls the existing outbound gate, which writes
+the decision and Outbox row in the same transaction as the Candidate/audience
+outcome. Immediately before Meta delivery, the gate rechecks consent scope,
+suppression, reply and provider status, and locks the Candidate or Campaign so an
+administrative pause/cancel establishes a causal no-new-delivery boundary.
+Real execution remains disabled by configuration until the legal, consent,
+provider and operational gates are explicitly accepted.
 
 ## Human Operation, Team and Visits
 

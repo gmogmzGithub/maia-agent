@@ -765,13 +765,12 @@ WhatsApp handoffs are diagnostic funnel measures, not the final success metric.
 
 ## Current Stage
 
-Local Stage 6 read-only external inventory on top of the closed Stage 5 public
-experience and Stage 4 authoritative catalog. EasyBroker is a replaceable Product
-adapter whose records remain External Listing Candidates until authority and
-commercial evidence are confirmed; Organization Listings remain first. The
-implementation has fixture-backed contract verification, while staging,
-production, real account access and real-customer acceptance remain explicitly
-unclaimed.
+Local Stage 7 reviewed reactivation and Development-campaign planning on top of
+the Stage 6 external-inventory boundary and Stage 4 authoritative catalog.
+Product proposes explainable work from confirmed demand, keeps every audience
+explicit and bounded, and routes accepted attempts through the existing outbound
+eligibility gate. Real Marketing dispatch remains `Denied`; legal, consent,
+provider, operational and real-customer acceptance remain explicitly unclaimed.
 
 Implemented locally:
 
@@ -920,6 +919,26 @@ Implemented locally:
   an Administrator surface that never exposes the provider credential;
 - two thin Stage 6 Hermes tools that route inventory discovery and revalidation
   through Product rather than exposing EasyBroker or PostgreSQL to Hermes.
+- an `inventory-match-v1` comparison of authorized Listings with confirmed
+  Property Needs, including exact, approximate and contradictory criterion-level
+  explanations and mandatory reconfirmation after the existing 90-day stale rule;
+- reviewed Reactivation Candidates that never auto-send and whose only objective
+  after a reply is reconfirming interest or arranging a new appointment;
+- explicit `development-audience-v1` campaign plans with dry-run parity,
+  PII-safe audience references, exclusions, quiet hours, frequency and recipient
+  caps, pause/cancel and measurable per-member results;
+- Meta-owned Message Template observations with exact Marketing category,
+  language, static body, lifecycle and a 24-hour Product evidence window, with
+  no local approve operation;
+- evidence-bearing, scope-specific Marketing consent checks at request and
+  delivery time, while consent capture itself remains `Denied` under SAN-010;
+- a Stage 7 worker whose Candidate/audience outcome, outbound decision, Outbox
+  row and Marketing touch share one transaction and whose queued work is
+  quarantined when a pause/cancel commits before provider delivery;
+- Mexican-Spanish `/crm/reactivacion` controls for templates, candidates,
+  explicit Development audiences, limits and PII-safe results;
+- `MARKETING_OUTBOUND_ACTIVATED=false` as the default and current real-activation
+  gate; fixture approvals and consent records verify contracts only.
 
 Not yet proven or claimed:
 
@@ -927,13 +946,41 @@ Not yet proven or claimed:
 - real customer pilot;
 - cloud-managed operations;
 - legal/privacy readiness for real lead data;
-- live approved WhatsApp templates, marketing-consent capture, and proactive
-  follow-up delivery;
+- live approved WhatsApp Marketing templates, legitimate marketing-consent
+  capture, accepted numeric policy, account quality/capacity proof and proactive
+  delivery;
 - multi-tenant operation;
 - horizontal scaling;
 - self-managed multi-brokerage onboarding, billing, round-robin assignment, load
-  scoring, automatic commissions, live EasyBroker activation, campaigns, and
-  the data warehouse — all deliberately later stages.
+  scoring, automatic commissions, live EasyBroker activation, paid acquisition,
+  and the data warehouse — all deliberately later stages.
+
+## Known Stage 7 Limitations
+
+- The real activation flag remains false. The repository has no approved
+  SAN-010 notice or legitimate consent-capture route, and an Administrator cannot
+  assert opt-in for a Contact. There are no verified real WABA template, quality
+  or capacity observations in the implementation evidence.
+- One touch per 30 days, 20:00–09:00 `America/Mexico_City` quiet hours, 50
+  recipients by default and 500 as the hard explicit-audience ceiling are
+  conservative Product hypotheses. They are not presented as law or Meta's
+  universal limits and require legal and operational acceptance before dispatch.
+- Provider template observations expire after 24 hours as a conservative Product
+  freshness rule. Stage 7 supports static template bodies only; any `{{...}}`
+  parameterized body is denied until an explicit binding interface exists.
+- Campaign criteria are intentionally limited to named Property Needs,
+  transaction intent and service-area text. There is no predictive score,
+  purchased audience, inferred sensitive segment or unrestricted bulk upload.
+- A Development campaign requires approved facts containing
+  `marketing_authority_confirmed: true`. This records Product authority to
+  promote the Development; it does not replace individual consent.
+- The local Meta adapter observes template truth only. Account health, billing,
+  business verification and provider sending capacity remain external release
+  gates, and the fixture-backed tests claim none of them.
+- Outcomes are Product events (`Included`, `Excluded`, `Queued`, `Denied`,
+  `Responded`) correlated with Outbox state. Provider delivery callbacks remain
+  authoritative for actual delivery; Stage 7 does not invent opens or conversion
+  attribution beyond a response and a later Campaign-origin Opportunity.
 
 ## Core Boundary
 

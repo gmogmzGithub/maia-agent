@@ -51,6 +51,7 @@ from realestate.db.models import (
 )
 from realestate.domain.audit import record_audit
 from realestate.domain.commercial.intake import CommercialIntake
+from realestate.domain.engagement.responses import record_engagement_reply
 from realestate.domain.commercial.actors import Actor, CommercialError
 from realestate.domain.commercial.routing import InboundRouting
 from realestate.domain.outbound import detect_opt_out, record_explicit_opt_out
@@ -229,6 +230,9 @@ class InboxService:
             # something that never durably happened.
             intake_result = await intake.record_inbound(
                 lead=lead, conversation=conversation, inbox_id=row.id
+            )
+            await record_engagement_reply(
+                self._session, lead_id=lead.id, at=row.persisted_at
             )
 
             # An opaque website reference gains identity only here, after Meta

@@ -174,6 +174,43 @@ class RevalidationOutcome(str, enum.Enum):
     DENIED = "Denied"
 
 
+class MessageTemplateStatus(str, enum.Enum):
+    """Provider lifecycle observed from the WhatsApp Business Account."""
+
+    APPROVED = "Approved"
+    PENDING = "Pending"
+    REJECTED = "Rejected"
+    PAUSED = "Paused"
+    DISABLED = "Disabled"
+    DELETED = "Deleted"
+
+
+class ReactivationCandidateStatus(str, enum.Enum):
+    PENDING = "Pending"
+    AUTHORIZED = "Authorized"
+    REJECTED = "Rejected"
+    REVOKED = "Revoked"
+    QUEUED = "Queued"
+    DENIED = "Denied"
+    RESPONDED = "Responded"
+
+
+class DevelopmentCampaignStatus(str, enum.Enum):
+    DRAFT = "Draft"
+    ACTIVE = "Active"
+    PAUSED = "Paused"
+    CANCELLED = "Cancelled"
+    COMPLETED = "Completed"
+
+
+class CampaignAudienceStatus(str, enum.Enum):
+    INCLUDED = "Included"
+    EXCLUDED = "Excluded"
+    QUEUED = "Queued"
+    DENIED = "Denied"
+    RESPONDED = "Responded"
+
+
 class AgentRole(str, enum.Enum):
     """Separate conversational roles with separate authority (ADR-0001)."""
 
@@ -819,6 +856,16 @@ class ConsentRecord(Base):
     source: Mapped[str] = mapped_column(String(40), nullable=False)
     # The Contact's own words when the record came from something they wrote.
     evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Stage 7 evidence fields. Existing records remain readable, but a real
+    # marketing-grant capture path must populate all of them before Product may
+    # treat the grant as campaign authority.
+    business_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    scope: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    notice_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    evidence_locator: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -926,6 +973,7 @@ class OutboundDecision(Base):
     )
     template_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
     template_category: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    template_language: Mapped[str | None] = mapped_column(String(20), nullable=True)
     # When the Meta customer-service window closes, as Product computed it.
     service_window_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -3921,5 +3969,380 @@ class ListingRevalidationRecord(Base):
             "ix_listing_revalidations_candidate",
             "listing_candidate_id",
             "evaluated_at",
+        ),
+    )
+
+
+# ==========================================================================
+# Stage 7 — reviewed reactivation and bounded development campaigns
+#
+# The rows below are decisions and snapshots, not a second delivery system.
+# A Candidate or Audience member can only gain an Outbox reference through
+# OutboundMessaging.request, which keeps consent, suppression, reply and Meta
+# template checks authoritative at both request and delivery time (ADR-0045).
+# ==========================================================================
+
+
+class ApprovedMessageTemplate(Base):
+    """Last observed provider truth for one exact WABA template and language."""
+
+    __tablename__ = "approved_message_templates"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    waba_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    provider_template_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    template_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    language_code: Mapped[str] = mapped_column(String(20), nullable=False)
+    category: Mapped[str] = mapped_column(String(20), nullable=False)
+    provider_status: Mapped[str] = mapped_column(String(20), nullable=False)
+    body_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    quality: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    component_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider_api_version: Mapped[str] = mapped_column(String(20), nullable=False)
+    source: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="MetaGraphAPI"
+    )
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    retired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "category IN ('Marketing', 'Utility', 'Service')",
+            name="ck_message_templates_category",
+        ),
+        CheckConstraint(
+            "provider_status IN ('Approved', 'Pending', 'Rejected', 'Paused', "
+            "'Disabled', 'Deleted')",
+            name="ck_message_templates_status",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "template_name",
+            "language_code",
+            name="uq_message_templates_identity",
+        ),
+        Index(
+            "ix_message_templates_approved",
+            "organization_id",
+            "provider_status",
+            "category",
+        ),
+    )
+
+
+class ReactivationCandidate(Base):
+    """One explainable Listing match awaiting a human outreach decision."""
+
+    __tablename__ = "reactivation_candidates"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    property_need_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("property_needs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    listing_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("catalog_listings.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    lead_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("leads.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("conversations.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=ReactivationCandidateStatus.PENDING.value
+    )
+    match_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    rule_version: Mapped[str] = mapped_column(String(60), nullable=False)
+    explanation: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    template_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    template_language: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    message_preview: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reviewed_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    review_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    decision_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("outbound_decisions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    outbox_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("outbox_messages.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('Pending', 'Authorized', 'Rejected', 'Revoked', "
+            "'Queued', 'Denied', 'Responded')",
+            name="ck_reactivation_candidates_status",
+        ),
+        CheckConstraint(
+            "match_kind IN ('Exact', 'Approximate')",
+            name="ck_reactivation_candidates_match_kind",
+        ),
+        CheckConstraint(
+            "(status = 'Pending' AND reviewed_by IS NULL AND reviewed_at IS NULL) OR "
+            "(status <> 'Pending' AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL)",
+            name="ck_reactivation_candidates_review",
+        ),
+        UniqueConstraint(
+            "property_need_id",
+            "listing_id",
+            "rule_version",
+            name="uq_reactivation_candidate_match",
+        ),
+        Index(
+            "ix_reactivation_candidates_work",
+            "organization_id",
+            "status",
+            "created_at",
+        ),
+    )
+
+
+class DevelopmentCampaign(Base):
+    """An explicit, versioned and pausable audience plan for one Development."""
+
+    __tablename__ = "development_campaigns"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    development_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("developments.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=DevelopmentCampaignStatus.DRAFT.value
+    )
+    criteria_version: Mapped[str] = mapped_column(String(60), nullable=False)
+    audience_criteria: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    exclusions: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    template_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    template_language: Mapped[str] = mapped_column(String(20), nullable=False)
+    content_preview: Mapped[str] = mapped_column(Text, nullable=False)
+    quiet_hours_start: Mapped[int] = mapped_column(Integer, nullable=False, default=20)
+    quiet_hours_end: Mapped[int] = mapped_column(Integer, nullable=False, default=9)
+    timezone: Mapped[str] = mapped_column(
+        String(60), nullable=False, default="America/Mexico_City"
+    )
+    frequency_cap: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    frequency_window_days: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=30
+    )
+    max_recipients: Mapped[int] = mapped_column(Integer, nullable=False, default=50)
+    authorized_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    activated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    paused_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    cancelled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('Draft', 'Active', 'Paused', 'Cancelled', 'Completed')",
+            name="ck_development_campaigns_status",
+        ),
+        CheckConstraint(
+            "quiet_hours_start BETWEEN 0 AND 23 AND quiet_hours_end BETWEEN 0 AND 23",
+            name="ck_development_campaigns_quiet_hours",
+        ),
+        CheckConstraint(
+            "frequency_cap > 0 AND frequency_window_days > 0 AND "
+            "max_recipients > 0 AND max_recipients <= 500",
+            name="ck_development_campaigns_limits",
+        ),
+        Index(
+            "ix_development_campaigns_work",
+            "organization_id",
+            "status",
+            "created_at",
+        ),
+    )
+
+
+class CampaignAudienceMember(Base):
+    """A PII-free-at-rest decision view for one explicit Property Need."""
+
+    __tablename__ = "campaign_audience_members"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    campaign_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("development_campaigns.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    property_need_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("property_needs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    contact_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("contacts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    lead_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("leads.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("conversations.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    audience_reference: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    reasons: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    resolved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    decision_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("outbound_decisions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    outbox_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("outbox_messages.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('Included', 'Excluded', 'Queued', 'Denied', 'Responded')",
+            name="ck_campaign_audience_status",
+        ),
+        UniqueConstraint(
+            "campaign_id", "property_need_id", name="uq_campaign_audience_need"
+        ),
+        UniqueConstraint(
+            "campaign_id", "audience_reference", name="uq_campaign_audience_reference"
+        ),
+        Index("ix_campaign_audience_work", "campaign_id", "status", "resolved_at"),
+    )
+
+
+class MarketingTouch(Base):
+    """One queued marketing contact, used for deduplication and frequency caps."""
+
+    __tablename__ = "marketing_touches"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    contact_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("contacts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    campaign_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("development_campaigns.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    reactivation_candidate_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("reactivation_candidates.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    decision_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("outbound_decisions.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    outbox_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("outbox_messages.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "(campaign_id IS NOT NULL) <> (reactivation_candidate_id IS NOT NULL)",
+            name="ck_marketing_touches_source",
+        ),
+        UniqueConstraint("outbox_id", name="uq_marketing_touches_outbox"),
+        Index(
+            "ix_marketing_touches_frequency",
+            "organization_id",
+            "contact_id",
+            "recorded_at",
         ),
     )

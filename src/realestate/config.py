@@ -170,9 +170,17 @@ class Settings(BaseSettings):
     meta_verify_token: str = Field(default="", alias="META_VERIFY_TOKEN")
     meta_access_token: str = Field(default="", alias="META_ACCESS_TOKEN")
     meta_phone_number_id: str = Field(default="", alias="META_PHONE_NUMBER_ID")
+    # Business Management API identity used only for read-only template truth.
+    # A phone-number id is not a WABA id and is never substituted for it.
+    meta_waba_id: str = Field(default="", alias="META_WABA_ID")
     meta_graph_version: str = Field(default="v25.0", alias="META_GRAPH_VERSION")
     meta_graph_base_url: str = Field(
         default="https://graph.facebook.com", alias="META_GRAPH_BASE_URL"
+    )
+    # Final business/legal/provider gate for any real Stage 7 marketing send.
+    # Planning and dry-run remain available while this is false.
+    marketing_outbound_activated: bool = Field(
+        default=False, alias="MARKETING_OUTBOUND_ACTIVATED"
     )
 
     # --- Appointments (P-054, P-055, P-056; see docs/decisions/checkpoint-3-inputs.md)

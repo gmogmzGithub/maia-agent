@@ -21,6 +21,7 @@ from realestate.api import admin as admin_api
 from realestate.api import crm as crm_api
 from realestate.api import catalog as catalog_api
 from realestate.api import external_inventory as external_inventory_api
+from realestate.api import engagement as engagement_api
 from realestate.api import operations as operations_api
 from realestate.api import plugin as plugin_api
 from realestate.api import public_site as public_site_api
@@ -30,6 +31,7 @@ from realestate.api import webhooks as webhooks_api
 from realestate.channels.google.calendar import GoogleCalendar
 from realestate.channels.telegram.client import TelegramClient
 from realestate.channels.whatsapp.client import WhatsAppClient
+from realestate.channels.whatsapp.templates import MetaTemplateSource
 from realestate.config import Settings, get_settings
 from realestate.db.engine import Database
 from realestate.domain.appointments import AppointmentPolicy
@@ -43,6 +45,7 @@ from realestate.domain.properties import ArtifactStore, CatalogStore
 from realestate.hermes import HermesClient
 from realestate.worker.broker import BrokerNotifier
 from realestate.worker.external_inventory import ExternalInventoryCleanupWorker
+from realestate.worker.engagement import EngagementWorker
 from realestate.worker.followups import LeadFollowUpWorker
 from realestate.worker.loop import BackgroundLoop, idle_tick
 from realestate.worker.operations import OperationsWorker
@@ -172,6 +175,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         graph_version=settings.meta_graph_version,
         base_url=settings.meta_graph_base_url,
     )
+    app.state.meta_templates = MetaTemplateSource(
+        access_token=settings.meta_access_token,
+        waba_id=settings.meta_waba_id,
+        graph_version=settings.meta_graph_version,
+        base_url=settings.meta_graph_base_url,
+    )
     # Kept for /health, which probes the one calendar an operator configured.
     app.state.calendar = GoogleCalendar(
         credentials_path=settings.google_calendar_credentials,
@@ -233,6 +242,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         database=app.state.database,
         source=app.state.easybroker,
     )
+    app.state.engagement_worker = EngagementWorker(
+        database=app.state.database,
+        activation_approved=settings.marketing_outbound_activated,
+    )
 
     async def tick() -> None:
         # Lead work, follow-ups, Administrative work, and the Broker's
@@ -263,6 +276,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 "external inventory cleanup",
                 app.state.external_inventory_cleanup_worker.tick,
             ),
+            ("reactivation and campaigns", app.state.engagement_worker.tick),
             ("human operations", app.state.operations_worker.tick),
             ("administrative", app.state.admin_worker.tick),
             ("broker notifications", app.state.broker_notifier.tick),
@@ -302,6 +316,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ("Hermes client", app.state.hermes.aclose),
             ("public site proxy", app.state.public_site_proxy.aclose),
             ("EasyBroker adapter", app.state.easybroker.aclose),
+            ("Meta template source", app.state.meta_templates.aclose),
             ("WhatsApp client", app.state.whatsapp.aclose),
             ("Telegram client", app.state.telegram.aclose),
             ("database engine", app.state.database.dispose),
@@ -338,6 +353,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(crm_api.router)
     app.include_router(catalog_api.router)
     app.include_router(external_inventory_api.router)
+    app.include_router(engagement_api.router)
     app.include_router(operations_api.router)
     app.include_router(plugin_api.router)
     app.include_router(public_site_api.router)

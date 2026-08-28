@@ -43,6 +43,7 @@ from realestate.domain.commercial.opportunities import (
     OriginFacts,
 )
 from realestate.domain.commercial.organization import OrganizationDirectory
+from realestate.domain.engagement.responses import engagement_origin_for_lead
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,7 @@ class CommercialIntake:
         Opportunity and one stage transition.
         """
         actor = Actor.product(lead.organization_id, "CommercialIntake")
+        engagement_origin = await engagement_origin_for_lead(self._session, lead.id)
         identity = ChannelIdentity.whatsapp(
             wa_id=lead.wa_id,
             lead_id=lead.id,
@@ -100,8 +102,17 @@ class CommercialIntake:
                     kind=OpportunityKind.DEMAND,
                     property_need_id=need.id,
                     origin=OriginFacts(
-                        source=OpportunityOriginSource.WHATSAPP_INBOUND,
+                        source=(
+                            OpportunityOriginSource.CAMPAIGN
+                            if engagement_origin is not None
+                            else OpportunityOriginSource.WHATSAPP_INBOUND
+                        ),
                         channel="WhatsApp",
+                        campaign=(
+                            engagement_origin.label
+                            if engagement_origin is not None
+                            else None
+                        ),
                         property_uuid=conversation.property_uuid,
                         first_conversation_id=conversation.id,
                         first_inbox_id=inbox_id,

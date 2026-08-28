@@ -38,6 +38,9 @@ authorization, persistence, delivery, retries, and business authority.
 - A read-only external-inventory port with an EasyBroker adapter, strict local
   service-area filtering, provenance-bearing candidates, and use-time
   revalidation that never replaces the authoritative Product catalog.
+- Explainable, Administrator-reviewed reactivation and Development-campaign
+  planning with explicit audiences, provider-observed templates, delivery-time
+  consent and stop checks, and real dispatch disabled by default.
 - A standalone Hermes plugin that exposes typed product operations without
   giving the agent direct database or Calendar credentials.
 - Recovery-oriented tests around persistence, sessions, tools, workers,
@@ -107,6 +110,9 @@ test-covered locally:
 - fixture-backed EasyBroker candidate indexing and Product/Hermes search within
   Guadalajara, Zapopan, and Tlaquepaque, with Admin evidence controls and
   fail-closed recommendation/share/appointment revalidation;
+- a Mexican-Spanish reactivation surface with explainable inventory matches,
+  PII-safe campaign previews, bounded execution and auditable outcomes, while
+  real Marketing dispatch remains `Denied` pending accepted external gates;
 - Docker Compose packaging for a single-host local topology.
 
 Not claimed yet:
@@ -211,4 +217,6 @@ for the branch and protection strategy. The [Stage 5 public-site guide](docs/pub
 documents its routes, authority contracts, privacy boundary, visual system, and
 manual acceptance path. The [Stage 6 external-inventory guide](docs/external-inventory.md)
 documents the EasyBroker adapter boundary, mapping, revalidation, cleanup, test
-levels, and activation gates.
+levels, and activation gates. The [Stage 7 engagement guide](docs/reactivation-campaigns.md)
+documents reviewed reactivation, explicit Development audiences, consent and
+template evidence, execution limits, and why real dispatch remains denied.

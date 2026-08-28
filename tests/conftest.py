@@ -305,6 +305,10 @@ async def reset_property_inventory(session) -> None:  # noqa: ANN001
     from sqlalchemy import text
 
     for table in (
+        "marketing_touches",
+        "campaign_audience_members",
+        "development_campaigns",
+        "reactivation_candidates",
         "appointments",
         "availability_snapshots",
         "listing_media",

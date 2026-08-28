@@ -129,4 +129,5 @@ entitlement, collaborator authority, retention permission, or production access.
 | Vertical system scenario | Yes | WhatsApp inquiry through booking and Broker notification, and Inbox to Next Action |
 | Live model evaluation | No | Hermes/model tool choice, grounding, and conversational quality |
 | EasyBroker staging smoke test | No | Opt-in read-only provider transport compatibility only |
+| Stage 7 engagement tests | Yes | Explainable matches, explicit audiences, consent/template lifecycle, caps, stops and PII-safe results |
 | Manual channel rehearsal | No | Real Meta, Google Calendar, and Telegram configuration and delivery |
