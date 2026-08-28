@@ -507,9 +507,10 @@ revision of its facts.
 _Avoid_: Document version, filename, database UUID
 
 **Property Document**:
-The approved customer-safe facts about one Property from which Maia may answer
-questions.
-_Avoid_: Prompt, knowledge file, listing page
+An immutable legacy source artifact retained as provenance and narrative for one
+Property. Product projects customer answers from the authorized Listing and its
+Offers; the document's operation and price are not editable commercial truth.
+_Avoid_: Catalog authority, current Offer, Listing publication state
 
 **Property Document Version**:
 One immutable accepted revision of a Property Document; later corrections create a
@@ -517,14 +518,16 @@ new version without changing the Property Key.
 _Avoid_: Property, duplicate Property, mutable file
 
 **Property Catalog**:
-The curated, public-safe collection of Property Documents eligible to be introduced
-into Maia; it is not evidence of current availability.
-_Avoid_: Fixtures, runtime folder, database
+The legacy source-controlled collection of current Property Document copies used
+only by the compatibility ingestion path. The authoritative catalog is PostgreSQL
+Property, Listing, Offer and Listing Media state.
+_Avoid_: Authorized Inventory, editable commercial truth, public site
 
 **Authorized Inventory**:
 The Listings a Brokerage Organization is currently permitted to present or
 recommend, including Organization Listings and eligible Collaborator Listings
-with preserved provenance.
+with preserved provenance, current authority, availability, reviewed terms and
+purpose-specific eligibility.
 _Avoid_: All properties in Mexico, scraped catalog, permanent data lake
 
 **Property Submission**:
@@ -544,14 +547,16 @@ availability, regardless of whether each one can presently be offered.
 _Avoid_: Property Catalog, listings folder
 
 **Active Property**:
-A Property currently permitted to be disclosed to customers and considered for new
-visit bookings.
-_Avoid_: Published Property, available document
+The legacy compatibility status projected into Listing and Offer availability by
+the remaining Stage 0 administration path. It cannot authorize disclosure or a
+new visit by itself; Listing Eligibility still decides.
+_Avoid_: Listing Availability, Listing Authority, publication permission
 
 **Inactive Property**:
-A Property blocked from customer disclosure and new visit bookings, with a separate
-Inactive Reason explaining why.
-_Avoid_: Deleted Property, Sold Property
+A fail-closed legacy compatibility status that blocks customer disclosure and new
+visit bookings while preserving existing appointments and records. Its reason is
+written through to authoritative Listing and Offer state.
+_Avoid_: Deleted Property, automatic appointment cancellation
 
 **Inactive Reason**:
 The Organization Administrator-confirmed explanation for an Inactive Property:

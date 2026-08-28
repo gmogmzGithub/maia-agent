@@ -18,6 +18,7 @@ from fastapi import FastAPI
 from realestate.api import health as health_api
 from realestate.api import admin as admin_api
 from realestate.api import crm as crm_api
+from realestate.api import catalog as catalog_api
 from realestate.api import operations as operations_api
 from realestate.api import plugin as plugin_api
 from realestate.api import upload as upload_api
@@ -31,6 +32,7 @@ from realestate.domain.appointments import AppointmentPolicy
 from realestate.domain.admin_work import AdminWorkService
 from realestate.domain.availability import WeeklySchedule
 from realestate.domain.commercial.organization import OrganizationDirectory
+from realestate.domain.catalog.storage import LocalMediaStorage
 from realestate.domain.scheduling.calendars import GoogleCalendarDirectory
 from realestate.domain.properties import ArtifactStore, CatalogStore
 from realestate.hermes import HermesClient
@@ -141,6 +143,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.database = Database(settings.database_url)
     app.state.artifacts = ArtifactStore(Path(settings.artifact_root))
     app.state.property_catalog = CatalogStore(Path(settings.property_catalog_root))
+    app.state.media_storage = LocalMediaStorage(
+        Path(settings.listing_media_root), Path(settings.listing_media_cache_root)
+    )
     app.state.hermes = HermesClient.from_settings(settings)
     app.state.whatsapp = WhatsAppClient(
         access_token=settings.meta_access_token,
@@ -218,6 +223,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     session,
                     app.state.calendars,
                     app.state.appointment_policy.schedule,
+                    app.state.appointment_policy.day_of_reminder_hour,
                 ).recover_pending_attempts()
                 if recovered:
                     logger.error(
@@ -301,6 +307,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health_api.router)
     app.include_router(admin_api.router)
     app.include_router(crm_api.router)
+    app.include_router(catalog_api.router)
     app.include_router(operations_api.router)
     app.include_router(plugin_api.router)
     app.include_router(upload_api.router)

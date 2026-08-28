@@ -455,7 +455,9 @@ _CONVERSATION_FLASH = {
     "atendiendo": "Ahora tú atiendes esta conversación. Maia dejó de responder.",
     "liberada": "Liberaste la conversación.",
     "enviado": "Se envió el mensaje por el canal oficial.",
-    "solicitud": "Registramos que tú estás atendiendo la solicitud.",
+    "solicitud": (
+        "Confirmaste que ya atiendes la solicitud. Maia sigue pausada."
+    ),
 }
 
 

@@ -321,7 +321,7 @@ Dar de alta aquí le otorga el permiso; no crea una contraseña.</p>
 <div class="field"><label for="m-alertas">Chat de alertas (Telegram)
 <input id="m-alertas" name="alertas" maxlength="40"></label></div>
 </div>
-<div class="field"><label><input type="checkbox" name="asesora" value="1" checked>
+<div class="field"><label class="check"><input type="checkbox" name="asesora" value="1" checked>
 Puede recibir oportunidades y citas</label></div>
 <div class="actions"><button type="submit">Dar de alta</button></div>
 </form>"""
@@ -936,7 +936,7 @@ def _outcome_form(visit: Appointment) -> str:
 </label></div>
 <div class="field"><label>Qué ocurrió
 <textarea name="notas" rows="3" maxlength="2000"></textarea></label></div>
-<div class="field"><label><input type="checkbox" name="invitar" value="1">
+<div class="field"><label class="check"><input type="checkbox" name="invitar" value="1">
 Autorizar invitación a reagendar (sólo si no se realizó)</label></div>
 <div class="field"><label>Siguiente acción
 <select name="accion"><option value="">Sin siguiente acción</option>
@@ -1253,6 +1253,7 @@ async def acknowledge_handoff(
 async def alerts(
     request: Request,
     guardado: str = "",
+    error: str = "",
     actor: Actor = Depends(require_actor),
 ) -> HTMLResponse:
     """Everything waiting for a human, oldest first."""
@@ -1300,6 +1301,7 @@ async def alerts(
     )
     content = (
         flash("Se marcó el aviso como visto." if guardado else None)
+        + (f'<div class="error" role="alert">{escape(error)}</div>' if error else "")
         + "<h2>Solicitudes de atención humana</h2>"
         + '<p class="hint">Cuando un cliente pide hablar con una persona, Maia '
         "deja de responder y se avisa al asesor. A los 15 minutos sin tomarla, "
@@ -1319,7 +1321,11 @@ async def acknowledge_alert(
     form = await request.form()
     command_key(form, "alert-ack")
     async with request.app.state.database.session_scope() as session:
-        await InternalAlerts(session).acknowledge(actor, alert_id)
+        changed = await InternalAlerts(session).acknowledge(actor, alert_id)
+        if not changed:
+            return _redirect(
+                "/crm/alertas", error="No encontramos ese aviso."
+            )
         await session.commit()
     return _redirect("/crm/alertas", saved="visto")
 
@@ -1370,7 +1376,7 @@ def handling_panel(
             + "</p>"
             + f"""<form method="post" action="/crm/bandeja/{conversation_id}/solicitud">
 {command_field()}<input type="hidden" name="solicitud" value="{request_row.id}">
-<div class="actions"><button type="submit">Ya la estoy atendiendo</button></div>
+<div class="actions"><button type="submit">Confirmar que ya la atiendo</button></div>
 </form></div>"""
         )
 

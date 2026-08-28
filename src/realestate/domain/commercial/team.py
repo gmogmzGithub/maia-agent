@@ -700,6 +700,7 @@ class TeamAdministration:
         prop = await self._session.get(Property, command.property_uuid)
         if prop is None:
             raise NotFound("No encontramos esa propiedad.")
+        actor.require_same_organization(prop.organization_id)
         rank = 0 if command.role is PropertyExpertRole.PRIMARY else max(1, command.rank)
         replay = await self._commands.claim(
             actor,

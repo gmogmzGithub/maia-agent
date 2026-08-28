@@ -55,10 +55,10 @@ from realestate.db.models import (
     NextActionKind,
     NextActionOutcome,
     Opportunity,
-    OpportunityStage,
     OrganizationMember,
     OutboundInitiation,
     Property,
+    PropertyExpert,
     PropertyStatus,
 )
 from realestate.domain.audit import record_audit
@@ -72,10 +72,18 @@ from realestate.domain.scheduling.advisors import (
     SlotsUnavailable,
     Unavailable,
 )
+from realestate.domain.scheduling.appointment_handoff import AppointmentHandoff
 from realestate.domain.scheduling.calendars import CalendarPort
-from realestate.domain.scheduling.reminders import AppointmentReminders
 
 logger = logging.getLogger(__name__)
+
+
+class _SlotAlreadyClaimed(Exception):
+    """The database serialized two otherwise-authoritative slot reads."""
+
+
+class _RescheduleAlreadyInProgress(Exception):
+    """One original appointment already has an unrejected successor."""
 
 
 def _now() -> datetime:
@@ -94,6 +102,7 @@ class Refusal(str, Enum):
     PROPERTY_INACTIVE = "PropertyInactive"
     NO_RESPONSIBLE_ADVISOR = "NoResponsibleAdvisor"
     ADVISOR_INELIGIBLE = "AdvisorIneligible"
+    CONDUCTOR_NOT_EXPERT = "ConductorNotPropertyExpert"
     ADVISOR_ABSENT = "AdvisorAbsent"
     NO_AUTHORITATIVE_CALENDAR = "NoAuthoritativeCalendar"
     CALENDAR_UNREADABLE = "CalendarUnreadable"
@@ -116,6 +125,9 @@ REFUSAL_MESSAGES: dict[str, str] = {
         "agendar la visita."
     ),
     Refusal.ADVISOR_INELIGIBLE.value: "Ese asesor no puede recibir visitas.",
+    Refusal.CONDUCTOR_NOT_EXPERT.value: (
+        "Ese asesor no está designado como especialista de la propiedad."
+    ),
     Refusal.ADVISOR_ABSENT.value: (
         "El asesor tiene una ausencia registrada en esa fecha."
     ),
@@ -325,8 +337,10 @@ class Appointments:
         self._event_title = event_title
         self._commands = CommercialCommands(session)
         self._alerts = InternalAlerts(session)
-        self._reminders = AppointmentReminders(
-            session, schedule, day_of_hour=day_of_reminder_hour
+        self._handoff = AppointmentHandoff(
+            session,
+            schedule,
+            day_of_reminder_hour=day_of_reminder_hour,
         )
 
     # -- Booking -----------------------------------------------------------
@@ -354,10 +368,27 @@ class Appointments:
             return VisitRefused(Refusal.CONVERSATION_EXPIRED)
 
         prop = await self._session.get(Property, command.property_uuid)
-        if prop is None:
+        if prop is None or prop.organization_id != actor.organization_id:
             return VisitRefused(Refusal.PROPERTY_NOT_FOUND)
         if prop.status != PropertyStatus.ACTIVE.value:
             return VisitRefused(Refusal.PROPERTY_INACTIVE)
+
+        key = f"apt:{conversation.id}:{prop.id}:{command.start.isoformat()}"
+        existing = await self._session.scalar(
+            select(Appointment).where(Appointment.idempotency_key == key)
+        )
+        if existing is not None:
+            attending_id = existing.conducting_advisor_id or existing.advisor_id
+            attending = (
+                await self._session.get(OrganizationMember, attending_id)
+                if attending_id is not None
+                else None
+            )
+            return self._booked(
+                existing,
+                attending.display_name if attending else "Asesor sin identificar",
+                created=False,
+            )
 
         opportunity = await self._opportunity_for(conversation)
         prospective = await self._prospective_owner(actor, command, opportunity)
@@ -365,6 +396,21 @@ class Appointments:
             return prospective
         owner_id = prospective.id
         owner = prospective
+
+        if (
+            command.conducting_advisor_id is not None
+            and command.conducting_advisor_id != owner_id
+        ):
+            expert = await self._session.scalar(
+                select(PropertyExpert.id)
+                .where(PropertyExpert.organization_id == actor.organization_id)
+                .where(PropertyExpert.property_uuid == prop.id)
+                .where(PropertyExpert.advisor_id == command.conducting_advisor_id)
+                .where(PropertyExpert.revoked_at.is_(None))
+                .limit(1)
+            )
+            if expert is None:
+                return VisitRefused(Refusal.CONDUCTOR_NOT_EXPERT)
 
         # Whoever will actually be at the property is whose calendar must be
         # free. Normally the owner; the expert only when made explicit.
@@ -403,13 +449,7 @@ class Appointments:
                 alternatives=found.slots[:6],
             )
 
-        key = f"apt:{conversation.id}:{prop.id}:{slot.start.isoformat()}"
-        existing = await self._session.scalar(
-            select(Appointment).where(Appointment.idempotency_key == key)
-        )
         attending_name = attending.display_name
-        if existing is not None:
-            return self._booked(existing, attending_name, created=False)
 
         # Only now, with a real slot in hand, is responsibility committed. A
         # confirmed visit must have a Responsible Advisor, so booking *applies*
@@ -425,17 +465,25 @@ class Appointments:
                 return VisitRefused(Refusal.NO_RESPONSIBLE_ADVISOR)
             owner_id = attached.advisor_id
 
-        attempt = await self._persist_attempt(
-            conversation=conversation,
-            prop=prop,
-            slot=slot,
-            attendee_name=command.attendee_name,
-            owner_id=owner_id,
-            conducting_advisor_id=command.conducting_advisor_id,
-            calendar_id=attending.calendar_id or "",
-            opportunity_id=opportunity.id if opportunity else None,
-            key=key,
-        )
+        try:
+            attempt = await self._persist_attempt(
+                conversation=conversation,
+                prop=prop,
+                slot=slot,
+                attendee_name=command.attendee_name,
+                owner_id=owner_id,
+                conducting_advisor_id=command.conducting_advisor_id,
+                calendar_id=attending.calendar_id or "",
+                opportunity_id=opportunity.id if opportunity else None,
+                key=key,
+            )
+        except _SlotAlreadyClaimed:
+            return VisitRefused(
+                Refusal.SLOT_UNAVAILABLE,
+                alternatives=tuple(
+                    offered for offered in found.slots if offered.start != slot.start
+                )[:6],
+            )
         if attempt is None:
             # Another worker committed the same key first. The rollback inside
             # ``_persist_attempt`` expired this session, so only the freshly
@@ -500,6 +548,14 @@ class Appointments:
         original = await self._visit_for_update(actor, command.appointment_id)
         if original.status != AppointmentStatus.CONFIRMED.value:
             return VisitRefused(Refusal.NOT_CONFIRMED, appointment_id=original.id)
+        active_successor = await self._session.scalar(
+            select(Appointment.id)
+            .where(Appointment.rescheduled_from_id == original.id)
+            .where(Appointment.status != AppointmentStatus.REJECTED.value)
+            .limit(1)
+        )
+        if active_successor is not None:
+            return VisitRefused(Refusal.INCONCLUSIVE, appointment_id=original.id)
         if original.starts_at <= _now():
             return VisitRefused(Refusal.ALREADY_STARTED, appointment_id=original.id)
         if original.advisor_id is None:
@@ -553,18 +609,33 @@ class Appointments:
             select(Appointment).where(Appointment.idempotency_key == key)
         )
         if replacement is None:
-            replacement = await self._persist_attempt(
-                conversation=conversation,
-                prop=prop,
-                slot=slot,
-                attendee_name=original.attendee_name,
-                owner_id=original.advisor_id,
-                conducting_advisor_id=original.conducting_advisor_id,
-                calendar_id=attending.calendar_id or "",
-                opportunity_id=original.opportunity_id,
-                key=key,
-                rescheduled_from_id=original.id,
-            )
+            try:
+                replacement = await self._persist_attempt(
+                    conversation=conversation,
+                    prop=prop,
+                    slot=slot,
+                    attendee_name=original.attendee_name,
+                    owner_id=original.advisor_id,
+                    conducting_advisor_id=original.conducting_advisor_id,
+                    calendar_id=attending.calendar_id or "",
+                    opportunity_id=original.opportunity_id,
+                    key=key,
+                    rescheduled_from_id=original.id,
+                )
+            except _SlotAlreadyClaimed:
+                return VisitRefused(
+                    Refusal.SLOT_UNAVAILABLE,
+                    alternatives=tuple(
+                        offered
+                        for offered in found.slots
+                        if offered.start != slot.start
+                    )[:6],
+                    appointment_id=original.id,
+                )
+            except _RescheduleAlreadyInProgress:
+                return VisitRefused(
+                    Refusal.INCONCLUSIVE, appointment_id=original.id
+                )
             if replacement is None:  # pragma: no cover - the key is unique
                 replacement = await self._session.scalar(
                     select(Appointment).where(Appointment.idempotency_key == key)
@@ -698,6 +769,16 @@ class Appointments:
         if appointment.status != AppointmentStatus.CONFIRMED.value:
             return VisitRefused(
                 Refusal.NOT_CONFIRMED, appointment_id=appointment.id
+            )
+        active_successor = await self._session.scalar(
+            select(Appointment.id)
+            .where(Appointment.rescheduled_from_id == appointment.id)
+            .where(Appointment.status != AppointmentStatus.REJECTED.value)
+            .limit(1)
+        )
+        if active_successor is not None:
+            return VisitRefused(
+                Refusal.INCONCLUSIVE, appointment_id=appointment.id
             )
 
         calendar = await self._calendar_of(appointment)
@@ -962,6 +1043,7 @@ class Appointments:
         Property's present expert, else the default Advisor.
         """
         if command.advisor_id is not None:
+            actor.require_administrator()
             return await self._eligible_member(actor, command.advisor_id)
         if opportunity is None:
             return VisitRefused(Refusal.NO_RESPONSIBLE_ADVISOR)
@@ -1052,9 +1134,21 @@ class Appointments:
             # crash mid-write so recovery reconciles it instead of booking a
             # second visit (P-042).
             await self._session.commit()
-        except IntegrityError:
+        except IntegrityError as exc:
             await self._session.rollback()
-            return None
+            same_command = await self._session.scalar(
+                select(Appointment.id).where(Appointment.idempotency_key == key)
+            )
+            if same_command is not None:
+                return None
+            constraint = getattr(
+                getattr(exc.orig, "diag", None), "constraint_name", None
+            )
+            if constraint == "ex_appointments_calendar_overlap":
+                raise _SlotAlreadyClaimed() from exc
+            if constraint == "uq_appointments_active_reschedule":
+                raise _RescheduleAlreadyInProgress() from exc
+            raise
         return attempt
 
     async def _release(self, calendar: CalendarPort, appointment: Appointment) -> bool:
@@ -1133,50 +1227,9 @@ class Appointments:
         so an Opportunity still in conversation stays there and the visit is
         recorded against it regardless.
         """
-        await self._reminders.schedule_for(appointment)
-        if opportunity is None:
-            return
-        appointment.opportunity_id = appointment.opportunity_id or opportunity.id
-
-        from realestate.domain.commercial.next_actions import (
-            NextActions,
-            ScheduleNextAction,
-        )
-        from realestate.domain.commercial.opportunities import (
-            AdvanceStage,
-            OpportunityManagement,
-        )
-
-        if opportunity.stage in {
-            OpportunityStage.QUALIFIED.value,
-            OpportunityStage.SEARCHING.value,
-            OpportunityStage.NEGOTIATING.value,
-        }:
-            await OpportunityManagement(self._session).record(
-                actor,
-                AdvanceStage(
-                    opportunity_id=opportunity.id,
-                    to_stage=OpportunityStage.VISITING,
-                    reason="AppointmentConfirmed",
-                    command_key=f"visit-confirmed:{appointment.id}",
-                ),
-            )
-        # Maia's commercial role ends here. The Advisor owes the record of what
-        # happened, due when the visit ends, so the coverage promise survives
-        # the handoff instead of quietly lapsing at it.
-        await NextActions(self._session).schedule(
-            actor,
-            ScheduleNextAction(
-                opportunity_id=opportunity.id,
-                kind=NextActionKind.VISIT_FOLLOW_UP,
-                due_at=appointment.ends_at,
-                command_key=f"visit-follow-up:{appointment.id}",
-                responsible_member_id=appointment.advisor_id,
-                note=(
-                    f"Registrar el resultado de la visita {appointment.reference}."
-                ),
-            ),
-        )
+        if opportunity is not None:
+            appointment.opportunity_id = appointment.opportunity_id or opportunity.id
+        await self._handoff.complete(actor, appointment)
 
     async def _settle_commercial_follow_up(
         self,

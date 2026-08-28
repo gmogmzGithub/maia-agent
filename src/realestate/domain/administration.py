@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import Select, func, select
@@ -34,6 +35,14 @@ from realestate.domain.properties import (
     accepted_version,
     resolve_property,
 )
+from realestate.domain.commercial.organization import OrganizationDirectory
+from realestate.domain.catalog.eligibility import EligibilityPurpose
+from realestate.domain.catalog.administration import (
+    CatalogAdministration,
+    SyncLegacyPropertyStatus,
+)
+from realestate.domain.catalog.projection import CatalogProjection
+from realestate.domain.commercial.actors import Actor
 
 VALID_STATUSES = (PropertyStatus.ACTIVE.value, PropertyStatus.INACTIVE.value)
 VALID_INACTIVE_REASONS = tuple(reason.value for reason in PropertyInactiveReason)
@@ -81,7 +90,11 @@ class AdministrationService:
                 "detail": "inactive_reason must be omitted when status is Active",
             }
 
-        prop = await resolve_property(self._session, reference)
+        prop = await resolve_property(
+            self._session,
+            reference,
+            await OrganizationDirectory(self._session).organization_id(),
+        )
         if prop is None:
             return {"result": "not_found"}
 
@@ -95,6 +108,22 @@ class AdministrationService:
         if changed:
             prop.status = status
             prop.inactive_reason = target_reason
+            organization_id = await OrganizationDirectory(
+                self._session
+            ).organization_id()
+            await CatalogAdministration(self._session).record(
+                Actor.product(organization_id, f"LegacyStatus:{actor.actor_id}"),
+                SyncLegacyPropertyStatus(
+                    property_uuid=prop.id,
+                    status=status,
+                    inactive_reason=target_reason,
+                    command_key=(
+                        f"legacy-property-status:{prop.id}:{actor.origin_message_id}"
+                        if actor.origin_message_id
+                        else f"legacy-property-status:{prop.id}:{uuid.uuid4().hex}"
+                    ),
+                ),
+            )
             affected = await self.confirmed_appointments(prop)
             if status == PropertyStatus.INACTIVE.value:
                 await self._open_inactive_reviews(prop)
@@ -178,27 +207,39 @@ class AdministrationService:
         Full facts still require the role-aware ``get_property_information``
         operation for a named Property.
         """
-        rows = (
-            await self._session.execute(
-                select(Property)
-                .where(Property.status == PropertyStatus.ACTIVE.value)
-                .order_by(Property.property_key)
-                .limit(MAX_PROPERTIES)
-            )
-        ).scalars().all()
+        organization_id = await OrganizationDirectory(self._session).organization_id()
+        rows = await CatalogProjection(
+            self._session, Actor.product(organization_id, "PropertyList")
+        ).list_authorized(EligibilityPurpose.AGENT_DISCLOSURE, datetime.now(tz=UTC))
 
         properties = []
-        for prop in rows:
-            record = await accepted_version(self._session, prop)
-            metadata: dict[str, Any] = record.document_metadata if record else {}
+        for listing in rows:
+            first_offer = listing.offers[0] if listing.offers else None
             properties.append(
                 {
-                    "property_id": prop.property_key,
-                    "name": prop.name,
-                    "property_type": metadata.get("property_type"),
-                    "operation": metadata.get("operation"),
-                    "price_amount": metadata.get("price_amount"),
-                    "price_currency": metadata.get("price_currency"),
+                    "property_id": listing.physical_key,
+                    "listing_id": str(listing.listing_id),
+                    "listing_key": listing.listing_key,
+                    "name": listing.title,
+                    "source_kind": listing.source_kind,
+                    "source_name": listing.source_name,
+                    "attribution": listing.attribution,
+                    "property_type": listing.physical_facts.get("property_type"),
+                    "operation": first_offer.operation if first_offer else None,
+                    "price_amount": first_offer.price_amount if first_offer else None,
+                    "price_currency": first_offer.price_currency if first_offer else None,
+                    "consultation_copy": (
+                        first_offer.consultation_copy if first_offer else None
+                    ),
+                    "offers": [
+                        {
+                            "operation": offer.operation,
+                            "price_amount": offer.price_amount,
+                            "price_currency": offer.price_currency,
+                            "consultation_copy": offer.consultation_copy,
+                        }
+                        for offer in listing.offers
+                    ],
                 }
             )
         return {"result": "found", "properties": properties}

@@ -162,6 +162,35 @@ async def test_contradictory_or_unavailable_evidence_preserves_needs_review(
     assert saved.status == AppointmentStatus.NEEDS_REVIEW.value
 
 
+async def test_admin_resolution_is_idempotent_and_unknown_work_stays_absent(
+    recovery,
+) -> None:
+    """A repeated decision reports durable truth and never replays Calendar."""
+    database, calendar, schedule = recovery
+    row = await appointment(database, status=AppointmentStatus.CONFIRMED.value)
+
+    async with database.session_scope() as session:
+        service = AdminWorkService(session, calendar, schedule)
+        repeated = await service.resolve(
+            row.reference, "Confirm", Administrator("telegram:1")
+        )
+        missing = await service.resolve(
+            "APT-DOES-NOT-EXIST", "Confirm", Administrator("telegram:1")
+        )
+        invalid = await service.resolve(
+            row.reference, "Delete", Administrator("telegram:1")
+        )
+
+    assert repeated == {
+        "result": "already_resolved",
+        "reference": row.reference,
+        "outcome": AppointmentStatus.CONFIRMED.value,
+    }
+    assert missing == {"result": "not_found"}
+    assert invalid == {"result": "invalid_action"}
+    assert calendar.find_reads == 0
+
+
 async def test_closed_customer_window_creates_manual_notification_work(recovery) -> None:
     database, calendar, schedule = recovery
     row = await appointment(database, status=AppointmentStatus.NEEDS_REVIEW.value)
@@ -184,6 +213,21 @@ async def test_closed_customer_window_creates_manual_notification_work(recovery)
     assert [item["type"] for item in pending["items"]] == [
         "PendingManualAppointmentNotification"
     ]
+
+    async with database.session_scope() as session:
+        service = AdminWorkService(session, calendar, schedule)
+        marked = await service.resolve(
+            row.reference, "MarkNotified", Administrator("telegram:1")
+        )
+        repeated = await service.resolve(
+            row.reference, "MarkNotified", Administrator("telegram:1")
+        )
+        saved = await session.get(Appointment, row.id)
+
+    assert marked == {"result": "resolved", "reference": row.reference}
+    assert repeated == {"result": "conflict"}
+    assert saved is not None
+    assert saved.resolution_notification_status == LeadNotificationStatus.NOTIFIED.value
 
 
 async def test_deactivation_opens_review_and_manual_completion_requires_event_absence(

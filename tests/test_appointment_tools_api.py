@@ -31,17 +31,21 @@ from realestate.db.models import (
     AgentRole,
     AgentSession,
     Appointment,
-    AvailabilitySnapshot,
     Conversation,
     Lead,
     LeadEngagementCycle,
     OutboundDecision,
-    Property,
 )
 from realestate.domain.appointments import AppointmentPolicy
 from realestate.domain.inbox import InboxService
 from realestate.domain.properties import ArtifactStore, PropertyService
-from tests.conftest import DATABASE_URL, age_pending_inbox, env, requires_postgres
+from tests.conftest import (
+    DATABASE_URL,
+    age_pending_inbox,
+    env,
+    requires_postgres,
+    reset_property_inventory,
+)
 from tests.fixtures import commercial, webhooks
 from tests.fixtures.stubs import SCHEDULE, StubCalendar
 
@@ -64,14 +68,12 @@ async def wired(tmp_path: Path):
     get_settings.cache_clear()
     database = Database(DATABASE_URL)
     async with database.session_scope() as session:
+        await reset_property_inventory(session)
         for model in (
-            Appointment,
-            AvailabilitySnapshot,
             AgentSession,
             Conversation,
             LeadEngagementCycle,
             Lead,
-            Property,
         ):
             await session.execute(delete(model))
         await session.commit()

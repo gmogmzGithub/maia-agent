@@ -21,6 +21,7 @@ typed the message.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import timedelta
 from pathlib import Path
@@ -39,13 +40,14 @@ from realestate.db.models import (
     OutboxMessage,
     SuppressionRecord,
 )
-from realestate.domain.commercial.actors import NotAuthorized
+from realestate.domain.commercial.actors import NotAuthorized, NotFound
+from realestate.domain.commercial.assignment import Assignment
 from realestate.domain.commercial.handling import (
-    AlreadyHandled,
     ConversationHandling,
     HumanReply,
     NotHandling,
     ReleaseHandling,
+    ReplyRecorded,
     TakeHandling,
 )
 from realestate.domain.inbox import InboxService
@@ -72,6 +74,24 @@ def key(name: str) -> str:
     return f"{name}:{uuid.uuid4().hex}"
 
 
+async def assigned_inbound(session, built, **kwargs):  # noqa: ANN001, ANN202
+    """Create inbound work and attach its deterministic Responsible Advisor."""
+    from realestate.domain.commercial.identity import CommercialIdentity
+    from realestate.domain.commercial.opportunities import OpportunityManagement
+
+    conversation = await visits.inbound(session, **kwargs)
+    contact_id = await CommercialIdentity(session).contact_for_lead(
+        conversation.lead_id
+    )
+    assert contact_id is not None
+    opportunity = await OpportunityManagement(session).open_demand_for_contact(
+        contact_id
+    )
+    assert opportunity is not None
+    await Assignment(session).assign(built.admin, opportunity.id)
+    return conversation
+
+
 # -- The default and the transitions --------------------------------------
 
 
@@ -79,8 +99,8 @@ async def test_a_conversation_with_no_row_is_maias(operation) -> None:
     """An absent row means Maia, so no backfill can be wrong."""
     database, built = operation
     async with database.session_scope() as session:
-        conversation = await visits.inbound(
-            session, wamid="w-default", body="Hola, busco casa"
+        conversation = await assigned_inbound(
+            session, built, wamid="w-default", body="Hola, busco casa"
         )
         snapshot = await ConversationHandling(session).snapshot(conversation.id)
         may = await ConversationHandling(session).maia_may_reply(conversation.id)
@@ -93,8 +113,8 @@ async def test_a_conversation_with_no_row_is_maias(operation) -> None:
 async def test_an_advisor_takes_a_conversation_and_maia_stops(operation) -> None:
     database, built = operation
     async with database.session_scope() as session:
-        conversation = await visits.inbound(
-            session, wamid="w-take", body="Hola, busco casa"
+        conversation = await assigned_inbound(
+            session, built, wamid="w-take", body="Hola, busco casa"
         )
         await session.commit()
 
@@ -125,8 +145,8 @@ async def test_product_cannot_take_a_conversation(operation) -> None:
     """Maia does not "take" a conversation; being the default is not a claim."""
     database, built = operation
     async with database.session_scope() as session:
-        conversation = await visits.inbound(
-            session, wamid="w-product", body="Hola"
+        conversation = await assigned_inbound(
+            session, built, wamid="w-product", body="Hola"
         )
         with pytest.raises(NotAuthorized):
             await ConversationHandling(session).take(
@@ -137,10 +157,12 @@ async def test_product_cannot_take_a_conversation(operation) -> None:
             )
 
 
-async def test_a_second_advisor_is_refused_by_name(operation) -> None:
+async def test_another_advisor_cannot_reach_the_conversation(operation) -> None:
     database, built = operation
     async with database.session_scope() as session:
-        conversation = await visits.inbound(session, wamid="w-race", body="Hola")
+        conversation = await assigned_inbound(
+            session, built, wamid="w-race", body="Hola"
+        )
         await session.commit()
 
     async with database.session_scope() as session:
@@ -151,7 +173,7 @@ async def test_a_second_advisor_is_refused_by_name(operation) -> None:
         await session.commit()
 
     async with database.session_scope() as session:
-        with pytest.raises(AlreadyHandled) as raised:
+        with pytest.raises(NotFound):
             await ConversationHandling(session).take(
                 built.second_advisor,
                 TakeHandling(
@@ -159,8 +181,9 @@ async def test_a_second_advisor_is_refused_by_name(operation) -> None:
                 ),
             )
 
-    assert built.advisor.display_name in str(raised.value)
-    assert "administrador" in str(raised.value)
+    async with database.session_scope() as session:
+        snapshot = await ConversationHandling(session).snapshot(conversation.id)
+    assert snapshot.holder_member_id == built.advisor_id
 
 
 async def test_two_advisors_taking_concurrently_produce_one_holder(
@@ -168,7 +191,9 @@ async def test_two_advisors_taking_concurrently_produce_one_holder(
 ) -> None:
     database, built = operation
     async with database.session_scope() as session:
-        conversation = await visits.inbound(session, wamid="w-race2", body="Hola")
+        conversation = await assigned_inbound(
+            session, built, wamid="w-race2", body="Hola"
+        )
         await session.commit()
 
     winners: list[uuid.UUID] = []
@@ -191,7 +216,7 @@ async def test_two_advisors_taking_concurrently_produce_one_holder(
                     ),
                 )
                 await second.commit()
-            except AlreadyHandled:
+            except NotFound:
                 refused += 1
 
     assert winners == [built.advisor_id]
@@ -211,7 +236,9 @@ async def test_two_advisors_taking_concurrently_produce_one_holder(
 async def test_an_administrator_may_move_handling_explicitly(operation) -> None:
     database, built = operation
     async with database.session_scope() as session:
-        conversation = await visits.inbound(session, wamid="w-admin", body="Hola")
+        conversation = await assigned_inbound(
+            session, built, wamid="w-admin", body="Hola"
+        )
         await session.commit()
     async with database.session_scope() as session:
         await ConversationHandling(session).take(
@@ -233,7 +260,9 @@ async def test_an_administrator_may_move_handling_explicitly(operation) -> None:
 async def test_only_the_holder_or_an_administrator_releases(operation) -> None:
     database, built = operation
     async with database.session_scope() as session:
-        conversation = await visits.inbound(session, wamid="w-release", body="Hola")
+        conversation = await assigned_inbound(
+            session, built, wamid="w-release", body="Hola"
+        )
         await session.commit()
     async with database.session_scope() as session:
         await ConversationHandling(session).take(
@@ -243,7 +272,7 @@ async def test_only_the_holder_or_an_administrator_releases(operation) -> None:
         await session.commit()
 
     async with database.session_scope() as session:
-        with pytest.raises(AlreadyHandled):
+        with pytest.raises(NotFound):
             await ConversationHandling(session).release(
                 built.second_advisor,
                 ReleaseHandling(
@@ -267,7 +296,9 @@ async def test_only_the_holder_or_an_administrator_releases(operation) -> None:
 async def test_releasing_into_awaiting_contact_keeps_maia_silent(operation) -> None:
     database, built = operation
     async with database.session_scope() as session:
-        conversation = await visits.inbound(session, wamid="w-wait", body="Hola")
+        conversation = await assigned_inbound(
+            session, built, wamid="w-wait", body="Hola"
+        )
         await session.commit()
     async with database.session_scope() as session:
         handling = ConversationHandling(session)
@@ -294,7 +325,9 @@ async def test_the_contact_writing_again_ends_the_wait(operation) -> None:
     ends it — while Human and AdminReview are deliberately untouched."""
     database, built = operation
     async with database.session_scope() as session:
-        conversation = await visits.inbound(session, wamid="w-wait2", body="Hola")
+        conversation = await assigned_inbound(
+            session, built, wamid="w-wait2", body="Hola"
+        )
         handling = ConversationHandling(session)
         await handling.take(
             built.advisor,
@@ -311,7 +344,9 @@ async def test_the_contact_writing_again_ends_the_wait(operation) -> None:
         await session.commit()
 
     async with database.session_scope() as session:
-        await visits.inbound(session, wamid="w-wait3", body="Sigo interesado")
+        await assigned_inbound(
+            session, built, wamid="w-wait3", body="Sigo interesado"
+        )
         snapshot = await ConversationHandling(session).snapshot(conversation.id)
 
     assert snapshot.mode is HandlingMode.MAIA
@@ -323,7 +358,9 @@ async def test_an_inbound_message_never_takes_a_conversation_from_a_human(
 ) -> None:
     database, built = operation
     async with database.session_scope() as session:
-        conversation = await visits.inbound(session, wamid="w-hold", body="Hola")
+        conversation = await assigned_inbound(
+            session, built, wamid="w-hold", body="Hola"
+        )
         await ConversationHandling(session).take(
             built.advisor,
             TakeHandling(conversation_id=conversation.id, command_key=key("take")),
@@ -331,7 +368,9 @@ async def test_an_inbound_message_never_takes_a_conversation_from_a_human(
         await session.commit()
 
     async with database.session_scope() as session:
-        await visits.inbound(session, wamid="w-hold2", body="¿Hay novedades?")
+        await assigned_inbound(
+            session, built, wamid="w-hold2", body="¿Hay novedades?"
+        )
         snapshot = await ConversationHandling(session).snapshot(conversation.id)
 
     assert snapshot.mode is HandlingMode.HUMAN
@@ -344,7 +383,9 @@ async def test_an_inbound_message_never_takes_a_conversation_from_a_human(
 async def test_a_human_held_conversation_is_not_claimable_by_maia(operation) -> None:
     database, built = operation
     async with database.session_scope() as session:
-        conversation = await visits.inbound(session, wamid="w-claim", body="Hola")
+        conversation = await assigned_inbound(
+            session, built, wamid="w-claim", body="Hola"
+        )
         await ConversationHandling(session).take(
             built.advisor,
             TakeHandling(conversation_id=conversation.id, command_key=key("take")),
@@ -371,8 +412,8 @@ async def test_a_human_arriving_mid_turn_wins_and_the_draft_is_withheld(
     from realestate.worker.whatsapp import WhatsAppWorker
 
     async with database.session_scope() as session:
-        conversation = await visits.inbound(
-            session, wamid="w-midturn", body="Quiero información"
+        conversation = await assigned_inbound(
+            session, built, wamid="w-midturn", body="Quiero información"
         )
         await session.commit()
     await age_pending_inbox(database)
@@ -444,8 +485,8 @@ async def test_a_human_arriving_mid_turn_wins_and_the_draft_is_withheld(
 async def test_a_human_reply_goes_out_through_the_gate(operation) -> None:
     database, built = operation
     async with database.session_scope() as session:
-        conversation = await visits.inbound(
-            session, wamid="w-reply", body="¿Me puedes ayudar?"
+        conversation = await assigned_inbound(
+            session, built, wamid="w-reply", body="¿Me puedes ayudar?"
         )
         await ConversationHandling(session).take(
             built.advisor,
@@ -485,7 +526,9 @@ async def test_a_human_reply_goes_out_through_the_gate(operation) -> None:
 async def test_an_advisor_who_does_not_hold_it_cannot_reply(operation) -> None:
     database, built = operation
     async with database.session_scope() as session:
-        conversation = await visits.inbound(session, wamid="w-nohold", body="Hola")
+        conversation = await assigned_inbound(
+            session, built, wamid="w-nohold", body="Hola"
+        )
         await session.commit()
 
     async with database.session_scope() as session:
@@ -498,6 +541,59 @@ async def test_an_advisor_who_does_not_hold_it_cannot_reply(operation) -> None:
                     command_key=key("reply"),
                 ),
             )
+
+
+async def test_a_reply_waits_for_a_concurrent_authority_transfer(operation) -> None:
+    """A transfer that holds the authority row wins before a stale reply checks it."""
+    database, built = operation
+    async with database.session_scope() as session:
+        conversation = await assigned_inbound(
+            session, built, wamid="w-reply-transfer", body="¿Me ayudan?"
+        )
+        await ConversationHandling(session).take(
+            built.advisor,
+            TakeHandling(conversation_id=conversation.id, command_key=key("take")),
+        )
+        await session.commit()
+
+    async def stale_reply() -> ReplyRecorded:
+        async with database.session_scope() as reply_session:
+            recorded = await ConversationHandling(reply_session).reply(
+                built.advisor,
+                HumanReply(
+                    conversation_id=conversation.id,
+                    body="Yo sigo atendiendo.",
+                    command_key=key("reply"),
+                ),
+            )
+            await reply_session.commit()
+            return recorded
+
+    async with database.session_scope() as transfer_session:
+        await ConversationHandling(transfer_session).take(
+            built.admin,
+            TakeHandling(
+                conversation_id=conversation.id,
+                command_key=key("admin-transfer"),
+            ),
+        )
+        reply_task = asyncio.create_task(stale_reply())
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(asyncio.shield(reply_task), timeout=0.2)
+        await transfer_session.commit()
+
+    with pytest.raises(NotHandling):
+        await reply_task
+
+    async with database.session_scope() as session:
+        staged = list(
+            await session.scalars(
+                select(OutboxMessage).where(
+                    OutboxMessage.conversation_id == conversation.id
+                )
+            )
+        )
+    assert staged == []
 
 
 async def test_a_suppressed_contact_may_still_be_answered_by_a_human(
@@ -513,7 +609,9 @@ async def test_a_suppressed_contact_may_still_be_answered_by_a_human(
     """
     database, built = operation
     async with database.session_scope() as session:
-        conversation = await visits.inbound(session, wamid="w-supp", body="Hola")
+        conversation = await assigned_inbound(
+            session, built, wamid="w-supp", body="Hola"
+        )
         session.add(
             SuppressionRecord(
                 lead_id=conversation.lead_id,
@@ -556,7 +654,9 @@ async def test_a_closed_service_window_refuses_the_human_reply(operation) -> Non
     """Meta's 24-hour rule is a platform constraint, not a product preference."""
     database, built = operation
     async with database.session_scope() as session:
-        conversation = await visits.inbound(session, wamid="w-window", body="Hola")
+        conversation = await assigned_inbound(
+            session, built, wamid="w-window", body="Hola"
+        )
         await ConversationHandling(session).take(
             built.advisor,
             TakeHandling(conversation_id=conversation.id, command_key=key("take")),
@@ -591,7 +691,9 @@ async def test_a_closed_service_window_refuses_the_human_reply(operation) -> Non
 async def test_an_empty_human_reply_is_refused(operation) -> None:
     database, built = operation
     async with database.session_scope() as session:
-        conversation = await visits.inbound(session, wamid="w-empty", body="Hola")
+        conversation = await assigned_inbound(
+            session, built, wamid="w-empty", body="Hola"
+        )
         await ConversationHandling(session).take(
             built.advisor,
             TakeHandling(conversation_id=conversation.id, command_key=key("take")),
@@ -616,7 +718,9 @@ async def test_taking_the_same_conversation_twice_with_one_key_replays(
     database, built = operation
     command_key = key("take")
     async with database.session_scope() as session:
-        conversation = await visits.inbound(session, wamid="w-replay", body="Hola")
+        conversation = await assigned_inbound(
+            session, built, wamid="w-replay", body="Hola"
+        )
         await session.commit()
 
     async with database.session_scope() as session:
@@ -643,15 +747,21 @@ async def test_handling_rows_for_a_whole_page_come_in_one_query(operation) -> No
     query per line."""
     database, built = operation
     async with database.session_scope() as session:
-        first = await visits.inbound(session, wamid="w-page1", body="Hola")
+        first = await assigned_inbound(
+            session, built, wamid="w-page1", body="Hola"
+        )
         await ConversationHandling(session).take(
             built.advisor,
             TakeHandling(conversation_id=first.id, command_key=key("take")),
         )
         await session.commit()
     async with database.session_scope() as session:
-        second = await visits.inbound(
-            session, wamid="w-page2", body="Hola", from_wa_id="5213311112222"
+        second = await assigned_inbound(
+            session,
+            built,
+            wamid="w-page2",
+            body="Hola",
+            from_wa_id="5213311112222",
         )
         await session.commit()
 
@@ -671,7 +781,9 @@ async def test_note_inbound_on_a_conversation_with_no_row_does_nothing(
 ) -> None:
     database, built = operation
     async with database.session_scope() as session:
-        conversation = await visits.inbound(session, wamid="w-noop", body="Hola")
+        conversation = await assigned_inbound(
+            session, built, wamid="w-noop", body="Hola"
+        )
         assert (
             await ConversationHandling(session).note_inbound(
                 built.product, conversation
@@ -685,8 +797,8 @@ async def test_an_administrator_may_reply_on_a_conversation_a_human_holds(
 ) -> None:
     database, built = operation
     async with database.session_scope() as session:
-        conversation = await visits.inbound(
-            session, wamid="w-adminreply", body="¿Me ayudan?"
+        conversation = await assigned_inbound(
+            session, built, wamid="w-adminreply", body="¿Me ayudan?"
         )
         await ConversationHandling(session).take(
             built.advisor,
@@ -724,7 +836,9 @@ async def test_releasing_into_a_human_mode_is_refused(operation) -> None:
     """``release`` hands authority back; taking it is what ``take`` is for."""
     database, built = operation
     async with database.session_scope() as session:
-        conversation = await visits.inbound(session, wamid="w-badmode", body="Hola")
+        conversation = await assigned_inbound(
+            session, built, wamid="w-badmode", body="Hola"
+        )
         await session.commit()
 
     async with database.session_scope() as session:
@@ -744,7 +858,9 @@ async def test_releasing_a_conversation_maia_already_holds_changes_nothing(
 ) -> None:
     database, built = operation
     async with database.session_scope() as session:
-        conversation = await visits.inbound(session, wamid="w-already", body="Hola")
+        conversation = await assigned_inbound(
+            session, built, wamid="w-already", body="Hola"
+        )
         await session.commit()
 
     async with database.session_scope() as session:
@@ -770,7 +886,9 @@ async def test_every_handling_label_has_spanish(operation) -> None:
 async def test_a_snapshot_reads_its_own_labels(operation) -> None:
     database, built = operation
     async with database.session_scope() as session:
-        conversation = await visits.inbound(session, wamid="w-labels", body="Hola")
+        conversation = await assigned_inbound(
+            session, built, wamid="w-labels", body="Hola"
+        )
         await ConversationHandling(session).take(
             built.advisor,
             TakeHandling(conversation_id=conversation.id, command_key=key("take")),
@@ -793,8 +911,8 @@ async def test_a_reply_after_product_already_wrote_answers_the_last_message(
     open, not the caller."""
     database, built = operation
     async with database.session_scope() as session:
-        conversation = await visits.inbound(
-            session, wamid="w-after-out", body="¿Me ayudan?"
+        conversation = await assigned_inbound(
+            session, built, wamid="w-after-out", body="¿Me ayudan?"
         )
         await ConversationHandling(session).take(
             built.advisor,
@@ -847,14 +965,14 @@ async def test_a_conversation_with_no_inbound_message_cannot_be_answered(
         lead = await fixtures.make_lead(session, "5213300001111")
         conversation = await fixtures.make_conversation(session, lead)
         await ConversationHandling(session).take(
-            built.advisor,
+            built.admin,
             TakeHandling(conversation_id=conversation.id, command_key=key("take")),
         )
         await session.commit()
 
     async with database.session_scope() as session:
         recorded = await ConversationHandling(session).reply(
-            built.advisor,
+            built.admin,
             HumanReply(
                 conversation_id=conversation.id,
                 body="Hola, soy el asesor.",

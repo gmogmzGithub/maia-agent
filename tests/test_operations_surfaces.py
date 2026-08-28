@@ -160,8 +160,13 @@ async def test_every_surface_ships_the_accessible_spanish_shell(
     assert 'lang="es-MX"' in response.text
     assert 'href="#contenido"' in response.text
     assert "<h1>" in response.text
-    # No JavaScript is required for any action on any surface.
-    assert "<script" not in response.text
+    # Forms still submit normally; the progressive layer only exposes pending
+    # state and prevents an impatient double submit from looking successful.
+    assert 'id="estado-envio"' in response.text
+    assert 'aria-live="polite"' in response.text
+    assert 'form.setAttribute("aria-busy", "true")' in response.text
+    assert 'button.textContent = "Procesando…"' in response.text
+    assert "Espera la confirmación del servidor" in response.text
 
 
 @pytest.mark.parametrize("path", STAGE_THREE_PATHS)
@@ -192,6 +197,7 @@ async def test_the_team_surface_says_who_can_receive_work_and_why_not(
     assert "Falta calendario" in response.text
     assert "Predeterminado" in response.text
     assert "no se pueden confirmar visitas" in response.text
+    assert '<label class="check"><input type="checkbox" name="asesora"' in response.text
     # The distinction the whole stage rests on, stated on the screen.
     assert "no lo vuelve responsable" in response.text
 
@@ -474,6 +480,7 @@ async def test_recording_a_visit_outcome_from_the_surface(wired) -> None:
 
     page = await client.get("/crm/agenda", auth=ADVISOR)
     assert "¿Se realizó la visita?" in page.text
+    assert '<label class="check"><input type="checkbox" name="invitar"' in page.text
 
     saved = await client.post(
         f"/crm/agenda/{appointment_id}/resultado",
@@ -1185,7 +1192,7 @@ async def test_a_reply_the_gate_refuses_explains_what_to_do(wired) -> None:
     assert "24 horas" in denied.text
 
 
-async def test_a_second_advisor_taking_a_held_conversation_is_told_by_name(
+async def test_a_second_advisor_cannot_reach_a_held_conversation(
     wired,
 ) -> None:
     client, database, built = wired
@@ -1200,16 +1207,12 @@ async def test_a_second_advisor_taking_a_held_conversation_is_told_by_name(
     )
 
     admin_page = await client.get(f"/crm/bandeja/{conversation.id}", auth=ADMIN)
-    # The Administrator may move it, so the refusal is exercised through the
-    # holder-mismatch path an Advisor would hit.
+    # The Administrator may move it; another Advisor cannot discover it.
     async with database.session_scope() as session:
-        from realestate.domain.commercial.handling import (
-            AlreadyHandled,
-            ConversationHandling,
-            TakeHandling,
-        )
+        from realestate.domain.commercial.actors import NotFound
+        from realestate.domain.commercial.handling import TakeHandling
 
-        with pytest.raises(AlreadyHandled):
+        with pytest.raises(NotFound):
             await ConversationHandling(session).take(
                 built.second_advisor,
                 TakeHandling(
@@ -1241,7 +1244,8 @@ async def test_acknowledging_a_pending_request_from_the_conversation(wired) -> N
         follow_redirects=True,
     )
 
-    assert "Registramos que tú estás atendiendo" in acknowledged.text
+    assert "Confirmaste que ya atiendes la solicitud" in acknowledged.text
+    assert "Maia sigue pausada" in acknowledged.text
 
 
 async def test_an_unparsable_request_id_is_refused(wired) -> None:
@@ -1280,6 +1284,20 @@ async def test_dismissing_an_alert_from_the_surface(wired) -> None:
 
     assert "Se marcó el aviso como visto." in dismissed.text
     assert "No hay avisos abiertos." in dismissed.text
+
+
+async def test_an_unknown_alert_never_looks_acknowledged(wired) -> None:
+    client, _database, _built = wired
+
+    refused = await client.post(
+        f"/crm/alertas/{uuid.uuid4()}",
+        auth=ADMIN,
+        data={"clave": uuid.uuid4().hex},
+        follow_redirects=True,
+    )
+
+    assert "No encontramos ese aviso." in refused.text
+    assert "Se marcó el aviso como visto." not in refused.text
 
 
 async def test_releasing_into_awaiting_contact_from_the_surface(wired) -> None:

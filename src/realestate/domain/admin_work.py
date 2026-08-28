@@ -21,6 +21,7 @@ from realestate.db.models import (
     AppointmentStatus,
     Conversation,
     InactiveReviewStatus,
+    InternalAlertKind,
     Lead,
     LeadNotificationStatus,
     OrganizationMember,
@@ -28,16 +29,19 @@ from realestate.db.models import (
     Property,
 )
 from realestate.domain.administration import Administrator
+from realestate.domain.commercial.actors import Actor, Authority
 from realestate.domain.appointments import NEEDS_REVIEW_MESSAGE, confirmation_message
 from realestate.domain.audit import record_audit
 from realestate.domain.availability import WeeklySchedule
 from realestate.domain.scheduling.calendars import CalendarDirectory, CalendarPort
+from realestate.domain.scheduling.appointment_handoff import AppointmentHandoff
 from realestate.domain.outbound import (
     Denied,
     OutboundIntent,
     OutboundMessaging,
     Purpose,
 )
+from realestate.domain.internal_alerts import InternalAlerts
 
 APPOINTMENT_NEEDS_REVIEW = "AppointmentNeedsReview"
 PENDING_MANUAL_NOTIFICATION = "PendingManualAppointmentNotification"
@@ -86,10 +90,16 @@ class AdminWorkService:
         session: AsyncSession,
         calendars: CalendarDirectory,
         schedule: WeeklySchedule,
+        day_of_reminder_hour: int = 9,
     ) -> None:
         self._session = session
         self._calendars = calendars
         self._schedule = schedule
+        self._handoff = AppointmentHandoff(
+            session,
+            schedule,
+            day_of_reminder_hour=day_of_reminder_hour,
+        )
 
     async def _calendar_for(self, row: Appointment) -> CalendarPort | None:
         """The calendar this appointment's event would be on.
@@ -283,6 +293,59 @@ class AdminWorkService:
         if action == REJECT and exists:
             return {"result": "conflict"}
 
+        if action == CONFIRM and row.rescheduled_from_id is not None:
+            original: Appointment | None = await self._session.scalar(
+                select(Appointment)
+                .where(Appointment.id == row.rescheduled_from_id)
+                .with_for_update()
+            )
+            if (
+                original is None
+                or original.status != AppointmentStatus.CONFIRMED.value
+            ):
+                return {"result": "conflict"}
+            original_calendar = await self._calendar_for(original)
+            if original_calendar is None:
+                return {
+                    "result": "still_ambiguous",
+                    "detail": "La cita anterior no tiene un calendario autoritativo.",
+                }
+            released = True
+            if original.calendar_event_id is not None:
+                deleted = await original_calendar.delete_event(
+                    original.calendar_event_id
+                )
+                released = deleted.outcome is CalendarOutcome.OK
+            if released:
+                original.calendar_event_id = None
+            else:
+                original.last_error = (
+                    "El evento anterior no se pudo eliminar del calendario."
+                )
+                product = Actor(
+                    organization_id=row.organization_id,
+                    authority=Authority.PRODUCT,
+                    member_id=None,
+                    label="AppointmentReconciliation",
+                    display_name="Maia",
+                )
+                await InternalAlerts(self._session).raise_alert(
+                    product,
+                    kind=InternalAlertKind.APPOINTMENT_ADVISOR_REVIEW,
+                    subject_type="Appointment",
+                    subject_id=str(original.id),
+                    title=f"Evento duplicado en el calendario ({original.reference})",
+                    body=(
+                        "La reprogramación se confirmó, pero el evento anterior "
+                        "no se pudo eliminar. Bórralo manualmente."
+                    ),
+                    dedupe_key=f"stale-calendar-event:{original.id}",
+                    recipient_member_id=original.advisor_id,
+                )
+            original.status = AppointmentStatus.RESCHEDULED.value
+            original.rescheduled_to_id = row.id
+            original.resolved_at = original.resolved_at or _now()
+
         row.status = (
             AppointmentStatus.CONFIRMED.value
             if action == CONFIRM
@@ -291,6 +354,17 @@ class AdminWorkService:
         row.calendar_event_id = evidence.event_id if action == CONFIRM else None
         row.resolved_at = _now()
         row.last_error = None
+        if action == CONFIRM:
+            await self._handoff.complete(
+                Actor(
+                    organization_id=row.organization_id,
+                    authority=Authority.PRODUCT,
+                    member_id=None,
+                    label="AppointmentReconciliation",
+                    display_name="Maia",
+                ),
+                row,
+            )
         notification = await self._release_resolution(row)
         await self._session.commit()
         return {

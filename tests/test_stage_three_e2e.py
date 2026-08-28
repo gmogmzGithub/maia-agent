@@ -393,7 +393,10 @@ async def test_a_confirmed_visit_can_be_moved_atomically_by_maia(flow) -> None:
 
     async def book(tool, prompt):  # noqa: ANN001, ANN202
         slots = await tool("get_available_slots", {"reference": "Casa Roble"})
-        chosen["later"] = slots["candidates"][2]["start"]
+        # Keep the replacement outside the original 90-minute interval.  The
+        # old Calendar event must remain authoritative until the replacement
+        # has been secured, so an overlapping candidate is correctly refused.
+        chosen["later"] = slots["candidates"][-1]["start"]
         result = await tool(
             "book_appointment",
             {"reference": "Casa Roble", "start": slots["candidates"][0]["start"]},

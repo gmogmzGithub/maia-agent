@@ -30,7 +30,7 @@ NOW = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
 STAGE_1_HEAD = "0011_quarantine_legacy_outbound"
 CONTACTS_REVISION = "0012_organization_and_contacts"
 OPPORTUNITIES_REVISION = "0013_opportunities_and_actions"
-HEAD = "0018_human_operation_and_visits"
+HEAD = "0020_authoritative_catalog"
 
 
 @pytest.fixture
@@ -160,6 +160,11 @@ def test_an_empty_database_upgrades_to_head(at_stage_one) -> None:
         "opportunity_exceptions",
         "commercial_transactions",
         "commercial_command_receipts",
+        "developments",
+        "unit_models",
+        "catalog_listings",
+        "listing_offers",
+        "listing_media",
     ):
         assert _scalar(engine, f"SELECT count(*) FROM {table}") == 0
 
@@ -484,6 +489,10 @@ def test_the_invariant_constraints_exist_after_the_upgrade(at_stage_one) -> None
         "uq_need_criterion_current",
         "uq_opportunity_exception_open",
         "uq_organization_default_advisor",
+        "uq_appointments_active_reschedule",
+        "uq_listing_media_cover",
+        "uq_listing_media_order",
+        "uq_listing_media_checksum",
     ):
         assert name in indexes, name
 
@@ -503,6 +512,15 @@ def test_the_invariant_constraints_exist_after_the_upgrade(at_stage_one) -> None
         "ck_organization_members_advisor_advises",
     ):
         assert name in constraints, name
+
+    exclusions = {
+        row[0]
+        for row in _rows(
+            engine,
+            "SELECT conname FROM pg_constraint WHERE contype = 'x'",
+        )
+    }
+    assert "ex_appointments_calendar_overlap" in exclusions
 
 
 def test_whatsapp_identity_is_unique_inside_each_organization(at_stage_one) -> None:

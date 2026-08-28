@@ -70,6 +70,7 @@ class StubCalendar:
         self.created: list[str] = []
         self.deleted: list[str] = []
         self.busy_reads = 0
+        self.find_reads = 0
         self.find_result: EventResult | None = None
 
     async def busy_between(self, start, end) -> BusyResult:  # noqa: ANN001
@@ -95,6 +96,7 @@ class StubCalendar:
         return EventResult(CalendarOutcome.OK, event_id=f"evt-{reference}")
 
     async def find_by_reference(self, reference) -> EventResult:  # noqa: ANN001
+        self.find_reads += 1
         if self.find_result is not None:
             return self.find_result
         if reference in self.created:

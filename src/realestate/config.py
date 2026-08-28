@@ -117,6 +117,14 @@ class Settings(BaseSettings):
     property_catalog_root: str = Field(
         default="src/properties", alias="PROPERTY_CATALOG_ROOT"
     )
+    # Approved Listing media and its derived local cache. These are storage
+    # locations, not credentials; Compose mounts both under one durable volume.
+    listing_media_root: str = Field(
+        default="var/listing-media/originals", alias="LISTING_MEDIA_ROOT"
+    )
+    listing_media_cache_root: str = Field(
+        default="var/listing-media/cache", alias="LISTING_MEDIA_CACHE_ROOT"
+    )
 
     # --- Meta WhatsApp Cloud API (P-021, TC-003) -----------------------------
     meta_app_secret: str = Field(default="", alias="META_APP_SECRET")

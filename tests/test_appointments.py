@@ -19,12 +19,14 @@ from realestate.channels.whatsapp.payload import parse_webhook
 from realestate.db.engine import Database
 from realestate.db.models import (
     Appointment,
+    CatalogListing,
     AppointmentStatus,
     AvailabilitySnapshot,
     Conversation,
     InboxMessage,
     Lead,
     LeadEngagementCycle,
+    Organization,
     Property,
     PropertyStatus,
     OutboxMessage,
@@ -34,7 +36,7 @@ from realestate.domain.availability import Interval
 from realestate.domain.inbox import InboxService
 from realestate.domain.scheduling.appointments import Appointments
 from realestate.domain.properties import ArtifactStore, PropertyService
-from tests.conftest import DATABASE_URL, requires_postgres
+from tests.conftest import DATABASE_URL, requires_postgres, reset_property_inventory
 from tests.fixtures import commercial, webhooks
 from tests.fixtures.stubs import SCHEDULE, StubCalendar
 
@@ -57,8 +59,8 @@ def policy() -> AppointmentPolicy:
 async def booking(tmp_path: Path):
     database = Database(DATABASE_URL)
     async with database.session_scope() as session:
-        for model in (Appointment, AvailabilitySnapshot, Conversation,
-                      LeadEngagementCycle, Lead, Property):
+        await reset_property_inventory(session)
+        for model in (Conversation, LeadEngagementCycle, Lead):
             await session.execute(delete(model))
         await session.commit()
 
@@ -131,6 +133,36 @@ async def cancel(database, service, **kwargs) -> dict:
 
 
 # --- Offering slots -----------------------------------------------------------
+
+
+async def test_availability_hides_another_organizations_property(booking) -> None:
+    database, _calendar, service = booking
+    suffix = datetime.now(tz=UTC).strftime("%Y%m%d%H%M%S%f")
+    reference = f"foreign-availability-{suffix}"
+    conversation = await conversation_of(database)
+    async with database.session_scope() as session:
+        other = Organization(
+            slug=f"availability-{suffix}", display_name="Otra organización"
+        )
+        session.add(other)
+        await session.flush()
+        session.add(
+            Property(
+                organization_id=other.id,
+                property_key=reference,
+                name="Propiedad ajena",
+                normalized_name=f"propiedad ajena disponibilidad {suffix}",
+                status=PropertyStatus.ACTIVE.value,
+            )
+        )
+        conversation = await session.merge(conversation)
+        result = await (await service(session)).available_slots(
+            conversation=conversation,
+            reference=reference,
+        )
+        await session.rollback()
+
+    assert result == {"result": "not_found"}
 
 
 async def test_the_first_call_creates_a_snapshot_and_returns_candidates(booking) -> None:
@@ -323,6 +355,21 @@ async def test_a_property_deactivated_after_the_offer_blocks_the_booking(booking
     assert calendar.created == []
     async with database.session_scope() as session:
         assert (await session.execute(select(Appointment))).scalars().all() == []
+
+
+async def test_catalog_authority_gate_blocks_new_slots_even_if_legacy_is_active(
+    booking,
+) -> None:
+    database, _calendar, service = booking
+    async with database.session_scope() as session:
+        listing = (await session.scalars(select(CatalogListing))).one()
+        listing.authority = "Revoked"
+        listing.authority_evidence = "Revocación de prueba"
+        await session.commit()
+
+    result = await offer(database, service)
+
+    assert result["result"] == "property_inactive"
 
 
 async def test_a_slot_taken_between_offer_and_booking_yields_alternatives(booking) -> None:

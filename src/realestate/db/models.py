@@ -16,6 +16,7 @@ from __future__ import annotations
 import enum
 import uuid
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import (
@@ -24,8 +25,10 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -34,7 +37,7 @@ from sqlalchemy import (
 
 # Aliased: ``InboxMessage.text`` shadows the bare name inside that class body.
 from sqlalchemy import text as sql_text
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID, ExcludeConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from realestate.db.engine import Base
@@ -56,6 +59,65 @@ class PropertyInactiveReason(str, enum.Enum):
     TEMPORARILY_UNAVAILABLE = "TemporarilyUnavailable"
     WITHDRAWN = "Withdrawn"
     UNSPECIFIED = "Unspecified"
+
+
+class FactsReviewState(str, enum.Enum):
+    PENDING = "Pending"
+    APPROVED = "Approved"
+    NEEDS_REVIEW = "NeedsReview"
+
+
+class ListingSourceKind(str, enum.Enum):
+    ORGANIZATION = "Organization"
+    COLLABORATOR = "Collaborator"
+
+
+class ListingAvailability(str, enum.Enum):
+    AVAILABLE = "Available"
+    RESERVED = "Reserved"
+    SOLD = "Sold"
+    RENTED = "Rented"
+    TEMPORARILY_UNAVAILABLE = "TemporarilyUnavailable"
+    UNKNOWN = "Unknown"
+
+
+class ListingPublicationState(str, enum.Enum):
+    DRAFT = "Draft"
+    PUBLISHED = "Published"
+    UNPUBLISHED = "Unpublished"
+
+
+class ListingAuthority(str, enum.Enum):
+    AUTHORIZED = "Authorized"
+    PENDING = "Pending"
+    EXPIRED = "Expired"
+    REVOKED = "Revoked"
+
+
+class ListingOfferOperation(str, enum.Enum):
+    SALE = "Sale"
+    RENTAL = "Rental"
+    PRESALE = "Presale"
+
+
+class OfferAvailability(str, enum.Enum):
+    AVAILABLE = "Available"
+    RESERVED = "Reserved"
+    COMPLETED = "Completed"
+    TEMPORARILY_UNAVAILABLE = "TemporarilyUnavailable"
+    WITHDRAWN = "Withdrawn"
+    UNKNOWN = "Unknown"
+
+
+class PublicPriceVisibility(str, enum.Enum):
+    VISIBLE = "Visible"
+    HIDDEN = "Hidden"
+
+
+class CatalogPresentationTier(str, enum.Enum):
+    LAREVIA = "Larevia"
+    PREMIUM = "Premium"
+    SUPER_PREMIUM = "SuperPremium"
 
 
 class AgentRole(str, enum.Enum):
@@ -84,9 +146,7 @@ class Property(Base):
     property_key: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     # Case-, whitespace- and diacritic-insensitive form; unique across Stage 0.
-    normalized_name: Mapped[str] = mapped_column(
-        String(200), unique=True, nullable=False
-    )
+    normalized_name: Mapped[str] = mapped_column(String(200), nullable=False)
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default=PropertyStatus.ACTIVE.value
     )
@@ -94,6 +154,39 @@ class Property(Base):
     # Private operational data. It is never stored in the Property Document or
     # returned by the ordinary property-information tool.
     visit_address: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Stage 4 physical truth.  Property Documents are immutable provenance;
+    # these fields are the catalog's reviewed projection and exclude Offer
+    # price/operation, which belong to ``listing_offers``.
+    property_type: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="Other"
+    )
+    physical_facts: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    facts_review_state: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=FactsReviewState.PENDING.value
+    )
+    provenance: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    facts_reviewed_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    facts_reviewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    development_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("developments.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    unit_model_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("unit_models.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     accepted_version_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey(
@@ -126,6 +219,11 @@ class Property(Base):
             "'Withdrawn', 'Unspecified'))",
             name="ck_properties_inactive_reason",
         ),
+        CheckConstraint(
+            "facts_review_state IN ('Pending', 'Approved', 'NeedsReview')",
+            name="ck_properties_facts_review",
+        ),
+        Index("ix_properties_normalized_name", "organization_id", "normalized_name"),
     )
 
 
@@ -1140,6 +1238,25 @@ class Appointment(Base):
         ),
         Index("ix_appointments_upcoming", "status", "starts_at"),
         Index("ix_appointments_advisor", "advisor_id", "starts_at"),
+        Index(
+            "uq_appointments_active_reschedule",
+            "rescheduled_from_id",
+            unique=True,
+            postgresql_where=sql_text(
+                "rescheduled_from_id IS NOT NULL AND status <> 'Rejected'"
+            ),
+        ),
+        ExcludeConstraint(  # type: ignore[no-untyped-call]
+            ("calendar_id", "="),
+            (func.tstzrange(starts_at, ends_at, "[)"), "&&"),
+            where=sql_text(
+                "calendar_id IS NOT NULL AND ("
+                "status IN ('Pending', 'Confirmed', 'NeedsReview') OR "
+                "(status = 'Rescheduled' AND calendar_event_id IS NOT NULL))"
+            ),
+            using="gist",
+            name="ex_appointments_calendar_overlap",
+        ),
     )
 
 
@@ -2778,4 +2895,410 @@ class AppointmentReminder(Base):
         CheckConstraint("kind IN ('DayBefore', 'DayOf')", name="ck_reminder_kind"),
         UniqueConstraint("appointment_id", "kind", name="uq_reminder_appointment_kind"),
         Index("ix_reminders_due", "settled_at", "due_at"),
+    )
+
+
+# ==========================================================================
+# Stage 4 — authoritative real-estate catalog
+#
+# Property is physical truth.  CatalogListing is one source publication and
+# ListingOffer is one commercial operation.  Development and UnitModel do not
+# imply that a physical Property exists.  ListingMedia is source/authority data
+# owned by Product; Maia only receives approved projected URLs.
+# ===========================================================================
+
+
+class Development(Base):
+    __tablename__ = "developments"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    development_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    facts: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    facts_review_state: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=FactsReviewState.PENDING.value
+    )
+    provenance: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    reviewed_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "facts_review_state IN ('Pending', 'Approved', 'NeedsReview')",
+            name="ck_developments_facts_review",
+        ),
+        UniqueConstraint(
+            "organization_id", "development_key", name="uq_developments_org_key"
+        ),
+        UniqueConstraint("organization_id", "id", name="uq_developments_org_id"),
+    )
+
+
+class UnitModel(Base):
+    __tablename__ = "unit_models"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    development_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    model_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    facts: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    facts_review_state: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=FactsReviewState.PENDING.value
+    )
+    provenance: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    reviewed_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "development_id"],
+            ["developments.organization_id", "developments.id"],
+            ondelete="CASCADE",
+            name="fk_unit_models_development_org",
+        ),
+        CheckConstraint(
+            "facts_review_state IN ('Pending', 'Approved', 'NeedsReview')",
+            name="ck_unit_models_facts_review",
+        ),
+        UniqueConstraint(
+            "development_id", "model_key", name="uq_unit_models_development_key"
+        ),
+        UniqueConstraint("organization_id", "id", name="uq_unit_models_org_id"),
+    )
+
+
+class CatalogListing(Base):
+    __tablename__ = "catalog_listings"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    listing_key: Mapped[str] = mapped_column(String(140), nullable=False)
+    property_uuid: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    unit_model_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    source_kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    source_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    source_reference: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    attribution: Mapped[str] = mapped_column(Text, nullable=False)
+    provenance: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    public_location: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    facts: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    facts_review_state: Mapped[str] = mapped_column(String(20), nullable=False)
+    availability: Mapped[str] = mapped_column(String(30), nullable=False)
+    publication_state: Mapped[str] = mapped_column(String(20), nullable=False)
+    authority: Mapped[str] = mapped_column(String(20), nullable=False)
+    authority_evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    freshness_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revalidate_by: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    automatic_tier: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    tier_override: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    tier_override_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    tier_override_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    readiness_override: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    readiness_override_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    readiness_override_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    presentation_policy_version: Mapped[str] = mapped_column(String(60), nullable=False)
+    gallery_path: Mapped[str] = mapped_column(String(240), nullable=False, unique=True)
+    technical_sheet_path: Mapped[str] = mapped_column(
+        String(240), nullable=False, unique=True
+    )
+    legacy_document_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("property_document_versions.id", ondelete="SET NULL"),
+        nullable=True,
+        unique=True,
+    )
+    created_by: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "property_uuid"],
+            ["properties.organization_id", "properties.id"],
+            ondelete="RESTRICT",
+            name="fk_catalog_listings_property_org",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "unit_model_id"],
+            ["unit_models.organization_id", "unit_models.id"],
+            ondelete="RESTRICT",
+            name="fk_catalog_listings_unit_model_org",
+        ),
+        CheckConstraint(
+            "(property_uuid IS NOT NULL) <> (unit_model_id IS NOT NULL)",
+            name="ck_catalog_listings_subject",
+        ),
+        CheckConstraint(
+            "source_kind IN ('Organization', 'Collaborator')",
+            name="ck_catalog_listings_source_kind",
+        ),
+        CheckConstraint(
+            "facts_review_state IN ('Pending', 'Approved', 'NeedsReview')",
+            name="ck_catalog_listings_facts_review",
+        ),
+        CheckConstraint(
+            "availability IN ('Available', 'Reserved', 'Sold', 'Rented', "
+            "'TemporarilyUnavailable', 'Unknown')",
+            name="ck_catalog_listings_availability",
+        ),
+        CheckConstraint(
+            "publication_state IN ('Draft', 'Published', 'Unpublished')",
+            name="ck_catalog_listings_publication",
+        ),
+        CheckConstraint(
+            "authority IN ('Authorized', 'Pending', 'Expired', 'Revoked')",
+            name="ck_catalog_listings_authority",
+        ),
+        CheckConstraint(
+            "automatic_tier IS NULL OR automatic_tier IN "
+            "('Larevia', 'Premium', 'SuperPremium')",
+            name="ck_catalog_listings_auto_tier",
+        ),
+        CheckConstraint(
+            "tier_override IS NULL OR tier_override IN "
+            "('Larevia', 'Premium', 'SuperPremium')",
+            name="ck_catalog_listings_tier_override",
+        ),
+        CheckConstraint(
+            "(tier_override IS NULL) = "
+            "(tier_override_by IS NULL AND tier_override_at IS NULL)",
+            name="ck_catalog_listings_tier_override_actor",
+        ),
+        CheckConstraint(
+            "(readiness_override AND readiness_override_by IS NOT NULL "
+            "AND readiness_override_at IS NOT NULL) OR "
+            "(NOT readiness_override AND readiness_override_by IS NULL "
+            "AND readiness_override_at IS NULL)",
+            name="ck_catalog_listings_readiness_override_actor",
+        ),
+        UniqueConstraint(
+            "organization_id", "listing_key", name="uq_catalog_listings_org_key"
+        ),
+        UniqueConstraint("organization_id", "id", name="uq_catalog_listings_org_id"),
+        Index(
+            "ix_catalog_listings_eligibility",
+            "organization_id",
+            "publication_state",
+            "authority",
+            "availability",
+        ),
+        Index("ix_catalog_listings_property", "property_uuid", "source_kind"),
+    )
+
+
+class ListingOffer(Base):
+    __tablename__ = "listing_offers"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    listing_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    operation: Mapped[str] = mapped_column(String(20), nullable=False)
+    price_amount: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    price_currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    price_visibility: Mapped[str] = mapped_column(String(10), nullable=False)
+    hidden_price_copy: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    terms: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    terms_review_state: Mapped[str] = mapped_column(String(20), nullable=False)
+    availability: Mapped[str] = mapped_column(String(30), nullable=False)
+    unavailable_reason: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    legacy_document_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("property_document_versions.id", ondelete="SET NULL"),
+        nullable=True,
+        unique=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "listing_id"],
+            ["catalog_listings.organization_id", "catalog_listings.id"],
+            ondelete="CASCADE",
+            name="fk_listing_offers_listing_org",
+        ),
+        CheckConstraint(
+            "operation IN ('Sale', 'Rental', 'Presale')",
+            name="ck_listing_offers_operation",
+        ),
+        CheckConstraint("price_amount > 0", name="ck_listing_offers_price"),
+        CheckConstraint(
+            "price_currency IN ('MXN', 'USD')", name="ck_listing_offers_currency"
+        ),
+        CheckConstraint(
+            "price_visibility IN ('Visible', 'Hidden')",
+            name="ck_listing_offers_visibility",
+        ),
+        CheckConstraint(
+            "(price_visibility = 'Hidden') = (hidden_price_copy IS NOT NULL)",
+            name="ck_listing_offers_hidden_copy",
+        ),
+        CheckConstraint(
+            "terms_review_state IN ('Pending', 'Approved', 'NeedsReview')",
+            name="ck_listing_offers_terms_review",
+        ),
+        CheckConstraint(
+            "availability IN ('Available', 'Reserved', 'Completed', "
+            "'TemporarilyUnavailable', 'Withdrawn', 'Unknown')",
+            name="ck_listing_offers_availability",
+        ),
+        UniqueConstraint("listing_id", "operation", name="uq_listing_offers_operation"),
+        UniqueConstraint("organization_id", "id", name="uq_listing_offers_org_id"),
+        Index("ix_listing_offers_listing_availability", "listing_id", "availability"),
+    )
+
+
+class ListingMedia(Base):
+    __tablename__ = "listing_media"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    listing_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    storage_key: Mapped[str] = mapped_column(String(300), nullable=False, unique=True)
+    original_filename: Mapped[str] = mapped_column(String(240), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    provenance: Mapped[str] = mapped_column(Text, nullable=False)
+    authority: Mapped[str] = mapped_column(String(20), nullable=False)
+    authority_evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_cover: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    space_group: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    high_resolution: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    cache_keys: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    uploaded_by: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    uploaded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoked_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    storage_deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    cache_purged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "listing_id"],
+            ["catalog_listings.organization_id", "catalog_listings.id"],
+            ondelete="CASCADE",
+            name="fk_listing_media_listing_org",
+        ),
+        CheckConstraint(
+            "content_type IN ('image/jpeg', 'image/png', 'image/webp')",
+            name="ck_listing_media_type",
+        ),
+        CheckConstraint("byte_size > 0", name="ck_listing_media_size"),
+        CheckConstraint("length(checksum) = 64", name="ck_listing_media_checksum"),
+        CheckConstraint(
+            "authority IN ('Authorized', 'Pending', 'Expired', 'Revoked')",
+            name="ck_listing_media_authority",
+        ),
+        CheckConstraint("sort_order >= 0", name="ck_listing_media_order"),
+        CheckConstraint(
+            "(authority = 'Revoked') = "
+            "(revoked_at IS NOT NULL AND revoked_by IS NOT NULL)",
+            name="ck_listing_media_revocation",
+        ),
+        Index(
+            "uq_listing_media_cover",
+            "listing_id",
+            unique=True,
+            postgresql_where=sql_text("is_cover IS TRUE AND revoked_at IS NULL"),
+        ),
+        Index(
+            "uq_listing_media_order",
+            "listing_id",
+            "sort_order",
+            unique=True,
+            postgresql_where=sql_text("revoked_at IS NULL"),
+        ),
+        Index(
+            "uq_listing_media_checksum",
+            "listing_id",
+            "checksum",
+            unique=True,
+            postgresql_where=sql_text("revoked_at IS NULL"),
+        ),
+        Index("ix_listing_media_authority", "listing_id", "authority", "sort_order"),
     )

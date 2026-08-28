@@ -35,9 +35,12 @@ from realestate.db.models import (
     MemberProvisioning,
     MemberRole,
     Opportunity,
+    Organization,
     OrganizationMember,
+    Property,
     PropertyExpert,
     PropertyExpertRole,
+    PropertyStatus,
 )
 from realestate.db.engine import Database
 from realestate.domain.commercial.actors import NotAuthorized, NotFound
@@ -513,6 +516,45 @@ async def test_designating_an_expert_does_not_change_who_is_responsible(
     assert opportunity.responsible_advisor_id == built.advisor_id
     assert [row.advisor_id for row in designations] == [built.second_advisor_id]
     assert audit and audit[0].details["changes_opportunity_ownership"] is False
+
+
+async def test_an_administrator_cannot_designate_another_organizations_property(
+    operation,
+) -> None:
+    """A property UUID is not authority to cross the organization boundary."""
+    database, built = operation
+    suffix = uuid.uuid4().hex
+    async with database.session_scope() as session:
+        other = Organization(slug=f"other-{suffix}", display_name="Otra organización")
+        session.add(other)
+        await session.flush()
+        foreign_property = Property(
+            organization_id=other.id,
+            property_key=f"foreign-{suffix}",
+            name="Propiedad ajena",
+            normalized_name=f"propiedad ajena {suffix}",
+            status=PropertyStatus.ACTIVE.value,
+        )
+        session.add(foreign_property)
+        await session.flush()
+        foreign_property_id = foreign_property.id
+        with pytest.raises(NotFound):
+            await TeamAdministration(session).record(
+                built.admin,
+                DesignateExpert(
+                    command_key=key("foreign-expert"),
+                    property_uuid=foreign_property_id,
+                    advisor_id=built.advisor_id,
+                    role=PropertyExpertRole.PRIMARY,
+                ),
+            )
+        designation = await session.scalar(
+            select(PropertyExpert).where(
+                PropertyExpert.property_uuid == foreign_property_id
+            )
+        )
+        assert designation is None
+        await session.rollback()
 
 
 async def test_one_property_has_at_most_one_primary_expert(operation) -> None:

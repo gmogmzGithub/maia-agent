@@ -57,6 +57,9 @@ RESET_ORDER = (
     "property_experts",
     "appointments",
     "availability_snapshots",
+    "listing_media",
+    "listing_offers",
+    "catalog_listings",
     "outbox_messages",
     "outbound_decisions",
     "inbox_messages",
@@ -68,6 +71,8 @@ RESET_ORDER = (
     "contacts",
     "leads",
     "properties",
+    "unit_models",
+    "developments",
     # Last, and only after everything that references it with RESTRICT is gone.
     # These suites are about the team itself, so each starts from the plan
     # ``build`` reconciles rather than inheriting a member another test created.

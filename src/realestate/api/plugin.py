@@ -354,6 +354,7 @@ async def resolve_pending_admin_work(
             session,
             request.app.state.calendars,
             request.app.state.appointment_policy.schedule,
+            request.app.state.appointment_policy.day_of_reminder_hour,
         ).resolve(
             payload.reference,
             payload.action,

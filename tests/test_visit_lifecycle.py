@@ -17,6 +17,7 @@ Four guarantees this suite exists to hold:
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import timedelta
 from pathlib import Path
@@ -24,7 +25,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
-from realestate.channels.google.calendar import CalendarOutcome
+from realestate.channels.google.calendar import CalendarOutcome, EventResult
 from realestate.db.engine import Database
 from realestate.db.models import (
     AppointmentAttendance,
@@ -38,6 +39,7 @@ from realestate.db.models import (
     NextActionStatus,
     Opportunity,
     OpportunityStage,
+    Organization,
     OutboxMessage,
     Property,
     PropertyExpertRole,
@@ -50,6 +52,8 @@ from realestate.domain.commercial.team import (
     TeamAdministration,
 )
 from realestate.domain.commercial.organization import OrganizationDirectory
+from realestate.domain.admin_work import AdminWorkService
+from realestate.domain.administration import Administrator
 from realestate.domain.scheduling.appointments import (
     BookVisit,
     CancelVisit,
@@ -88,9 +92,17 @@ def key(name: str) -> str:
     return f"{name}:{uuid.uuid4().hex}"
 
 
-async def a_conversation(database, *, wamid="w-visit", body="Quiero ver la casa"):  # noqa: ANN001, ANN202
+async def a_conversation(  # noqa: ANN001, ANN202
+    database,
+    *,
+    wamid="w-visit",
+    body="Quiero ver la casa",
+    from_wa_id="5213312345678",
+):
     async with database.session_scope() as session:
-        conversation = await visits.inbound(session, wamid=wamid, body=body)
+        conversation = await visits.inbound(
+            session, wamid=wamid, body=body, from_wa_id=from_wa_id
+        )
         await session.commit()
         return conversation
 
@@ -98,8 +110,9 @@ async def a_conversation(database, *, wamid="w-visit", body="Quiero ver la casa"
 async def book(database, built, conversation, *, start=None, **extra):  # noqa: ANN001, ANN003, ANN202
     async with database.session_scope() as session:
         moment = start or await visits.first_slot(built, session)
+        actor = extra.pop("actor", built.product)
         return await built.visits(session).book(
-            built.product,
+            actor,
             BookVisit(
                 conversation_id=conversation.id,
                 property_uuid=built.property_uuid,
@@ -355,6 +368,71 @@ async def test_booking_the_same_slot_twice_returns_the_same_visit(operation) -> 
     assert len(built.calendar.created) == 1
 
 
+async def test_two_conversations_cannot_claim_the_same_advisor_slot(
+    operation,
+) -> None:
+    """Product remains the arbiter even if Calendar has not reflected the event."""
+    database, built = operation
+    first_conversation = await a_conversation(
+        database, wamid="w-slot-first", from_wa_id="5213311110001"
+    )
+    second_conversation = await a_conversation(
+        database, wamid="w-slot-second", from_wa_id="5213311110002"
+    )
+    async with database.session_scope() as session:
+        start = await visits.first_slot(built, session)
+
+    first = await book(database, built, first_conversation, start=start)
+    second = await book(database, built, second_conversation, start=start)
+
+    assert isinstance(first, VisitBooked)
+    assert isinstance(second, VisitRefused)
+    assert second.reason is Refusal.SLOT_UNAVAILABLE
+    assert len(built.calendar.created) == 1
+
+
+async def test_concurrent_bookings_leave_exactly_one_slot_authority(
+    operation,
+) -> None:
+    database, built = operation
+    first_conversation = await a_conversation(
+        database, wamid="w-slot-race-first", from_wa_id="5213311111001"
+    )
+    second_conversation = await a_conversation(
+        database, wamid="w-slot-race-second", from_wa_id="5213311111002"
+    )
+    async with database.session_scope() as session:
+        start = await visits.first_slot(built, session)
+
+    original_busy = built.calendar.busy_between
+    both_reading = asyncio.Event()
+    readers = 0
+
+    async def synchronized_busy(range_start, range_end):  # noqa: ANN001, ANN202
+        nonlocal readers
+        readers += 1
+        if readers == 2:
+            both_reading.set()
+        await both_reading.wait()
+        return await original_busy(range_start, range_end)
+
+    built.calendar.busy_between = synchronized_busy  # type: ignore[method-assign]
+
+    first, second = await asyncio.gather(
+        book(database, built, first_conversation, start=start),
+        book(database, built, second_conversation, start=start),
+    )
+
+    assert sum(isinstance(result, VisitBooked) for result in (first, second)) == 1
+    refused = next(
+        result for result in (first, second) if isinstance(result, VisitRefused)
+    )
+    assert refused.reason is Refusal.SLOT_UNAVAILABLE
+    async with database.session_scope() as session:
+        rows = list(await session.scalars(select(visits.Appointment)))
+    assert len(rows) == 1
+
+
 async def test_an_explicit_conducting_expert_uses_their_calendar(operation) -> None:
     """ADR-0037: somebody other than the owner conducts a visit only when that
     is made explicit — and then it is *their* calendar that must be free."""
@@ -394,6 +472,27 @@ async def test_an_explicit_conducting_expert_uses_their_calendar(operation) -> N
     assert row.calendar_id == commercial.SECOND_ADVISOR_CALENDAR_ID
     assert built.second_calendar.created == [row.reference]
     assert built.calendar.created == []
+
+
+async def test_a_different_conductor_must_be_a_property_expert(operation) -> None:
+    database, built = operation
+    conversation = await a_conversation(database)
+    async with database.session_scope() as session:
+        start = await visits.first_slot(
+            built, session, advisor_id=built.second_advisor_id
+        )
+
+    outcome = await book(
+        database,
+        built,
+        conversation,
+        start=start,
+        conducting_advisor_id=built.second_advisor_id,
+    )
+
+    assert isinstance(outcome, VisitRefused)
+    assert outcome.reason is Refusal.CONDUCTOR_NOT_EXPERT
+    assert built.second_calendar.created == []
 
 
 # -- Reminders ------------------------------------------------------------
@@ -442,7 +541,9 @@ async def test_a_due_reminder_is_withheld_while_the_policy_is_unvalidated(
     async with database.session_scope() as session:
         row = await session.get(visits.Appointment, outcome.appointment_id)
         assert row is not None
-        moment = row.starts_at - timedelta(hours=1)
+        # Both deterministic reminders are due immediately before the visit;
+        # one hour before a 09:30 visit is still before the 09:00 day-of due.
+        moment = row.starts_at - timedelta(seconds=1)
         outcomes = await AppointmentReminders(
             session, SCHEDULE, day_of_hour=9
         ).settle_due(moment)
@@ -589,6 +690,226 @@ async def test_a_failed_new_booking_preserves_the_original_visit(operation) -> N
     # The failed successor is visible as review work rather than deleted.
     assert len(rows) == 2
     assert audits == ["RescheduleVisitFailed"]
+
+
+async def test_an_ambiguous_reschedule_blocks_a_competing_replacement(
+    operation,
+) -> None:
+    database, built = operation
+    conversation = await a_conversation(database)
+    original = await book(database, built, conversation)
+    assert isinstance(original, VisitBooked)
+
+    async with database.session_scope() as session:
+        from realestate.domain.scheduling.advisors import SlotQuery
+
+        found = await built.scheduling(session).find_slots(
+            SlotQuery(
+                organization_id=built.admin.organization_id,
+                advisor_id=built.advisor_id,
+            )
+        )
+        first_start = found.slots[0].start  # type: ignore[union-attr]
+        second_start = next(  # type: ignore[union-attr]
+            slot.start
+            for slot in found.slots
+            if slot.start >= first_start + timedelta(minutes=90)
+        )
+
+    built.calendar.create_outcome = CalendarOutcome.UNKNOWN
+    async with database.session_scope() as session:
+        first = await built.visits(session).reschedule(
+            built.product,
+            RescheduleVisit(
+                appointment_id=original.appointment_id,
+                new_start=first_start,
+                command_key=key("ambiguous-reschedule"),
+            ),
+        )
+    assert isinstance(first, VisitRefused)
+    assert first.reason is Refusal.INCONCLUSIVE
+
+    built.calendar.create_outcome = CalendarOutcome.OK
+    async with database.session_scope() as session:
+        second = await built.visits(session).reschedule(
+            built.product,
+            RescheduleVisit(
+                appointment_id=original.appointment_id,
+                new_start=second_start,
+                command_key=key("competing-reschedule"),
+            ),
+        )
+
+    assert isinstance(second, VisitRefused)
+    assert second.reason is Refusal.INCONCLUSIVE
+    async with database.session_scope() as session:
+        old = await session.get(visits.Appointment, original.appointment_id)
+        rows = list(await session.scalars(select(visits.Appointment)))
+    assert old is not None
+    assert old.status == AppointmentStatus.CONFIRMED.value
+    assert len(rows) == 2
+
+
+async def test_an_ambiguous_reschedule_blocks_cancelling_the_original(
+    operation,
+) -> None:
+    database, built = operation
+    conversation = await a_conversation(database)
+    original = await book(database, built, conversation)
+    assert isinstance(original, VisitBooked)
+    async with database.session_scope() as session:
+        from realestate.domain.scheduling.advisors import SlotQuery
+
+        found = await built.scheduling(session).find_slots(
+            SlotQuery(
+                organization_id=built.admin.organization_id,
+                advisor_id=built.advisor_id,
+            )
+        )
+        new_start = found.slots[0].start  # type: ignore[union-attr]
+
+    built.calendar.create_outcome = CalendarOutcome.UNKNOWN
+    async with database.session_scope() as session:
+        moved = await built.visits(session).reschedule(
+            built.product,
+            RescheduleVisit(
+                appointment_id=original.appointment_id,
+                new_start=new_start,
+                command_key=key("ambiguous-before-cancel"),
+            ),
+        )
+    assert isinstance(moved, VisitRefused)
+    assert moved.reason is Refusal.INCONCLUSIVE
+
+    async with database.session_scope() as session:
+        cancelled = await built.visits(session).cancel(
+            built.product,
+            CancelVisit(
+                appointment_id=original.appointment_id,
+                command_key=key("cancel-with-ambiguous-successor"),
+            ),
+        )
+
+    assert isinstance(cancelled, VisitRefused)
+    assert cancelled.reason is Refusal.INCONCLUSIVE
+    async with database.session_scope() as session:
+        old = await session.get(visits.Appointment, original.appointment_id)
+    assert old is not None
+    assert old.status == AppointmentStatus.CONFIRMED.value
+
+
+async def test_reconciling_a_reschedule_releases_and_links_the_original(
+    operation,
+) -> None:
+    database, built = operation
+    conversation = await a_conversation(database)
+    original = await book(database, built, conversation)
+    assert isinstance(original, VisitBooked)
+    async with database.session_scope() as session:
+        from realestate.domain.scheduling.advisors import SlotQuery
+
+        found = await built.scheduling(session).find_slots(
+            SlotQuery(
+                organization_id=built.admin.organization_id,
+                advisor_id=built.advisor_id,
+            )
+        )
+        new_start = found.slots[0].start  # type: ignore[union-attr]
+
+    built.calendar.create_outcome = CalendarOutcome.UNKNOWN
+    async with database.session_scope() as session:
+        moved = await built.visits(session).reschedule(
+            built.product,
+            RescheduleVisit(
+                appointment_id=original.appointment_id,
+                new_start=new_start,
+                command_key=key("reconcile-reschedule"),
+            ),
+        )
+    assert isinstance(moved, VisitRefused)
+
+    async with database.session_scope() as session:
+        replacement = await session.scalar(
+            select(visits.Appointment).where(
+                visits.Appointment.rescheduled_from_id == original.appointment_id
+            )
+        )
+    assert replacement is not None
+    built.calendar.find_result = EventResult(
+        CalendarOutcome.OK,
+        event_id=f"evt-{replacement.reference}",
+        start=replacement.starts_at,
+        end=replacement.ends_at,
+        summary="Visita — Casa Roble — Ana Demo",
+    )
+
+    async with database.session_scope() as session:
+        result = await AdminWorkService(
+            session, built.calendars, SCHEDULE
+        ).resolve(
+            replacement.reference,
+            "Confirm",
+            Administrator("telegram:admin", "update:reschedule"),
+        )
+
+    assert result["result"] == "resolved"
+    async with database.session_scope() as session:
+        old = await session.get(visits.Appointment, original.appointment_id)
+        confirmed = await session.get(visits.Appointment, replacement.id)
+    assert old is not None and confirmed is not None
+    assert old.status == AppointmentStatus.RESCHEDULED.value
+    assert old.rescheduled_to_id == confirmed.id
+    assert confirmed.status == AppointmentStatus.CONFIRMED.value
+    assert f"evt-{original.reference}" in built.calendar.deleted
+
+
+async def test_reconciling_a_booking_completes_the_appointment_handoff(
+    operation,
+) -> None:
+    database, built = operation
+    conversation = await a_conversation(database)
+    built.calendar.create_outcome = CalendarOutcome.UNKNOWN
+    attempt = await book(database, built, conversation)
+    assert isinstance(attempt, VisitBooked)
+    assert not attempt.confirmed
+
+    async with database.session_scope() as session:
+        row = await session.get(visits.Appointment, attempt.appointment_id)
+    assert row is not None
+    built.calendar.find_result = EventResult(
+        CalendarOutcome.OK,
+        event_id=f"evt-{row.reference}",
+        start=row.starts_at,
+        end=row.ends_at,
+        summary="Visita — Casa Roble — Ana Demo",
+    )
+
+    async with database.session_scope() as session:
+        result = await AdminWorkService(
+            session, built.calendars, SCHEDULE
+        ).resolve(
+            row.reference,
+            "Confirm",
+            Administrator("telegram:admin", "update:booking"),
+        )
+
+    assert result["result"] == "resolved"
+    async with database.session_scope() as session:
+        reminders = list(
+            await session.scalars(
+                select(AppointmentReminder).where(
+                    AppointmentReminder.appointment_id == row.id
+                )
+            )
+        )
+        follow_up = await session.scalar(
+            select(NextAction).where(
+                NextAction.kind == NextActionKind.VISIT_FOLLOW_UP.value
+            )
+        )
+    assert len(reminders) == 2
+    assert follow_up is not None
+    assert follow_up.responsible_member_id == row.advisor_id
 
 
 async def test_rescheduling_to_a_taken_slot_changes_nothing(operation) -> None:
@@ -1268,6 +1589,41 @@ async def test_booking_for_an_unknown_property_is_refused(operation) -> None:
     assert outcome.reason is Refusal.PROPERTY_NOT_FOUND
 
 
+async def test_booking_cannot_cross_the_property_organization_boundary(
+    operation,
+) -> None:
+    database, built = operation
+    conversation = await a_conversation(database)
+    suffix = uuid.uuid4().hex
+    async with database.session_scope() as session:
+        other = Organization(slug=f"booking-{suffix}", display_name="Otra organización")
+        session.add(other)
+        await session.flush()
+        foreign_property = Property(
+            organization_id=other.id,
+            property_key=f"foreign-booking-{suffix}",
+            name="Propiedad de otra organización",
+            normalized_name=f"propiedad de otra organizacion {suffix}",
+            status=PropertyStatus.ACTIVE.value,
+        )
+        session.add(foreign_property)
+        await session.flush()
+        foreign_property_id = foreign_property.id
+        outcome = await built.visits(session).book(
+            built.product,
+            BookVisit(
+                conversation_id=conversation.id,
+                property_uuid=foreign_property_id,
+                start=visits.now(),
+                command_key=key("foreign-booking"),
+            ),
+        )
+        await session.rollback()
+
+    assert isinstance(outcome, VisitRefused)
+    assert outcome.reason is Refusal.PROPERTY_NOT_FOUND
+
+
 async def test_booking_for_an_unknown_conversation_reads_as_absent(
     operation,
 ) -> None:
@@ -1298,11 +1654,31 @@ async def test_an_administrator_may_name_the_owner_explicitly(operation) -> None
         built,
         conversation,
         start=start,
+        actor=built.admin,
         advisor_id=built.second_advisor_id,
     )
 
     assert isinstance(outcome, VisitBooked)
     assert outcome.advisor_id == built.second_advisor_id
+
+
+async def test_an_advisor_cannot_name_another_owner_explicitly(operation) -> None:
+    database, built = operation
+    conversation = await a_conversation(database)
+    async with database.session_scope() as session:
+        start = await visits.first_slot(
+            built, session, advisor_id=built.second_advisor_id
+        )
+
+    with pytest.raises(NotAuthorized):
+        await book(
+            database,
+            built,
+            conversation,
+            start=start,
+            actor=built.advisor,
+            advisor_id=built.second_advisor_id,
+        )
 
 
 async def test_naming_an_ineligible_owner_is_refused(operation) -> None:
@@ -1313,6 +1689,7 @@ async def test_naming_an_ineligible_owner_is_refused(operation) -> None:
         built,
         conversation,
         start=visits.now(),
+        actor=built.admin,
         advisor_id=built.admin_id,
     )
 

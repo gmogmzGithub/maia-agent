@@ -457,7 +457,7 @@ async def property_detail(
     _actor: Actor = Depends(require_administrator),
 ) -> HTMLResponse:
     async with request.app.state.database.session_scope() as session:
-        prop = await resolve_property(session, property_key)
+        prop = await resolve_property(session, property_key, _actor.organization_id)
         if prop is None:
             return _layout(
                 "No encontrada",
@@ -490,7 +490,7 @@ async def edit_property(
     request: Request, property_key: str, _actor: Actor = Depends(require_administrator)
 ) -> HTMLResponse:
     async with request.app.state.database.session_scope() as session:
-        prop = await resolve_property(session, property_key)
+        prop = await resolve_property(session, property_key, _actor.organization_id)
         if prop is None:
             return _layout(
                 "No encontrada",

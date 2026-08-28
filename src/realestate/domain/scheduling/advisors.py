@@ -33,10 +33,15 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
 from enum import Enum
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from realestate.db.models import AdvisorAbsence, OrganizationMember
+from realestate.db.models import (
+    AdvisorAbsence,
+    Appointment,
+    AppointmentStatus,
+    OrganizationMember,
+)
 from realestate.domain.availability import (
     Interval,
     WeeklySchedule,
@@ -207,6 +212,9 @@ class AdvisorScheduling:
         # Advisor who told the Administrator they are away should not be
         # bookable merely because they forgot to block the calendar.
         blocked.extend(await self._absence_intervals(advisor.id, moment, end))
+        blocked.extend(
+            await self._appointment_intervals(advisor.calendar_id or "", moment, end)
+        )
 
         slots = candidate_slots(
             now=moment,
@@ -314,5 +322,34 @@ class AdvisorScheduling:
             .where(AdvisorAbsence.cancelled_at.is_(None))
             .where(AdvisorAbsence.ends_at > start)
             .where(AdvisorAbsence.starts_at < end)
+        )
+        return [Interval(start=row.starts_at, end=row.ends_at) for row in rows]
+
+    async def _appointment_intervals(
+        self, calendar_id: str, start: datetime, end: datetime
+    ) -> list[Interval]:
+        """Product-owned attempts block a slot before Calendar reflects them."""
+        if not calendar_id:
+            return []
+        rows = await self._session.scalars(
+            select(Appointment)
+            .where(Appointment.calendar_id == calendar_id)
+            .where(
+                or_(
+                    Appointment.status.in_(
+                        (
+                            AppointmentStatus.PENDING.value,
+                            AppointmentStatus.CONFIRMED.value,
+                            AppointmentStatus.NEEDS_REVIEW.value,
+                        )
+                    ),
+                    and_(
+                        Appointment.status == AppointmentStatus.RESCHEDULED.value,
+                        Appointment.calendar_event_id.is_not(None),
+                    ),
+                )
+            )
+            .where(Appointment.ends_at > start)
+            .where(Appointment.starts_at < end)
         )
         return [Interval(start=row.starts_at, end=row.ends_at) for row in rows]

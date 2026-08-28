@@ -9,9 +9,10 @@ Everything here is Mexican Spanish. Internal vocabulary — lead, listing,
 pipeline, property expert — does not appear in any string this module or its
 callers render.
 
-No JavaScript is required for any surface to work. Every action is a form
-submission, which keeps the operator's screen usable on a slow phone and makes
-each surface testable without a browser.
+No JavaScript is required for any surface to work. Every action is an ordinary
+form submission. A small progressive layer only exposes the pending state and
+blocks a double click while the server confirms the result; without it, the
+same authoritative redirect and idempotency key still govern the action.
 """
 
 from __future__ import annotations
@@ -121,7 +122,7 @@ NAV: tuple[NavLink, ...] = (
     NavLink("/crm/contactos", "Contactos"),
     NavLink("/crm/asignacion", "Asignación"),
     NavLink("/crm/equipo", "Equipo"),
-    NavLink("/admin/properties", "Propiedades"),
+    NavLink("/crm/catalogo", "Catálogo"),
 )
 
 # One stylesheet, inlined so a surface never renders unstyled while a separate
@@ -182,6 +183,10 @@ button.secondary, .button.secondary { background:#3c4657 }
 button.quiet { background:transparent; color:var(--brand);
   border:1px solid var(--line) }
 button.danger { background:var(--bad) }
+button:disabled { cursor:wait; opacity:.68 }
+form[aria-busy="true"] { opacity:.82 }
+.sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px;
+  overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0 }
 .hint, .muted { color:var(--muted); font-size:.9rem }
 .error { background:#fdf2f1; color:var(--bad); border-left:4px solid var(--bad);
   padding:12px 16px; border-radius:6px }
@@ -302,6 +307,41 @@ def layout(
 <h1>{escape(title)}</h1>
 {content}
 </main>
+<div id="estado-envio" class="sr-only" role="status" aria-live="polite"></div>
+<script>
+document.addEventListener("submit", (event) => {{
+  const form = event.target;
+  if (!(form instanceof HTMLFormElement)) return;
+  if (form.dataset.submitting === "true") {{
+    event.preventDefault();
+    return;
+  }}
+  form.dataset.submitting = "true";
+  form.setAttribute("aria-busy", "true");
+  const button = event.submitter || form.querySelector('button[type="submit"]');
+  if (button instanceof HTMLButtonElement) {{
+    button.dataset.originalLabel = button.textContent || "";
+    button.textContent = "Procesando…";
+    button.disabled = true;
+  }}
+  const status = document.getElementById("estado-envio");
+  if (status) status.textContent =
+    "Procesando. Espera la confirmación del servidor.";
+}});
+window.addEventListener("pageshow", () => {{
+  document.querySelectorAll('form[data-submitting="true"]').forEach((form) => {{
+    form.removeAttribute("aria-busy");
+    delete form.dataset.submitting;
+    form.querySelectorAll("button[data-original-label]").forEach((button) => {{
+      button.textContent = button.dataset.originalLabel || button.textContent;
+      button.disabled = false;
+      delete button.dataset.originalLabel;
+    }});
+  }});
+  const status = document.getElementById("estado-envio");
+  if (status) status.textContent = "";
+}});
+</script>
 </body>
 </html>"""
     )

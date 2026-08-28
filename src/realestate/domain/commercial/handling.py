@@ -404,8 +404,18 @@ class ConversationHandling:
         if not body:
             raise NotAuthorized("El mensaje no puede ir vacío.")
         conversation = await self._conversation(actor, command.conversation_id)
-        snapshot = await self.snapshot(conversation.id)
-        if not (snapshot.held_by(actor) or (actor.is_administrator and snapshot.mode is HandlingMode.HUMAN)):
+        authority = await self._row(conversation.id, lock=True)
+        held_by_actor = (
+            authority is not None
+            and authority.mode == HandlingMode.HUMAN.value
+            and authority.holder_member_id == actor.member_id
+        )
+        administrator_override = (
+            actor.is_administrator
+            and authority is not None
+            and authority.mode == HandlingMode.HUMAN.value
+        )
+        if not (held_by_actor or administrator_override):
             raise NotHandling()
 
         triggers = await self._unanswered_inbound(conversation)
@@ -563,6 +573,26 @@ class ConversationHandling:
         if conversation is None:
             raise NotFound("No encontramos esa conversación.")
         actor.require_same_organization(conversation.organization_id)
+        if not actor.sees_whole_operation:
+            from realestate.domain.commercial.identity import CommercialIdentity
+            from realestate.domain.commercial.opportunities import OpportunityManagement
+
+            contact_id = await CommercialIdentity(self._session).contact_for_lead(
+                conversation.lead_id
+            )
+            opportunity = (
+                await OpportunityManagement(self._session).open_demand_for_contact(
+                    contact_id
+                )
+                if contact_id is not None
+                else None
+            )
+            if (
+                opportunity is None
+                or opportunity.organization_id != actor.organization_id
+                or opportunity.responsible_advisor_id != actor.member_id
+            ):
+                raise NotFound("No encontramos esa conversación.")
         return conversation
 
     async def _unanswered_inbound(

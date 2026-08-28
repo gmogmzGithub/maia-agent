@@ -30,6 +30,7 @@ from realestate.db.models import (
     InternalAlertStatus,
     Opportunity,
 )
+from realestate.domain.commercial.assignment import Assignment
 from realestate.domain.commercial.handling import ConversationHandling, TakeHandling
 from realestate.domain.commercial.handoff import (
     ESCALATION_DELAY,
@@ -379,6 +380,10 @@ async def test_taking_the_conversation_acknowledges_the_request(operation) -> No
         conversation = await visits.inbound(
             session, wamid="w-ack", body="quiero hablar con alguien"
         )
+        opportunity = await session.scalar(select(Opportunity))
+        assert opportunity is not None
+        await Assignment(session).assign(built.admin, opportunity.id)
+        await session.commit()
 
     async with database.session_scope() as session:
         await ConversationHandling(session).take(

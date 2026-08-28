@@ -765,10 +765,11 @@ WhatsApp handoffs are diagnostic funnel measures, not the final success metric.
 
 ## Current Stage
 
-Local Stage 3 human-operation implementation — team, absences, Property Experts,
-Conversation Handling Mode, human handoff and Advisor-owned visits — on top of
-the Stage 2 commercial system of record, verified in the canonical Docker Compose
-runtime. Stage closure is Codex's decision, not a claim made here.
+Local Stage 4 authoritative-catalog implementation on top of the closed Stage 3
+human operation: physical Properties, source-specific Listings, simultaneous
+Offers, independent availability/publication/authority, approved media and one
+purpose-specific eligibility gate. Canonical Docker Compose verification and
+stage closure remain Codex's decision, not a claim made here.
 
 Implemented locally:
 
@@ -856,6 +857,28 @@ Implemented locally:
 - credential-free CI for every push and pull request, including a vertical
   WhatsApp-to-booking-to-Telegram scenario;
 - pytest suite for domain, API, worker, plugin, and channel behavior.
+- an authoritative real-estate catalog in Product: Property is physical truth,
+  each Listing preserves one Organization or Collaborator source, each Offer
+  owns its operation/price/terms, and Development/Unit Model records do not
+  manufacture physical units;
+- `CatalogAdministration.record`, `OfferManagement.record`,
+  `MediaAdministration.record`, `ListingEligibility.evaluate` and
+  `CatalogProjection.get_authorized_listing` as the invariant-bearing seams;
+- independent Listing Availability, Publication State and Authority, with
+  evidence, freshness/revalidation, deterministic presentation readiness,
+  automatic tiers and auditable Administrator overrides;
+- a recoverable media lifecycle for JPG/PNG/WebP whose local Compose adapter
+  stores originals durably, revokes public eligibility before cleanup, and
+  resumes storage/cache deletion idempotently after restart;
+- Mexican Spanish catalog administration where Advisors have read-only access
+  only to Properties for which they are currently designated experts, while
+  only Administrators can change catalog state;
+- one-way compatibility import of accepted Property Documents: immutable
+  artifacts remain provenance and narrative, while their price and operation
+  are copied only once and thereafter only Listing Offers are editable;
+- Maia property disclosure, inventory lists and new-visit checks routed through
+  Listing Eligibility rather than treating a legacy Property status or document
+  as permission.
 
 Not yet proven or claimed:
 
@@ -868,7 +891,8 @@ Not yet proven or claimed:
 - multi-tenant operation;
 - horizontal scaling;
 - self-managed multi-brokerage onboarding, billing, round-robin assignment, load
-  scoring, automatic commissions, the public catalog, EasyBroker, campaigns, and
+  scoring, automatic commissions, the public catalog/search experience, EasyBroker,
+  campaigns, and
   the data warehouse — all deliberately later stages.
 
 ## Core Boundary

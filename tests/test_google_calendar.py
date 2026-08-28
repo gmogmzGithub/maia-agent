@@ -13,6 +13,7 @@ request shape the Backend sends and the outcome each Google answer produces.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -292,6 +293,28 @@ async def test_a_failed_read_is_never_treated_as_nothing_is_busy() -> None:
     assert "TimeoutError" in result.detail
 
 
+async def test_a_stalled_read_is_bounded_and_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import realestate.channels.google.calendar as adapter
+
+    async def stalled(_callable):  # noqa: ANN001, ANN202
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(adapter.asyncio, "to_thread", stalled)
+    client = GoogleCalendar(
+        credentials_path="/tmp/creds.json",
+        calendar_id=CALENDAR_ID,
+        timeout_seconds=0.01,
+    )
+
+    result = await client.busy_between(START, END)
+
+    assert result.outcome is CalendarOutcome.FAILED
+    assert result.busy == []
+    assert "TimeoutError" in result.detail
+
+
 # -- The live recheck before booking (P-010) ----------------------------------
 
 
@@ -370,6 +393,30 @@ async def test_a_failed_creation_is_inconclusive_by_construction() -> None:
 
     result = await client.create_event(
         slot=slot(10), summary="s", description="d", reference="apt-abc"
+    )
+
+    assert result.outcome is CalendarOutcome.UNKNOWN
+    assert result.event_id is None
+    assert "TimeoutError" in result.detail
+
+
+async def test_a_stalled_creation_is_bounded_but_remains_ambiguous(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import realestate.channels.google.calendar as adapter
+
+    async def stalled(_callable):  # noqa: ANN001, ANN202
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(adapter.asyncio, "to_thread", stalled)
+    client = GoogleCalendar(
+        credentials_path="/tmp/creds.json",
+        calendar_id=CALENDAR_ID,
+        timeout_seconds=0.01,
+    )
+
+    result = await client.create_event(
+        slot=slot(10), summary="s", description="d", reference="apt-timeout"
     )
 
     assert result.outcome is CalendarOutcome.UNKNOWN

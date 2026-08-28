@@ -304,7 +304,16 @@ async def reset_property_inventory(session) -> None:  # noqa: ANN001
     """
     from sqlalchemy import text
 
-    for table in ("appointments", "availability_snapshots", "properties"):
+    for table in (
+        "appointments",
+        "availability_snapshots",
+        "listing_media",
+        "listing_offers",
+        "catalog_listings",
+        "properties",
+        "unit_models",
+        "developments",
+    ):
         await session.execute(text(f"DELETE FROM {table}"))
 
 

@@ -141,6 +141,7 @@ _TOOL_RESULTS: dict[str, str] = {
     Refusal.UNCHANGED.value: "not_found",
     Refusal.NO_RESPONSIBLE_ADVISOR.value: "temporarily_unavailable",
     Refusal.ADVISOR_INELIGIBLE.value: "temporarily_unavailable",
+    Refusal.CONDUCTOR_NOT_EXPERT.value: "temporarily_unavailable",
     Refusal.ADVISOR_ABSENT.value: "temporarily_unavailable",
     Refusal.NO_AUTHORITATIVE_CALENDAR.value: "temporarily_unavailable",
     Refusal.CALENDAR_UNREADABLE.value: "temporarily_unavailable",
@@ -188,7 +189,7 @@ class AppointmentService:
         time_to: time | None = None,
     ) -> dict[str, Any]:
         """Filter this Conversation-and-Property snapshot, creating it if needed."""
-        prop = await self._resolve_active(reference)
+        prop = await self._resolve_active(reference, conversation.organization_id)
         if isinstance(prop, dict):
             return prop
 
@@ -221,12 +222,37 @@ class AppointmentService:
         }
 
     async def _resolve_active(
-        self, reference: str
+        self, reference: str, organization_id: uuid.UUID
     ) -> Property | dict[str, Any]:
-        prop = await resolve_property(self._session, reference)
+        prop = await resolve_property(self._session, reference, organization_id)
         if prop is None:
             return {"result": "not_found"}
         if prop.status != PropertyStatus.ACTIVE.value:
+            return {
+                "result": "property_inactive",
+                "property_id": prop.property_key,
+                "name": prop.name,
+            }
+        from realestate.domain.catalog.eligibility import EligibilityPurpose
+        from realestate.domain.catalog.projection import (
+            AuthorizedListingQuery,
+            CatalogProjection,
+            ListingNotEligible,
+        )
+        from realestate.domain.commercial.actors import Actor, NotFound
+
+        try:
+            await CatalogProjection(
+                self._session,
+                Actor.product(organization_id, "AppointmentEligibility"),
+            ).get_authorized_listing(
+                AuthorizedListingQuery(
+                    purpose=EligibilityPurpose.APPOINTMENT,
+                    at=datetime.now(tz=UTC),
+                    property_uuid=prop.id,
+                )
+            )
+        except (ListingNotEligible, NotFound):
             return {
                 "result": "property_inactive",
                 "property_id": prop.property_key,
@@ -386,7 +412,7 @@ class AppointmentService:
         authoritative calendar, the durable attempt, the inconclusive outcome —
         belongs to :class:`~realestate.domain.scheduling.Appointments`.
         """
-        prop = await self._resolve_active(reference)
+        prop = await self._resolve_active(reference, conversation.organization_id)
         if isinstance(prop, dict):
             # A live Inactive Property creates no attempt and no event (P-063).
             return prop
