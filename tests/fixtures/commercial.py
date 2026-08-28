@@ -150,6 +150,18 @@ async def provision_bookable_team(
 #: ``organizations`` is never cleared: migration 0012 creates the row and every
 #: scoped table points at it.
 _RESET_ORDER = (
+    "marketing_touches",
+    "campaign_audience_members",
+    "development_campaigns",
+    "reactivation_candidates",
+    "approved_message_templates",
+    "public_analytics_events",
+    "channel_handoffs",
+    "website_messages",
+    "website_conversations",
+    "shared_selections",
+    "saved_collection_items",
+    "saved_collections",
     "delivery_statuses",
     "commercial_command_receipts",
     "commercial_transactions",

@@ -50,6 +50,8 @@ class OutboxKind(str):
     APPOINTMENT_CANCELLATION = "AppointmentCancellation"
     APPOINTMENT_NEEDS_REVIEW = "AppointmentNeedsReview"
     LEAD_FOLLOW_UP = "LeadFollowUp"
+    REACTIVATION = "Reactivation"
+    DEVELOPMENT_CAMPAIGN = "DevelopmentCampaign"
 
 
 # The deterministic contingency response after exhausted processing (P-035).

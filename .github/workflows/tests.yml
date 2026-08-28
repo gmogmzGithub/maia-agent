@@ -76,7 +76,7 @@ jobs:
       - name: Run every token-free test
         run: |
           docker compose exec -T product pytest \
-            -m 'not live_provider' \
+            -m 'not live_provider and not live_external_inventory' \
             --strict-markers \
             --junitxml=/tmp/token-free-junit.xml \
             --cov \

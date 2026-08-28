@@ -216,6 +216,45 @@ category. Product may only send one it has been told about; it never invents a
 template or assumes approval.
 _Avoid_: Approved copy, message body, draft, product wording
 
+**Template Observation**:
+The dated provider evidence for one exact WhatsApp template name, language,
+category, component checksum, lifecycle state, and quality signal. It expires as
+operational authority and can be replaced or retired only by newer provider
+truth, never by an Administrator's local approval.
+_Avoid_: Approved Template by name alone, permanent registry entry, editable copy
+
+**Inventory Match**:
+A versioned comparison between one current, confirmed Property Need and one
+authorized Listing, with an exact or approximate result and criterion-by-criterion
+explanation. A known contradiction excludes the Listing; there is no hidden
+predictive score.
+_Avoid_: Recommendation score, similarity guess, automatic outreach
+
+**Reactivation Candidate**:
+An Inventory Match attached to a workable or Dormant Opportunity for an
+Organization Administrator to review. It cannot request outbound contact until
+the Administrator authorizes the exact Listing, template, language, content and
+reason, and every live eligibility gate still passes.
+_Avoid_: Reactivated Opportunity, queued message, automatic follow-up
+
+**Development Campaign**:
+A versioned, pausable plan for announcing one reviewed Development to an explicit
+set of Property Needs, with exact content and language, audience criteria,
+exclusions, quiet hours, frequency budget and result states.
+_Avoid_: Send to all, contact list, automated broadcast, Development Listing
+
+**Audience Snapshot**:
+The explainable Included or Excluded decision for one explicit Property Need at
+one moment under one Campaign rule version. Human surfaces use an opaque Product
+reference and reasons, not names, phone numbers or message content.
+_Avoid_: Contact export, permanent eligibility, inferred demographic segment
+
+**Marketing Touch**:
+One marketing Outbox request that the Outbound Eligibility Gate queued for a
+Contact, retained to enforce deduplication and frequency limits. A denied or
+excluded audience member is not a Marketing Touch.
+_Avoid_: Delivered message, campaign member, provider impression
+
 **Follow-up Policy Version**:
 The named, versioned cadence hypothesis a follow-up attempt was produced under,
 retained so a later report can explain why a given day was chosen after the
@@ -465,6 +504,25 @@ A Listing sourced from an External Collaborator that the Brokerage Organization
 may use only within the collaboration's current authority, attribution, and
 commercial conditions.
 _Avoid_: Organization Listing, unrestricted MLS listing
+
+**External Listing Candidate**:
+A source-specific record that may become a Collaborator Listing only after its
+identity, service area, availability, authority, attribution and commercial
+conditions are confirmed. Its presence in an external platform is not Product
+authority.
+_Avoid_: Listing, imported inventory, MLS property, duplicate Property
+
+**Listing Revalidation**:
+The recorded use-time decision that an External Listing Candidate is Eligible,
+Pending or Denied for one specific recommendation, share or appointment based on
+fresh source and authority evidence.
+_Avoid_: sync timestamp, permanent approval, model confidence
+
+**Inventory Source Health**:
+The operational state of one external inventory source, including its last
+complete or partial synchronization and sanitized failure state; it does not say
+that any individual candidate is authorized.
+_Avoid_: Listing Freshness, API key, provider uptime claim
 
 **Listing Freshness**:
 The recency and success of source verification for a Listing's availability,

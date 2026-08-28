@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hmac
 import logging
+from decimal import Decimal
 from datetime import date, datetime, time
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
@@ -21,12 +22,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from realestate.domain.clock import utc_now
 from realestate.config import get_settings
 from realestate.db.engine import Database
 from realestate.db.models import (
     AgentRole,
     AgentSession,
     Conversation,
+    ExternalListingCandidate,
     HandoffSource,
     InboxGroup,
     InboxGroupStatus,
@@ -44,6 +47,14 @@ from realestate.domain.commercial.handoff import (
 )
 from realestate.domain.appointments import AppointmentService
 from realestate.domain.properties import PropertyService
+from realestate.domain.service_area import service_area_pattern
+from realestate.domain.external_inventory.inventory import ExternalInventory
+from realestate.domain.external_inventory.revalidation import ListingRevalidation
+from realestate.domain.external_inventory.search import AuthorizedInventorySearch
+from realestate.domain.external_inventory.types import (
+    InventorySearchCriteria,
+    IntendedAction,
+)
 
 router = APIRouter(prefix="/internal/plugin", tags=["plugin"])
 logger = logging.getLogger(__name__)
@@ -137,7 +148,7 @@ async def plugin_health(
     return {
         "result": "ok",
         "application": "maia-agent",
-        "checkpoint": 5,
+        "checkpoint": 6,
         "database": database.as_dict()["status"],
         "trusted_context": {
             "session_id": hermes_session_id or None,
@@ -155,6 +166,8 @@ async def plugin_health(
             "list_pending_admin_work",
             "reschedule_appointment",
             "request_human_handoff",
+            "search_inventory",
+            "revalidate_external_listing",
         ],
     }
 
@@ -288,6 +301,117 @@ async def set_property_status(
 
 class NoArguments(BaseModel):
     model_config = {"extra": "forbid"}
+
+
+class InventorySearchRequest(BaseModel):
+    """Bounded service-area criteria; no source, SQL or authority arguments."""
+
+    model_config = {"extra": "forbid"}
+
+    municipality: str = Field(pattern=service_area_pattern())
+    operation: str | None = Field(default=None, pattern="^(Sale|Rental|Presale)$")
+    property_type: str | None = Field(default=None, min_length=1, max_length=80)
+    min_price: Decimal | None = Field(default=None, gt=0)
+    max_price: Decimal | None = Field(default=None, gt=0)
+    min_bedrooms: int | None = Field(default=None, ge=0, le=30)
+
+
+@router.post("/tools/search_inventory", dependencies=[Depends(require_plugin_token)])
+async def search_inventory(
+    request: Request,
+    payload: InventorySearchRequest,
+    hermes_session_id: str = Header(default="", alias=SESSION_HEADER),
+) -> dict[str, object]:
+    conversation = await resolve_sales_conversation(request, hermes_session_id)
+    if conversation is None:
+        return {"result": "forbidden"}
+    async with request.app.state.database.session_scope() as session:
+        merged = await session.merge(conversation)
+        actor = Actor.product(merged.organization_id, "MaiaInventorySearch")
+        external = ExternalInventory(session, actor, request.app.state.easybroker)
+        rows = await AuthorizedInventorySearch(session, actor, external).search(
+            InventorySearchCriteria(
+                municipality=payload.municipality,
+                operation=payload.operation,
+                property_type=payload.property_type,
+                min_price=payload.min_price,
+                max_price=payload.max_price,
+                min_bedrooms=payload.min_bedrooms,
+            ),
+            at=utc_now(),
+        )
+        return {
+            "result": "found" if rows else "not_found",
+            "matches": [
+                {
+                    "reference": row.source_listing_id or str(row.listing_id),
+                    "source_kind": row.source_kind,
+                    "source_name": row.source_name,
+                    "title": row.title,
+                    "municipality": row.municipality,
+                    "public_location": row.public_location,
+                    "match_quality": row.match_quality.value,
+                    "attribution": row.attribution,
+                    "offers": [
+                        {
+                            "operation": offer.operation,
+                            "price_amount": str(offer.price_amount) if offer.price_amount is not None else None,
+                            "price_currency": offer.price_currency,
+                            "availability": offer.availability,
+                        }
+                        for offer in row.offers
+                    ],
+                    "requires_use_time_revalidation": row.requires_use_time_revalidation,
+                }
+                for row in rows
+            ],
+        }
+
+
+class ExternalListingRevalidationRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    reference: str = Field(min_length=1, max_length=120)
+    intended_action: IntendedAction
+
+
+@router.post(
+    "/tools/revalidate_external_listing",
+    dependencies=[Depends(require_plugin_token)],
+)
+async def revalidate_external_listing(
+    request: Request,
+    payload: ExternalListingRevalidationRequest,
+    hermes_session_id: str = Header(default="", alias=SESSION_HEADER),
+) -> dict[str, object]:
+    conversation = await resolve_sales_conversation(request, hermes_session_id)
+    if conversation is None:
+        return {"result": "forbidden"}
+    async with request.app.state.database.session_scope() as session:
+        merged = await session.merge(conversation)
+        actor = Actor.product(merged.organization_id, "MaiaListingRevalidation")
+        external = ExternalInventory(session, actor, request.app.state.easybroker)
+        # Product actors do not receive the Admin projection. Resolve the
+        # provider's public reference within the trusted Organization instead.
+        candidate_id = await session.scalar(
+            select(ExternalListingCandidate.id).where(
+                ExternalListingCandidate.organization_id == actor.organization_id,
+                ExternalListingCandidate.source == request.app.state.easybroker.source_name,
+                ExternalListingCandidate.source_listing_id == payload.reference,
+            )
+        )
+        if candidate_id is None:
+            return {"result": "not_found"}
+        decision = await ListingRevalidation(session, actor, external).evaluate(
+            candidate_id, payload.intended_action, utc_now()
+        )
+        return {
+            "result": decision.outcome.lower(),
+            "reference": payload.reference,
+            "intended_action": decision.intended_action.value,
+            "reasons": list(decision.reasons),
+            "revalidated_at": decision.evaluated_at.isoformat(),
+        }
 
 
 @router.post("/tools/list_properties", dependencies=[Depends(require_plugin_token)])

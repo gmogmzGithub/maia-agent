@@ -33,20 +33,33 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from realestate.db.models import (
+    CampaignAudienceMember,
     ConsentCategory,
     ConsentRecord,
     ConsentState,
     Conversation,
+    DevelopmentCampaign,
+    DevelopmentCampaignStatus,
     InboxMessage,
     Lead,
     OutboundDecision,
     OutboundInitiation,
     OutboundOutcome,
     OutboxMessage,
+    ReactivationCandidate,
+    ReactivationCandidateStatus,
     SuppressionRecord,
 )
 from realestate.domain.outbox import OutboxService
 from realestate.domain.audit import record_audit
+from realestate.domain.engagement.consent import (
+    consent_covers_scope,
+    consent_evidence_complete,
+    consent_expired,
+    DEVELOPMENT_SCOPE,
+    LISTING_MATCH_SCOPE,
+)
+from realestate.domain.engagement.templates import TemplateRegistry
 from realestate.domain.text import fold_phrase
 
 # Meta only allows free-form text within 24 hours of the Contact's last message.
@@ -79,6 +92,8 @@ class Purpose(str, enum.Enum):
     APPOINTMENT_CANCELLATION = "AppointmentCancellation"
     APPOINTMENT_NEEDS_REVIEW = "AppointmentNeedsReview"
     LEAD_FOLLOW_UP = "LeadFollowUp"
+    REACTIVATION = "Reactivation"
+    DEVELOPMENT_CAMPAIGN = "DevelopmentCampaign"
 
 
 # Which WhatsApp consent category each purpose consumes. Answering somebody who
@@ -100,11 +115,20 @@ PURPOSE_CATEGORY: dict[Purpose, ConsentCategory] = {
     Purpose.APPOINTMENT_CANCELLATION: ConsentCategory.UTILITY,
     Purpose.APPOINTMENT_NEEDS_REVIEW: ConsentCategory.UTILITY,
     Purpose.LEAD_FOLLOW_UP: ConsentCategory.MARKETING,
+    Purpose.REACTIVATION: ConsentCategory.MARKETING,
+    Purpose.DEVELOPMENT_CAMPAIGN: ConsentCategory.MARKETING,
 }
 
 # Purposes that a Contact's own reply must interrupt. A generic follow-up to
 # somebody who has already answered is the exact failure ADR-0021 forbids.
-STOPS_ON_REPLY: frozenset[Purpose] = frozenset({Purpose.LEAD_FOLLOW_UP})
+STOPS_ON_REPLY: frozenset[Purpose] = frozenset(
+    {
+        Purpose.LEAD_FOLLOW_UP,
+        Purpose.REACTIVATION,
+        Purpose.DEVELOPMENT_CAMPAIGN,
+    }
+)
+
 
 # Templates Meta has approved for this WhatsApp Business Account, by id.
 #
@@ -145,6 +169,7 @@ class DenialReason(str, enum.Enum):
     TEMPLATE_CATEGORY_MISMATCH = "TemplateCategoryMismatch"
     FOLLOW_UP_POLICY_INACTIVE = "FollowUpPolicyInactive"
     ELIGIBILITY_EVIDENCE_MISSING = "EligibilityEvidenceMissing"
+    ENGAGEMENT_NOT_ACTIVE = "EngagementNotActive"
 
 
 @dataclass(frozen=True)
@@ -177,6 +202,7 @@ class OutboundIntent:
     inbox_group_id: uuid.UUID | None = None
     template_id: str | None = None
     template_category: ConsentCategory | None = None
+    template_language: str | None = None
 
     @property
     def category(self) -> ConsentCategory:
@@ -300,7 +326,9 @@ class OutboundMessaging:
         # a refusal here should say so rather than blaming a template. The
         # window is not needed to reach these verdicts, so it is not paid for.
         if intent.initiation is OutboundInitiation.BUSINESS_INITIATED:
-            refusal = await self._business_initiated_refusal(intent, lead)
+            refusal = await self._business_initiated_refusal(
+                intent, lead, at=intent.requested_at
+            )
             if refusal is not None:
                 return await self._deny(
                     intent,
@@ -319,7 +347,8 @@ class OutboundMessaging:
                 "Template identifier and category must be supplied together.",
             )
         elif intent.template_id is not None:
-            refusal = self._template_refusal(intent)
+            resolved = await self._resolve_template(intent, at=intent.requested_at)
+            refusal = resolved if isinstance(resolved, Refusal) else None
         elif window is None or intent.requested_at >= window:
             refusal = Refusal(
                 DenialReason.SERVICE_WINDOW_CLOSED,
@@ -396,6 +425,7 @@ class OutboundMessaging:
         quarantine the row. An allowed result leaves the transaction open; the
         worker's normal delivery-result commit closes it after Meta answers.
         """
+        moment = now or _now()
         decision = await self._session.scalar(
             select(OutboundDecision)
             .where(OutboundDecision.outbox_id == row.id)
@@ -456,6 +486,7 @@ class OutboundMessaging:
             inbox_group_id=row.inbox_group_id,
             template_id=decision.template_id,
             template_category=category,
+            template_language=decision.template_language,
         )
         if intent.kind != row.kind:
             return await self._block_delivery(
@@ -476,7 +507,11 @@ class OutboundMessaging:
                 "The queued trigger messages do not belong to this Conversation.",
             )
         if initiation is OutboundInitiation.BUSINESS_INITIATED:
-            refusal = await self._business_initiated_refusal(intent, lead)
+            refusal = await self._engagement_delivery_refusal(intent, row)
+            if refusal is None:
+                refusal = await self._business_initiated_refusal(
+                    intent, lead, at=moment
+                )
             if refusal is not None:
                 return await self._block_delivery(row, refusal.reason, refusal.detail)
 
@@ -487,10 +522,12 @@ class OutboundMessaging:
                 "The queued template identifier and category are incomplete.",
             )
         if intent.template_id is not None:
-            refusal = self._template_refusal(intent)
-            if refusal is not None:
-                return await self._block_delivery(row, refusal.reason, refusal.detail)
-            approved = APPROVED_TEMPLATES[intent.template_id]
+            resolved = await self._resolve_template(intent, at=moment)
+            if isinstance(resolved, Refusal):
+                return await self._block_delivery(
+                    row, resolved.reason, resolved.detail
+                )
+            approved = resolved
             return TemplateDelivery(
                 to_wa_id=row.to_wa_id,
                 template_id=intent.template_id,
@@ -498,7 +535,6 @@ class OutboundMessaging:
             )
 
         expiry = await self._service_window_expiry(lead)
-        moment = now or _now()
         if expiry is None or moment >= expiry:
             return await self._block_delivery(
                 row,
@@ -510,7 +546,7 @@ class OutboundMessaging:
     # -- The rules --------------------------------------------------------
 
     async def _business_initiated_refusal(
-        self, intent: OutboundIntent, lead: Lead
+        self, intent: OutboundIntent, lead: Lead, *, at: datetime
     ) -> Refusal | None:
         """What stops the operation from reaching out, in order of severity."""
         if await self._suppressed(lead):
@@ -534,8 +570,15 @@ class OutboundMessaging:
                 "The state-driven follow-up policy is not activated.",
             )
 
+        required_scope = {
+            Purpose.REACTIVATION: LISTING_MATCH_SCOPE,
+            Purpose.DEVELOPMENT_CAMPAIGN: DEVELOPMENT_SCOPE,
+        }.get(intent.purpose)
         if intent.category is ConsentCategory.MARKETING and not await self._granted(
-            lead, ConsentCategory.MARKETING
+            lead,
+            ConsentCategory.MARKETING,
+            required_scope=required_scope,
+            at=at,
         ):
             return Refusal(
                 DenialReason.MARKETING_CONSENT_MISSING,
@@ -544,13 +587,111 @@ class OutboundMessaging:
 
         return None
 
-    def _template_refusal(self, intent: OutboundIntent) -> Refusal | None:
-        """Whether the supplied template may carry this message."""
-        approved = APPROVED_TEMPLATES.get(intent.template_id or "")
+    async def _engagement_delivery_refusal(
+        self, intent: OutboundIntent, row: OutboxMessage
+    ) -> Refusal | None:
+        """Recheck reviewed work under the same lock used to stop it.
+
+        A pause or cancellation that commits first quarantines queued work. If
+        delivery acquires the lock first, the provider call is causally before
+        the administrative stop. This is the no-send-after-stop boundary.
+        """
+        if intent.purpose is Purpose.DEVELOPMENT_CAMPAIGN:
+            campaign_id = await self._session.scalar(
+                select(CampaignAudienceMember.campaign_id)
+                .where(CampaignAudienceMember.outbox_id == row.id)
+                .limit(1)
+            )
+            if campaign_id is None:
+                return Refusal(
+                    DenialReason.ELIGIBILITY_EVIDENCE_MISSING,
+                    "The queued campaign message has no audience evidence.",
+                )
+            campaign = await self._session.scalar(
+                select(DevelopmentCampaign)
+                .where(DevelopmentCampaign.id == campaign_id)
+                .with_for_update()
+            )
+            if campaign is None:
+                return Refusal(
+                    DenialReason.ELIGIBILITY_EVIDENCE_MISSING,
+                    "The queued campaign message has no campaign evidence.",
+                )
+            if campaign.status in {
+                DevelopmentCampaignStatus.PAUSED.value,
+                DevelopmentCampaignStatus.CANCELLED.value,
+            }:
+                return Refusal(
+                    DenialReason.ENGAGEMENT_NOT_ACTIVE,
+                    "The Development campaign was paused or cancelled before delivery.",
+                )
+
+        if intent.purpose is Purpose.REACTIVATION:
+            candidate = await self._session.scalar(
+                select(ReactivationCandidate)
+                .where(ReactivationCandidate.outbox_id == row.id)
+                .with_for_update()
+                .limit(1)
+            )
+            if candidate is None:
+                return Refusal(
+                    DenialReason.ELIGIBILITY_EVIDENCE_MISSING,
+                    "The queued reactivation has no Candidate evidence.",
+                )
+            if candidate.status in {
+                ReactivationCandidateStatus.REJECTED.value,
+                ReactivationCandidateStatus.REVOKED.value,
+                ReactivationCandidateStatus.DENIED.value,
+            }:
+                return Refusal(
+                    DenialReason.ENGAGEMENT_NOT_ACTIVE,
+                    "The reactivation Candidate was revoked before delivery.",
+                )
+        return None
+
+    async def _approved_template(
+        self, intent: OutboundIntent, *, at: datetime
+    ) -> ApprovedTemplate | None:
+        """Exact current provider evidence, with a legacy fixture seam.
+
+        ``APPROVED_TEMPLATES`` remains empty in Product and only preserves the
+        Stage 1 unit-test seam. Runtime approval comes from the persisted Meta
+        registry and expires after its evidence window.
+        """
+        legacy = APPROVED_TEMPLATES.get(intent.template_id or "")
+        if legacy is not None:
+            if (
+                intent.template_language is not None
+                and legacy.language_code != intent.template_language
+            ):
+                return None
+            return legacy
+        evidence = await TemplateRegistry(self._session).approved(
+            organization_id=intent.conversation.organization_id,
+            name=intent.template_id or "",
+            language=intent.template_language,
+            category=intent.category,
+            at=at,
+        )
+        if evidence is None:
+            return None
+        return ApprovedTemplate(evidence.category, evidence.language)
+
+    async def _resolve_template(
+        self, intent: OutboundIntent, *, at: datetime
+    ) -> Refusal | ApprovedTemplate:
+        """The template that may carry this message, or why none may.
+
+        Returns the approval itself rather than a bare refusal so the caller does
+        not have to look it up a second time and assert the two agreed. The
+        lookup is the same provider-evidence query either way.
+        """
+        approved = await self._approved_template(intent, at=at)
         if approved is None:
             return Refusal(
                 DenialReason.TEMPLATE_NOT_APPROVED,
-                f"Template {intent.template_id!r} is not an approved template.",
+                f"Template {intent.template_id!r} has no current provider approval "
+                "for the requested language.",
             )
         if intent.template_category is not intent.category:
             supplied = (
@@ -569,7 +710,7 @@ class OutboundMessaging:
                 f"Template {intent.template_id!r} is approved for "
                 f"{approved.category.value}, not {intent.template_category.value}.",
             )
-        return None
+        return approved
 
     async def _lead(self, conversation: Conversation) -> Lead | None:
         lead: Lead | None = await self._session.scalar(
@@ -607,16 +748,36 @@ class OutboundMessaging:
     async def _suppressed(self, lead: Lead) -> bool:
         return await _active_suppression(self._session, lead.id) is not None
 
-    async def _granted(self, lead: Lead, category: ConsentCategory) -> bool:
+    async def _granted(
+        self,
+        lead: Lead,
+        category: ConsentCategory,
+        *,
+        required_scope: str | None = None,
+        at: datetime | None = None,
+    ) -> bool:
         """Whether the most recent statement for this category is a grant."""
         latest = await self._session.scalar(
-            select(ConsentRecord.state)
+            select(ConsentRecord)
             .where(ConsentRecord.lead_id == lead.id)
             .where(ConsentRecord.category == category.value)
             .order_by(ConsentRecord.recorded_at.desc(), ConsentRecord.id.desc())
             .limit(1)
         )
-        return latest == ConsentState.GRANTED.value
+        if latest is None or latest.state != ConsentState.GRANTED.value:
+            return False
+        moment = at or _now()
+        # The same predicates Stage 7 planning applies, so the gate that decides
+        # whether a message may leave cannot drift from the one that decided the
+        # audience was reachable in the first place.
+        if consent_expired(latest, moment):
+            return False
+        if required_scope is not None and not (
+            consent_evidence_complete(latest)
+            and consent_covers_scope(latest, required_scope)
+        ):
+            return False
+        return True
 
     async def _contact_replied(self, intent: OutboundIntent) -> bool:
         """Has the Contact written since Product last wrote to them?
@@ -630,7 +791,8 @@ class OutboundMessaging:
         # send timestamp belongs to the service window, which is Meta's rule.
         last_inbound = await self._session.scalar(
             select(InboxMessage.persisted_at)
-            .where(InboxMessage.conversation_id == intent.conversation.id)
+            .join(Conversation, Conversation.id == InboxMessage.conversation_id)
+            .where(Conversation.lead_id == intent.conversation.lead_id)
             .order_by(InboxMessage.persisted_at.desc())
             .limit(1)
         )
@@ -638,7 +800,8 @@ class OutboundMessaging:
             return False
         last_outbound = await self._session.scalar(
             select(OutboxMessage.created_at)
-            .where(OutboxMessage.conversation_id == intent.conversation.id)
+            .join(Conversation, Conversation.id == OutboxMessage.conversation_id)
+            .where(Conversation.lead_id == intent.conversation.lead_id)
             .order_by(OutboxMessage.created_at.desc())
             .limit(1)
         )
@@ -677,6 +840,7 @@ class OutboundMessaging:
                 if intent.template_category is not None
                 else None
             ),
+            template_language=intent.template_language,
             service_window_expires_at=window,
             outbox_id=outbox_id,
             requested_at=intent.requested_at,

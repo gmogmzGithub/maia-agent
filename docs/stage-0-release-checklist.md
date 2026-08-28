@@ -23,7 +23,8 @@ With the Compose runtime running:
 
 ```bash
 docker compose exec -T product ruff check src plugin tests migrations
-docker compose exec -T product pytest -m 'not live_provider' --strict-markers --cov
+docker compose exec -T product pytest \
+  -m 'not live_provider and not live_external_inventory' --strict-markers --cov
 ```
 
 The command must have no skipped tests. The live Hermes capability tests are

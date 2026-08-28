@@ -384,3 +384,61 @@ REQUEST_HUMAN_HANDOFF = {
         "additionalProperties": False,
     },
 }
+
+
+# --- Stage 6: Product-owned, read-only inventory discovery ------------------
+
+SEARCH_INVENTORY = {
+    "name": "search_inventory",
+    "description": (
+        "Search Product's authorized inventory for one municipality in the "
+        "service area. Product checks Organization Listings first and uses "
+        "authorized collaborator candidates only as fallback. Preserve "
+        "match_quality exactly: say when a result is approximate. External "
+        "results require revalidate_external_listing before recommending, "
+        "sharing, or discussing an appointment. Never imply that EasyBroker "
+        "contains all properties in Mexico."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "municipality": {
+                "type": "string",
+                "enum": ["Guadalajara", "Zapopan", "Tlaquepaque"],
+            },
+            "operation": {
+                "type": "string",
+                "enum": ["Sale", "Rental", "Presale"],
+            },
+            "property_type": {"type": "string"},
+            "min_price": {"type": "number", "exclusiveMinimum": 0},
+            "max_price": {"type": "number", "exclusiveMinimum": 0},
+            "min_bedrooms": {"type": "integer", "minimum": 0},
+        },
+        "required": ["municipality"],
+        "additionalProperties": False,
+    },
+}
+
+
+REVALIDATE_EXTERNAL_LISTING = {
+    "name": "revalidate_external_listing",
+    "description": (
+        "Revalidate one external EasyBroker candidate immediately before a "
+        "specific use. Call only for a reference returned by search_inventory. "
+        "Only 'eligible' permits that named action. 'pending' means a human "
+        "must confirm missing or changed evidence; 'denied' means do not use it."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "reference": {"type": "string"},
+            "intended_action": {
+                "type": "string",
+                "enum": ["Recommend", "Share", "Appointment"],
+            },
+        },
+        "required": ["reference", "intended_action"],
+        "additionalProperties": False,
+    },
+}

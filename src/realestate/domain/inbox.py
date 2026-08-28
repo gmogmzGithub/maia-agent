@@ -27,6 +27,7 @@ hidden.
 from __future__ import annotations
 
 import uuid
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -50,8 +51,13 @@ from realestate.db.models import (
 )
 from realestate.domain.audit import record_audit
 from realestate.domain.commercial.intake import CommercialIntake
+from realestate.domain.engagement.responses import record_engagement_reply
+from realestate.domain.commercial.actors import Actor, CommercialError
 from realestate.domain.commercial.routing import InboundRouting
 from realestate.domain.outbound import detect_opt_out, record_explicit_opt_out
+from realestate.domain.public.handoff import ChannelHandoff, extract_handoff_reference
+
+logger = logging.getLogger(__name__)
 
 # P-038: a two-minute processing lease, renewed every 30 seconds.
 LEASE_SECONDS = 120
@@ -225,6 +231,30 @@ class InboxService:
             intake_result = await intake.record_inbound(
                 lead=lead, conversation=conversation, inbox_id=row.id
             )
+            await record_engagement_reply(
+                self._session, lead_id=lead.id, at=row.persisted_at
+            )
+
+            # An opaque website reference gains identity only here, after Meta
+            # authenticated the sender and CommercialIntake resolved the trusted
+            # Contact. Bad, expired, replayed or foreign references never block
+            # acceptance of the person's ordinary WhatsApp message.
+            if reference := extract_handoff_reference(message.text):
+                try:
+                    await ChannelHandoff(
+                        self._session,
+                        Actor.product(lead.organization_id, "WebsiteHandoff"),
+                    ).resolve(
+                        reference,
+                        verified_contact_id=intake_result.contact_id,
+                        whatsapp_conversation_id=conversation.id,
+                        at=_now(),
+                    )
+                except CommercialError as exc:
+                    logger.warning(
+                        "Website handoff reference was not resolved (%s)",
+                        exc.__class__.__name__,
+                    )
 
             # Product's deterministic decisions about this message: an explicit
             # request for a person, and where a post-Appointment-Handoff

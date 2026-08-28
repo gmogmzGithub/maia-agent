@@ -23,6 +23,7 @@ sequenceDiagram
     participant Plugin as Maia Plugin
     participant Calendar as Google Calendar
     participant Telegram as Broker on Telegram
+    participant EasyBroker as EasyBroker read API
 
     Lead->>Meta: Message
     Meta->>Backend: Signed webhook
@@ -34,6 +35,7 @@ sequenceDiagram
     Backend->>Calendar: Read or write appointment state
     Backend->>Meta: Enqueue/send reply
     Backend->>Telegram: Send appointment notice when owed
+    Backend->>EasyBroker: GET authorized source candidate at sync/use time
 ```
 
 The customer channel is WhatsApp. Telegram is not the customer entry point: it
@@ -92,6 +94,14 @@ routers, workers and templates above them hold none of those rules.
 | `AdvisorScheduling.find_slots` | ask what times an Advisor could actually receive a visit |
 | `Appointments.book` / `.reschedule` / `.cancel` / `.record_outcome` | change a visit and record what happened at it |
 | `InternalAlerts.raise_alert` | tell somebody in the operation, durably |
+| `ExternalInventory.search` / `.refresh` | index and read source candidates without creating authoritative Listings |
+| `ListingRevalidation.evaluate` | decide whether one fresh external candidate may be recommended, shared, or scheduled |
+| `InventorySourceHealth.read` | expose sanitized source health without credentials |
+| `InventoryMatching.propose` | explain whether authorized inventory matches confirmed demand |
+| `TemplateRegistry.synchronize` / `.approved` | observe provider truth without local template approval |
+| `Reactivation.discover` / `.authorize` | propose a reviewed Listing match without sending it |
+| `Campaigns.plan` / `.activate` / `.pause` / `.cancel` | control an explicit, bounded Development audience |
+| `Audience.resolve` | apply the same exclusions to dry-run and execution |
 
 Four separations are structural rather than conventional, each enforced by the
 schema:
@@ -120,6 +130,23 @@ background loop ticks once a second and these rules have 28- and 90-day horizons
 so without the guard the pass would scan roughly 86,400 times a day to discover
 there was nothing to do — the same reason the Broker notifier owns its own
 cadence.
+
+Stage 7 engagement is a Product workflow, not a Hermes campaign agent. Matching
+is a pure, versioned comparison of authorized Listing facts against confirmed
+Property Need criteria; it emits criterion-level explanations and refuses stale
+needs. An Administrator may review a Candidate or an explicit Development
+audience, but cannot create consent, approve a Meta template, override
+suppression, or write an Outbox row.
+
+Provider template observations are evidence with a 24-hour Product freshness
+window. Only an exact Approved Marketing name, language and static body is
+consumable. The engagement worker calls the existing outbound gate, which writes
+the decision and Outbox row in the same transaction as the Candidate/audience
+outcome. Immediately before Meta delivery, the gate rechecks consent scope,
+suppression, reply and provider status, and locks the Candidate or Campaign so an
+administrative pause/cancel establishes a causal no-new-delivery boundary.
+Real execution remains disabled by configuration until the legal, consent,
+provider and operational gates are explicitly accepted.
 
 ## Human Operation, Team and Visits
 
@@ -231,13 +258,14 @@ That keeps the agent interface clear:
 
 ## Current Local Topology
 
-Docker Compose runs the topology as three containers:
+Docker Compose runs the topology as four containers:
 
 - `db`: PostgreSQL and the durable Product state;
 - `product`: FastAPI and the in-process background workers;
+- `site`: the public server-rendered experience with no database or provider credential;
 - `hermes`: the pinned Hermes runtime with the standalone Maia plugin.
 
-Product and Hermes share a private network namespace so their authenticated
+Product, Site, and Hermes share a private network namespace so their authenticated
 JSON-RPC WebSocket remains loopback-only. They are still separate processes and
 containers. Product reaches PostgreSQL through the private Compose network.
 Only Product port 8080 is published to the host.
@@ -249,7 +277,9 @@ operator workflow.
 
 Optional integrations require their normal provider credentials:
 
-- optional Meta, Telegram, Google Calendar, and model-provider credentials.
+- optional Meta, Telegram, Google Calendar, model-provider, and EasyBroker
+  credentials. EasyBroker API MLS remains disabled until its separate plan and
+  collaboration permissions are explicitly confirmed.
 
 This is enough to prove product behavior and recovery paths before adding cloud
 deployment, managed secrets, production WhatsApp assets, and real lead data.

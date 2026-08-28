@@ -120,6 +120,97 @@ class CatalogPresentationTier(str, enum.Enum):
     SUPER_PREMIUM = "SuperPremium"
 
 
+class WebsiteConversationStatus(str, enum.Enum):
+    OPEN = "Open"
+    HANDOFF_PENDING = "HandoffPending"
+    VERIFIED = "Verified"
+    CLOSED = "Closed"
+
+
+class WebsiteMessageRole(str, enum.Enum):
+    CUSTOMER = "Customer"
+    MAIA = "Maia"
+    SYSTEM = "System"
+
+
+class ChannelHandoffPurpose(str, enum.Enum):
+    CONTINUE_WHATSAPP = "ContinueWhatsApp"
+    APPOINTMENT = "Appointment"
+    SAVED_COLLECTION_PROTECTION = "SavedCollectionProtection"
+
+
+class PublicAnalyticsEventName(str, enum.Enum):
+    LISTING_IMPRESSION = "ListingImpression"
+    GALLERY_OPEN = "GalleryOpen"
+    LISTING_SAVED = "ListingSaved"
+    MAIA_STARTED = "MaiaStarted"
+    HANDOFF_CREATED = "HandoffCreated"
+    APPOINTMENT_REQUESTED = "AppointmentRequested"
+
+
+class ExternalInventoryScope(str, enum.Enum):
+    ORGANIZATION = "Organization"
+    COLLABORATOR = "Collaborator"
+
+
+class ExternalCandidateState(str, enum.Enum):
+    AUTHORIZED = "Authorized"
+    PENDING = "Pending"
+    DENIED = "Denied"
+
+
+class InventorySourceStatus(str, enum.Enum):
+    DISABLED = "Disabled"
+    NEVER_SYNCED = "NeverSynced"
+    HEALTHY = "Healthy"
+    PARTIAL = "Partial"
+    RATE_LIMITED = "RateLimited"
+    FAILED = "Failed"
+
+
+class RevalidationOutcome(str, enum.Enum):
+    ELIGIBLE = "Eligible"
+    PENDING = "Pending"
+    DENIED = "Denied"
+
+
+class MessageTemplateStatus(str, enum.Enum):
+    """Provider lifecycle observed from the WhatsApp Business Account."""
+
+    APPROVED = "Approved"
+    PENDING = "Pending"
+    REJECTED = "Rejected"
+    PAUSED = "Paused"
+    DISABLED = "Disabled"
+    DELETED = "Deleted"
+
+
+class ReactivationCandidateStatus(str, enum.Enum):
+    PENDING = "Pending"
+    AUTHORIZED = "Authorized"
+    REJECTED = "Rejected"
+    REVOKED = "Revoked"
+    QUEUED = "Queued"
+    DENIED = "Denied"
+    RESPONDED = "Responded"
+
+
+class DevelopmentCampaignStatus(str, enum.Enum):
+    DRAFT = "Draft"
+    ACTIVE = "Active"
+    PAUSED = "Paused"
+    CANCELLED = "Cancelled"
+    COMPLETED = "Completed"
+
+
+class CampaignAudienceStatus(str, enum.Enum):
+    INCLUDED = "Included"
+    EXCLUDED = "Excluded"
+    QUEUED = "Queued"
+    DENIED = "Denied"
+    RESPONDED = "Responded"
+
+
 class AgentRole(str, enum.Enum):
     """Separate conversational roles with separate authority (ADR-0001)."""
 
@@ -765,6 +856,16 @@ class ConsentRecord(Base):
     source: Mapped[str] = mapped_column(String(40), nullable=False)
     # The Contact's own words when the record came from something they wrote.
     evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Stage 7 evidence fields. Existing records remain readable, but a real
+    # marketing-grant capture path must populate all of them before Product may
+    # treat the grant as campaign authority.
+    business_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    scope: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    notice_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    evidence_locator: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -872,6 +973,7 @@ class OutboundDecision(Base):
     )
     template_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
     template_category: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    template_language: Mapped[str | None] = mapped_column(String(20), nullable=True)
     # When the Meta customer-service window closes, as Product computed it.
     service_window_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -3325,4 +3427,922 @@ class ListingMedia(Base):
             postgresql_where=sql_text("revoked_at IS NULL"),
         ),
         Index("ix_listing_media_authority", "listing_id", "authority", "sort_order"),
+    )
+
+
+class SavedCollection(Base):
+    """One server-authoritative collection reached through an opaque cookie."""
+
+    __tablename__ = "saved_collections"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    access_token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    protected_contact_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("contacts.id", ondelete="RESTRICT"), nullable=True
+    )
+    # A device keeps its original cookie after WhatsApp protection. Following
+    # this pointer lets that device reach the merged protected collection
+    # without exposing a replacement token through the channel handoff.
+    merged_into_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("saved_collections.id", ondelete="RESTRICT"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    last_activity_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "protected_contact_id IS NULL OR expires_at IS NULL",
+            name="ck_saved_collections_protected_no_expiry",
+        ),
+        CheckConstraint(
+            "merged_into_id IS NULL OR merged_into_id <> id",
+            name="ck_saved_collections_not_self_merged",
+        ),
+        Index(
+            "uq_saved_collections_protected_contact",
+            "organization_id",
+            "protected_contact_id",
+            unique=True,
+            postgresql_where=sql_text(
+                "protected_contact_id IS NOT NULL AND deleted_at IS NULL "
+                "AND merged_into_id IS NULL"
+            ),
+        ),
+        Index("ix_saved_collections_expiry", "expires_at"),
+    )
+
+
+class SavedCollectionItem(Base):
+    __tablename__ = "saved_collection_items"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    collection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("saved_collections.id", ondelete="CASCADE"), nullable=False
+    )
+    listing_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("catalog_listings.id", ondelete="RESTRICT"), nullable=False
+    )
+    slug_snapshot: Mapped[str] = mapped_column(String(140), nullable=False)
+    title_snapshot: Mapped[str] = mapped_column(String(200), nullable=False)
+    location_snapshot: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    saved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("collection_id", "listing_id", name="uq_saved_collection_item"),
+        Index("ix_saved_collection_items_collection", "collection_id", "saved_at"),
+    )
+
+
+class SharedSelection(Base):
+    """A revocable, immutable snapshot of selected Listing identifiers."""
+
+    __tablename__ = "shared_selections"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    collection_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("saved_collections.id", ondelete="CASCADE"), nullable=False
+    )
+    access_token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    snapshot: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (Index("ix_shared_selections_expiry", "expires_at"),)
+
+
+class WebsiteConversation(Base):
+    """An anonymous website thread, intentionally separate from WhatsApp."""
+
+    __tablename__ = "website_conversations"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    access_token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    hermes_session_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    verified_contact_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("contacts.id", ondelete="RESTRICT"), nullable=True
+    )
+    listing_context: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=WebsiteConversationStatus.OPEN.value
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    last_activity_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('Open', 'HandoffPending', 'Verified', 'Closed')",
+            name="ck_website_conversations_status",
+        ),
+        CheckConstraint(
+            "(verified_contact_id IS NULL AND status IN ('Open', 'HandoffPending')) OR "
+            "(verified_contact_id IS NOT NULL AND status IN ('Verified', 'Closed'))",
+            name="ck_website_conversations_verified_contact",
+        ),
+        Index("ix_website_conversations_activity", "last_activity_at"),
+    )
+
+
+class WebsiteMessage(Base):
+    __tablename__ = "website_messages"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("website_conversations.id", ondelete="CASCADE"), nullable=False
+    )
+    command_key: Mapped[str] = mapped_column(String(200), unique=True, nullable=False)
+    role: Mapped[str] = mapped_column(String(20), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    content_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    content_expired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint("role IN ('Customer', 'Maia', 'System')", name="ck_website_messages_role"),
+        Index("ix_website_messages_thread", "conversation_id", "created_at"),
+        Index(
+            "ix_website_messages_expiry",
+            "content_expires_at",
+            postgresql_where=sql_text("content_expired_at IS NULL"),
+        ),
+    )
+
+
+class ChannelHandoff(Base):
+    """A short-lived, single-use reference crossing site and verified WhatsApp."""
+
+    __tablename__ = "channel_handoffs"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    purpose: Mapped[str] = mapped_column(String(40), nullable=False)
+    website_conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("website_conversations.id", ondelete="CASCADE"), nullable=True
+    )
+    saved_collection_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("saved_collections.id", ondelete="CASCADE"), nullable=True
+    )
+    listing_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("catalog_listings.id", ondelete="RESTRICT"), nullable=True
+    )
+    expected_contact_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("contacts.id", ondelete="RESTRICT"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    consumed_by_contact_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("contacts.id", ondelete="RESTRICT"), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "purpose IN ('ContinueWhatsApp', 'Appointment', 'SavedCollectionProtection')",
+            name="ck_channel_handoffs_purpose",
+        ),
+        CheckConstraint(
+            "(consumed_at IS NULL) = (consumed_by_contact_id IS NULL)",
+            name="ck_channel_handoffs_consumed",
+        ),
+        CheckConstraint(
+            "website_conversation_id IS NOT NULL OR saved_collection_id IS NOT NULL "
+            "OR listing_id IS NOT NULL",
+            name="ck_channel_handoffs_context",
+        ),
+        Index("ix_channel_handoffs_expiry", "expires_at"),
+    )
+
+
+class PublicAnalyticsEvent(Base):
+    """Allowlisted, non-PII public funnel evidence; never raw interaction data."""
+
+    __tablename__ = "public_analytics_events"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    event_key: Mapped[str] = mapped_column(String(200), unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(40), nullable=False)
+    listing_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("catalog_listings.id", ondelete="RESTRICT"), nullable=True
+    )
+    presentation_tier: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    surface: Mapped[str] = mapped_column(String(40), nullable=False)
+    properties: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "name IN ('ListingImpression', 'GalleryOpen', 'ListingSaved', "
+            "'MaiaStarted', 'HandoffCreated', 'AppointmentRequested')",
+            name="ck_public_analytics_event_name",
+        ),
+        CheckConstraint(
+            "presentation_tier IS NULL OR presentation_tier IN "
+            "('Larevia', 'Premium', 'SuperPremium')",
+            name="ck_public_analytics_tier",
+        ),
+        Index("ix_public_analytics_funnel", "organization_id", "occurred_at", "name"),
+    )
+
+
+class ExternalListingCandidate(Base):
+    """A source record under review; deliberately not an authoritative Listing."""
+
+    __tablename__ = "external_listing_candidates"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source: Mapped[str] = mapped_column(String(40), nullable=False)
+    source_listing_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    source_scope: Mapped[str] = mapped_column(String(20), nullable=False)
+    source_status: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    source_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    freshness_deadline: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    payload_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    raw_payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    provenance: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    title: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    public_location: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    municipality: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    location_precision: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="Unknown"
+    )
+    property_type: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    facts: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    availability: Mapped[str] = mapped_column(
+        String(30), nullable=False, default=ListingAvailability.UNKNOWN.value
+    )
+    attribution: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_agency: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    source_agent: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    authority_state: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=ExternalCandidateState.PENDING.value
+    )
+    authority_evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    collaboration_authorized: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True
+    )
+    commission_known: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    commission: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    commercial_review_state: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=FactsReviewState.PENDING.value
+    )
+    mapping_issues: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    changed_fields: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    withdrawn_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    deletion_due_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    cache_deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "source_scope IN ('Organization', 'Collaborator')",
+            name="ck_external_candidates_scope",
+        ),
+        CheckConstraint(
+            "location_precision IN ('Exact', 'Approximate', 'Unknown')",
+            name="ck_external_candidates_location_precision",
+        ),
+        CheckConstraint(
+            "availability IN ('Available', 'Reserved', 'Sold', 'Rented', "
+            "'TemporarilyUnavailable', 'Unknown')",
+            name="ck_external_candidates_availability",
+        ),
+        CheckConstraint(
+            "authority_state IN ('Authorized', 'Pending', 'Denied')",
+            name="ck_external_candidates_authority",
+        ),
+        CheckConstraint(
+            "commercial_review_state IN ('Pending', 'Approved', 'NeedsReview')",
+            name="ck_external_candidates_commercial_review",
+        ),
+        CheckConstraint(
+            "(withdrawn_at IS NULL AND deletion_due_at IS NULL) OR "
+            "(withdrawn_at IS NOT NULL AND deletion_due_at IS NOT NULL)",
+            name="ck_external_candidates_withdrawal_deadline",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "source",
+            "source_listing_id",
+            name="uq_external_candidates_source_identity",
+        ),
+        UniqueConstraint(
+            "organization_id", "id", name="uq_external_candidates_org_id"
+        ),
+        Index(
+            "ix_external_candidates_search",
+            "organization_id",
+            "source",
+            "municipality",
+            "authority_state",
+            "availability",
+        ),
+        Index(
+            "ix_external_candidates_cleanup",
+            "deletion_due_at",
+            postgresql_where=sql_text("cache_deleted_at IS NULL"),
+        ),
+    )
+
+
+class ExternalOfferCandidate(Base):
+    """A lossless source Offer mapping beneath one External Listing Candidate."""
+
+    __tablename__ = "external_offer_candidates"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    listing_candidate_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False
+    )
+    source_offer_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    operation: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    price_amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
+    price_currency: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    price_unit: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    availability: Mapped[str] = mapped_column(
+        String(30), nullable=False, default=OfferAvailability.UNKNOWN.value
+    )
+    terms: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    raw_payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "listing_candidate_id"],
+            [
+                "external_listing_candidates.organization_id",
+                "external_listing_candidates.id",
+            ],
+            ondelete="CASCADE",
+            name="fk_external_offers_candidate_org",
+        ),
+        CheckConstraint(
+            "operation IS NULL OR operation IN ('Sale', 'Rental', 'Presale')",
+            name="ck_external_offers_operation",
+        ),
+        CheckConstraint(
+            "price_amount IS NULL OR price_amount > 0",
+            name="ck_external_offers_price",
+        ),
+        CheckConstraint(
+            "availability IN ('Available', 'Reserved', 'Completed', "
+            "'TemporarilyUnavailable', 'Withdrawn', 'Unknown')",
+            name="ck_external_offers_availability",
+        ),
+        UniqueConstraint(
+            "listing_candidate_id",
+            "source_offer_key",
+            name="uq_external_offers_source_key",
+        ),
+        Index(
+            "ix_external_offers_listing",
+            "listing_candidate_id",
+            "availability",
+        ),
+    )
+
+
+class InventorySourceHealthRecord(Base):
+    __tablename__ = "inventory_source_health"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=InventorySourceStatus.NEVER_SYNCED.value
+    )
+    credential_configured: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    mls_access_confirmed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    retention_permission_confirmed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    last_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_success_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_cursor: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    last_error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fetched_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    accepted_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rejected_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rate_limited_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('Disabled', 'NeverSynced', 'Healthy', 'Partial', "
+            "'RateLimited', 'Failed')",
+            name="ck_inventory_source_health_status",
+        ),
+        CheckConstraint(
+            "fetched_count >= 0 AND accepted_count >= 0 AND rejected_count >= 0",
+            name="ck_inventory_source_health_counts",
+        ),
+        UniqueConstraint(
+            "organization_id", "source", name="uq_inventory_source_health"
+        ),
+    )
+
+
+class ListingRevalidationRecord(Base):
+    __tablename__ = "listing_revalidations"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    listing_candidate_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False
+    )
+    intended_action: Mapped[str] = mapped_column(String(20), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(20), nullable=False)
+    reasons: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    snapshot_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "listing_candidate_id"],
+            [
+                "external_listing_candidates.organization_id",
+                "external_listing_candidates.id",
+            ],
+            ondelete="CASCADE",
+            name="fk_listing_revalidations_candidate_org",
+        ),
+        CheckConstraint(
+            "intended_action IN ('Recommend', 'Share', 'Appointment')",
+            name="ck_listing_revalidations_action",
+        ),
+        CheckConstraint(
+            "outcome IN ('Eligible', 'Pending', 'Denied')",
+            name="ck_listing_revalidations_outcome",
+        ),
+        Index(
+            "ix_listing_revalidations_candidate",
+            "listing_candidate_id",
+            "evaluated_at",
+        ),
+    )
+
+
+# ==========================================================================
+# Stage 7 — reviewed reactivation and bounded development campaigns
+#
+# The rows below are decisions and snapshots, not a second delivery system.
+# A Candidate or Audience member can only gain an Outbox reference through
+# OutboundMessaging.request, which keeps consent, suppression, reply and Meta
+# template checks authoritative at both request and delivery time (ADR-0045).
+# ==========================================================================
+
+
+class ApprovedMessageTemplate(Base):
+    """Last observed provider truth for one exact WABA template and language."""
+
+    __tablename__ = "approved_message_templates"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    waba_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    provider_template_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    template_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    language_code: Mapped[str] = mapped_column(String(20), nullable=False)
+    category: Mapped[str] = mapped_column(String(20), nullable=False)
+    provider_status: Mapped[str] = mapped_column(String(20), nullable=False)
+    body_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    quality: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    component_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider_api_version: Mapped[str] = mapped_column(String(20), nullable=False)
+    source: Mapped[str] = mapped_column(
+        String(30), nullable=False, default="MetaGraphAPI"
+    )
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    retired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "category IN ('Marketing', 'Utility', 'Service')",
+            name="ck_message_templates_category",
+        ),
+        CheckConstraint(
+            "provider_status IN ('Approved', 'Pending', 'Rejected', 'Paused', "
+            "'Disabled', 'Deleted')",
+            name="ck_message_templates_status",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "template_name",
+            "language_code",
+            name="uq_message_templates_identity",
+        ),
+        Index(
+            "ix_message_templates_approved",
+            "organization_id",
+            "provider_status",
+            "category",
+        ),
+    )
+
+
+class ReactivationCandidate(Base):
+    """One explainable Listing match awaiting a human outreach decision."""
+
+    __tablename__ = "reactivation_candidates"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    property_need_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("property_needs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    listing_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("catalog_listings.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    lead_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("leads.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("conversations.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=ReactivationCandidateStatus.PENDING.value
+    )
+    match_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    rule_version: Mapped[str] = mapped_column(String(60), nullable=False)
+    explanation: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    template_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    template_language: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    message_preview: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reviewed_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    review_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    decision_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("outbound_decisions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    outbox_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("outbox_messages.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('Pending', 'Authorized', 'Rejected', 'Revoked', "
+            "'Queued', 'Denied', 'Responded')",
+            name="ck_reactivation_candidates_status",
+        ),
+        CheckConstraint(
+            "match_kind IN ('Exact', 'Approximate')",
+            name="ck_reactivation_candidates_match_kind",
+        ),
+        CheckConstraint(
+            "(status = 'Pending' AND reviewed_by IS NULL AND reviewed_at IS NULL) OR "
+            "(status <> 'Pending' AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL)",
+            name="ck_reactivation_candidates_review",
+        ),
+        UniqueConstraint(
+            "property_need_id",
+            "listing_id",
+            "rule_version",
+            name="uq_reactivation_candidate_match",
+        ),
+        Index(
+            "ix_reactivation_candidates_work",
+            "organization_id",
+            "status",
+            "created_at",
+        ),
+    )
+
+
+class DevelopmentCampaign(Base):
+    """An explicit, versioned and pausable audience plan for one Development."""
+
+    __tablename__ = "development_campaigns"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    development_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("developments.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=DevelopmentCampaignStatus.DRAFT.value
+    )
+    criteria_version: Mapped[str] = mapped_column(String(60), nullable=False)
+    audience_criteria: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    exclusions: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    template_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    template_language: Mapped[str] = mapped_column(String(20), nullable=False)
+    content_preview: Mapped[str] = mapped_column(Text, nullable=False)
+    quiet_hours_start: Mapped[int] = mapped_column(Integer, nullable=False, default=20)
+    quiet_hours_end: Mapped[int] = mapped_column(Integer, nullable=False, default=9)
+    timezone: Mapped[str] = mapped_column(
+        String(60), nullable=False, default="America/Mexico_City"
+    )
+    frequency_cap: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    frequency_window_days: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=30
+    )
+    max_recipients: Mapped[int] = mapped_column(Integer, nullable=False, default=50)
+    authorized_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    activated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    paused_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    cancelled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('Draft', 'Active', 'Paused', 'Cancelled', 'Completed')",
+            name="ck_development_campaigns_status",
+        ),
+        CheckConstraint(
+            "quiet_hours_start BETWEEN 0 AND 23 AND quiet_hours_end BETWEEN 0 AND 23",
+            name="ck_development_campaigns_quiet_hours",
+        ),
+        CheckConstraint(
+            "frequency_cap > 0 AND frequency_window_days > 0 AND "
+            "max_recipients > 0 AND max_recipients <= 500",
+            name="ck_development_campaigns_limits",
+        ),
+        Index(
+            "ix_development_campaigns_work",
+            "organization_id",
+            "status",
+            "created_at",
+        ),
+    )
+
+
+class CampaignAudienceMember(Base):
+    """A PII-free-at-rest decision view for one explicit Property Need."""
+
+    __tablename__ = "campaign_audience_members"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    campaign_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("development_campaigns.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    property_need_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("property_needs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    contact_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("contacts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    lead_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("leads.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("conversations.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    audience_reference: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    reasons: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    resolved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    decision_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("outbound_decisions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    outbox_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("outbox_messages.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('Included', 'Excluded', 'Queued', 'Denied', 'Responded')",
+            name="ck_campaign_audience_status",
+        ),
+        UniqueConstraint(
+            "campaign_id", "property_need_id", name="uq_campaign_audience_need"
+        ),
+        UniqueConstraint(
+            "campaign_id", "audience_reference", name="uq_campaign_audience_reference"
+        ),
+        Index("ix_campaign_audience_work", "campaign_id", "status", "resolved_at"),
+    )
+
+
+class MarketingTouch(Base):
+    """One queued marketing contact, used for deduplication and frequency caps."""
+
+    __tablename__ = "marketing_touches"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    contact_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("contacts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    campaign_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("development_campaigns.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    reactivation_candidate_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("reactivation_candidates.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    decision_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("outbound_decisions.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    outbox_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("outbox_messages.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "(campaign_id IS NOT NULL) <> (reactivation_candidate_id IS NOT NULL)",
+            name="ck_marketing_touches_source",
+        ),
+        UniqueConstraint("outbox_id", name="uq_marketing_touches_outbox"),
+        Index(
+            "ix_marketing_touches_frequency",
+            "organization_id",
+            "contact_id",
+            "recorded_at",
+        ),
     )

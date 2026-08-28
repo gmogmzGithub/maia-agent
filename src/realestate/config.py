@@ -45,6 +45,28 @@ class Settings(BaseSettings):
     # it never receives database or Calendar credentials.
     plugin_api_token: str = Field(default="", alias="PLUGIN_API_TOKEN")
 
+    # --- Public site -> Product loopback seam (ADR-0034) ---------------------
+    # The site is a separate process with no database access. It authenticates
+    # to Product over loopback; the dedicated token may fall back to the already
+    # local plugin token for existing installations during the Stage 5 rollout.
+    site_product_api_token: str = Field(default="", alias="SITE_PRODUCT_API_TOKEN")
+    public_site_base_url: str = Field(
+        default="http://127.0.0.1:8081", alias="PUBLIC_SITE_BASE_URL"
+    )
+    product_internal_base_url: str = Field(
+        default="http://127.0.0.1:8080", alias="PRODUCT_INTERNAL_BASE_URL"
+    )
+    site_public_origin: str = Field(
+        default="http://localhost:8080", alias="SITE_PUBLIC_ORIGIN"
+    )
+    official_whatsapp_number: str = Field(
+        default="", alias="OFFICIAL_WHATSAPP_NUMBER"
+    )
+
+    @property
+    def site_internal_token(self) -> str:
+        return self.site_product_api_token or self.plugin_api_token
+
     # --- Organization roles (ADR-0019, Stage 2) ------------------------------
     # Non-secret, explicit configuration: which authenticated logins are
     # Organization Administrators and which are Real Estate Advisors. This is
@@ -126,14 +148,38 @@ class Settings(BaseSettings):
         default="var/listing-media/cache", alias="LISTING_MEDIA_CACHE_ROOT"
     )
 
+    # --- EasyBroker read-only adapter (Stage 6) -----------------------------
+    # The key is the only secret. Product never sends a write request and never
+    # exposes this value through health, logs, audit or the operator UI.
+    easybroker_api_key: str = Field(default="", alias="EASYBROKER_API_KEY")
+    easybroker_base_url: str = Field(
+        default="https://api.easybroker.com/v1", alias="EASYBROKER_BASE_URL"
+    )
+    # Fail closed until the account owner has confirmed the separate API MLS
+    # plan and explicitly activates it. Presence of a key is not MLS authority.
+    easybroker_mls_access_confirmed: bool = Field(
+        default=False, alias="EASYBROKER_MLS_ACCESS_CONFIRMED"
+    )
+    easybroker_retention_permission_confirmed: bool = Field(
+        default=False, alias="EASYBROKER_RETENTION_PERMISSION_CONFIRMED"
+    )
+
     # --- Meta WhatsApp Cloud API (P-021, TC-003) -----------------------------
     meta_app_secret: str = Field(default="", alias="META_APP_SECRET")
     meta_verify_token: str = Field(default="", alias="META_VERIFY_TOKEN")
     meta_access_token: str = Field(default="", alias="META_ACCESS_TOKEN")
     meta_phone_number_id: str = Field(default="", alias="META_PHONE_NUMBER_ID")
+    # Business Management API identity used only for read-only template truth.
+    # A phone-number id is not a WABA id and is never substituted for it.
+    meta_waba_id: str = Field(default="", alias="META_WABA_ID")
     meta_graph_version: str = Field(default="v25.0", alias="META_GRAPH_VERSION")
     meta_graph_base_url: str = Field(
         default="https://graph.facebook.com", alias="META_GRAPH_BASE_URL"
+    )
+    # Final business/legal/provider gate for any real Stage 7 marketing send.
+    # Planning and dry-run remain available while this is false.
+    marketing_outbound_activated: bool = Field(
+        default=False, alias="MARKETING_OUTBOUND_ACTIVATED"
     )
 
     # --- Appointments (P-054, P-055, P-056; see docs/decisions/checkpoint-3-inputs.md)

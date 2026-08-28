@@ -30,7 +30,7 @@ NOW = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
 STAGE_1_HEAD = "0011_quarantine_legacy_outbound"
 CONTACTS_REVISION = "0012_organization_and_contacts"
 OPPORTUNITIES_REVISION = "0013_opportunities_and_actions"
-HEAD = "0021_stage_three_query_indexes"
+HEAD = "0024_reactivation_campaigns"
 
 
 @pytest.fixture
@@ -165,6 +165,10 @@ def test_an_empty_database_upgrades_to_head(at_stage_one) -> None:
         "catalog_listings",
         "listing_offers",
         "listing_media",
+        "external_listing_candidates",
+        "external_offer_candidates",
+        "inventory_source_health",
+        "listing_revalidations",
     ):
         assert _scalar(engine, f"SELECT count(*) FROM {table}") == 0
 

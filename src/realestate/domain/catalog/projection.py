@@ -77,6 +77,7 @@ class AuthorizedListing:
     unit_model_id: uuid.UUID | None
     physical_key: str
     physical_name: str
+    property_type: str
     source_kind: str
     source_name: str
     attribution: str
@@ -529,7 +530,7 @@ class CatalogProjection:
             )
             for row in offers
         )
-        physical_key, physical_name, physical_facts = await self._physical_subject(
+        physical_key, physical_name, property_type, physical_facts = await self._physical_subject(
             listing
         )
         return AuthorizedListing(
@@ -539,6 +540,7 @@ class CatalogProjection:
             unit_model_id=listing.unit_model_id,
             physical_key=physical_key,
             physical_name=physical_name,
+            property_type=property_type,
             source_kind=listing.source_kind,
             source_name=listing.source_name,
             attribution=listing.attribution,
@@ -570,13 +572,23 @@ class CatalogProjection:
 
     async def _physical_subject(
         self, listing: CatalogListing
-    ) -> tuple[str, str, dict[str, Any]]:
+    ) -> tuple[str, str, str, dict[str, Any]]:
         if listing.property_uuid is not None:
             prop = await self._session.get(Property, listing.property_uuid)
             if prop is None:
                 raise NotFound()
-            return prop.property_key, prop.name, dict(prop.physical_facts)
+            return (
+                prop.property_key,
+                prop.name,
+                prop.property_type,
+                dict(prop.physical_facts),
+            )
         model = await self._session.get(UnitModel, listing.unit_model_id)
         if model is None:
             raise NotFound()
-        return model.model_key, model.name, dict(model.facts)
+        return (
+            model.model_key,
+            model.name,
+            str(model.facts.get("property_type") or "Development"),
+            dict(model.facts),
+        )

@@ -32,6 +32,15 @@ authorization, persistence, delivery, retries, and business authority.
 - Server-rendered Mexican Spanish operator surfaces for the team, absences,
   property specialists, the visit calendar and the conversation inbox, showing
   refused outbound decisions and communication restrictions with their reasons.
+- A separate server-rendered public site for authorized inventory, explicit
+  search, responsive galleries, saved collections, anonymous Maia conversations,
+  and opaque continuity into the official WhatsApp channel.
+- A read-only external-inventory port with an EasyBroker adapter, strict local
+  service-area filtering, provenance-bearing candidates, and use-time
+  revalidation that never replaces the authoritative Product catalog.
+- Explainable, Administrator-reviewed reactivation and Development-campaign
+  planning with explicit audiences, provider-observed templates, delivery-time
+  consent and stop checks, and real dispatch disabled by default.
 - A standalone Hermes plugin that exposes typed product operations without
   giving the agent direct database or Calendar credentials.
 - Recovery-oriented tests around persistence, sessions, tools, workers,
@@ -39,19 +48,23 @@ authorization, persistence, delivery, retries, and business authority.
 
 ## Architecture
 
-Maia has two deliberately separate parts:
+Maia has three deliberately separated runtime responsibilities:
 
 - **Hermes runtime:** owns natural-language reasoning, conversation continuity,
   fragmented-message interpretation, tool selection, and response composition.
 - **Maia backend:** owns trusted identity, PostgreSQL state, authorization,
   policy, idempotency, audit events, Calendar/Meta effects, and deterministic
   safety outcomes.
+- **Public site:** owns server-rendered presentation and browser interaction; it
+  consumes authenticated Product contracts and owns no catalog truth or identity.
 
 ```mermaid
 flowchart LR
     Lead["Lead on WhatsApp"]
+    Visitor["Public visitor"]
     Meta["Meta WhatsApp Cloud API"]
     Backend["Maia FastAPI backend"]
+    Site["Public SSR site"]
     Inbox[("PostgreSQL Inbox / Outbox / Audit")]
     Hermes["Hermes runtime"]
     Plugin["Maia Hermes plugin"]
@@ -59,6 +72,8 @@ flowchart LR
     Broker["Broker / Admin channel"]
 
     Lead <--> Meta
+    Visitor --> Backend
+    Backend <--> Site
     Meta --> Backend
     Backend <--> Inbox
     Backend --> Hermes
@@ -89,6 +104,15 @@ test-covered locally:
   explicit stages and evidence-bearing outcomes, deterministic assignment, and
   next actions;
 - conversation-content expiry kept separate from commercial history;
+- a Mexican Spanish public experience with indexable authorized listings,
+  shareable search URLs, gallery and technical-sheet views, server-backed saved
+  collections, anonymous Maia conversation, and single-use channel handoffs;
+- fixture-backed EasyBroker candidate indexing and Product/Hermes search within
+  Guadalajara, Zapopan, and Tlaquepaque, with Admin evidence controls and
+  fail-closed recommendation/share/appointment revalidation;
+- a Mexican-Spanish reactivation surface with explainable inventory matches,
+  PII-safe campaign previews, bounded execution and auditable outcomes, while
+  real Marketing dispatch remains `Denied` pending accepted external gates;
 - Docker Compose packaging for a single-host local topology.
 
 Not claimed yet:
@@ -99,29 +123,35 @@ Not claimed yet:
 - proactive follow-up delivery, which stays refused until real consent capture
   and approved WhatsApp templates exist;
 - legal/privacy readiness for real customer data;
+- a real EasyBroker account, API MLS entitlement, collaborator authority, or
+  provider-approved cache/redistribution rights;
 - horizontal scaling or managed cloud operations.
 
 ## Run Maia
 
-The complete local system runs in three Docker containers:
+The complete local system runs in four Docker containers:
 
 ```mermaid
 flowchart LR
     Host["Your computer<br/>localhost:8080"]
     subgraph Compose["Docker Compose"]
         Product["product<br/>Maia API + workers"]
+        Site["site<br/>public SSR experience"]
         Hermes["hermes<br/>conversation runtime"]
         DB[("db<br/>PostgreSQL")]
         Product <-->|"private loopback link"| Hermes
+        Product <-->|"authenticated loopback contracts"| Site
         Product <--> DB
     end
     Host --> Product
 ```
 
-Hermes and Product are separate containers, but they share a private network
-namespace. This is intentional: Hermes accepts Maia's session-token protocol
-only over loopback. PostgreSQL is a normal third container reached as `db` on
-the private Compose network. Hermes and PostgreSQL are not exposed to the host.
+Hermes, Product, and the public Site are separate containers that share a private
+network namespace. Product is the only host-published process: it serves its API
+and proxies approved public paths to Site. Site calls Product through a dedicated
+authenticated loopback contract and has no database access. PostgreSQL is reached
+as `db` on the private Compose network. Site, Hermes, and PostgreSQL are not
+exposed to the host.
 
 Prerequisite: Docker with Docker Compose.
 
@@ -137,12 +167,13 @@ Create the one local environment file:
 cp .env.example .env
 ```
 
-In `.env`, fill the two shared local secrets with different values from
+In `.env`, fill the three shared local secrets with different values from
 `openssl rand -hex 32`, then configure at least one local Basic-auth account:
 
 ```text
 HERMES_DASHBOARD_SESSION_TOKEN=
 PLUGIN_API_TOKEN=
+SITE_PRODUCT_API_TOKEN=
 DEVELOPER_BASIC_CREDENTIALS_JSON={"developer":"replace-with-a-secret"}
 ```
 
@@ -165,9 +196,9 @@ For normal day-to-day startup, this is the only command:
 docker compose up
 ```
 
-Maia is available at
-[http://localhost:8080/health](http://localhost:8080/health). Database
-migrations run automatically before Product starts.
+The public experience is available at [http://localhost:8080/](http://localhost:8080/)
+and Product health at [http://localhost:8080/health](http://localhost:8080/health).
+Database migrations run automatically before Product starts.
 
 Common operations:
 
@@ -182,4 +213,10 @@ credentials. See [Testing Maia without provider credentials](docs/testing.md)
 for the exact coverage, commands, and optional live-provider layer. See the
 [Stage 0 release checklist](docs/stage-0-release-checklist.md) for the final
 local acceptance and recovery rehearsal, and [repository governance](docs/repository-governance.md)
-for the branch and protection strategy.
+for the branch and protection strategy. The [Stage 5 public-site guide](docs/public-site.md)
+documents its routes, authority contracts, privacy boundary, visual system, and
+manual acceptance path. The [Stage 6 external-inventory guide](docs/external-inventory.md)
+documents the EasyBroker adapter boundary, mapping, revalidation, cleanup, test
+levels, and activation gates. The [Stage 7 engagement guide](docs/reactivation-campaigns.md)
+documents reviewed reactivation, explicit Development audiences, consent and
+template evidence, execution limits, and why real dispatch remains denied.

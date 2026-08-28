@@ -10,6 +10,8 @@ which cannot be expressed as a cancel followed by a booking without breaking the
 ADR-0037 guarantee that a failure preserves the original visit, and a human
 handoff, which is an operation with an alert and a deadline behind it rather
 than something the Model can do by writing a sentence (ADR-0029).
+Stage 6 adds two thin Product calls because external candidates must never be
+read directly by Hermes and must be revalidated for a named use.
 """
 
 from __future__ import annotations
@@ -34,18 +36,25 @@ STAGE_THREE_ADDITIONS = {
     "request_human_handoff",
 }
 
-EXPECTED_FROZEN_SURFACE = STAGE_ZERO_SURFACE | STAGE_THREE_ADDITIONS
+STAGE_SIX_ADDITIONS = {
+    "search_inventory",
+    "revalidate_external_listing",
+}
+
+EXPECTED_FROZEN_SURFACE = (
+    STAGE_ZERO_SURFACE | STAGE_THREE_ADDITIONS | STAGE_SIX_ADDITIONS
+)
 
 
 def test_the_frozen_surface_is_exactly_the_reviewed_contracts() -> None:
     assert set(plugin.FROZEN_TOOL_SURFACE) == EXPECTED_FROZEN_SURFACE
-    assert len(plugin.FROZEN_TOOL_SURFACE) == 10
+    assert len(plugin.FROZEN_TOOL_SURFACE) == 12
 
 
 def test_stage_three_added_exactly_two_names() -> None:
     """A guard on the guard: the surface grew by two, and by which two."""
     assert set(plugin.FROZEN_TOOL_SURFACE) - STAGE_ZERO_SURFACE == (
-        STAGE_THREE_ADDITIONS
+        STAGE_THREE_ADDITIONS | STAGE_SIX_ADDITIONS
     )
 
 
@@ -65,7 +74,28 @@ def test_every_frozen_tool_is_registered() -> None:
         "list_pending_admin_work",
         "reschedule_appointment",
         "request_human_handoff",
+        "search_inventory",
+        "revalidate_external_listing",
     )
+
+
+def test_stage_six_search_is_service_area_bounded_and_revalidation_names_the_use() -> None:
+    from realestate_hermes_plugin import schemas
+
+    search = schemas.SEARCH_INVENTORY["parameters"]
+    assert search["properties"]["municipality"]["enum"] == [
+        "Guadalajara",
+        "Zapopan",
+        "Tlaquepaque",
+    ]
+    assert search["additionalProperties"] is False
+    revalidation = schemas.REVALIDATE_EXTERNAL_LISTING["parameters"]
+    assert revalidation["properties"]["intended_action"]["enum"] == [
+        "Recommend",
+        "Share",
+        "Appointment",
+    ]
+    assert revalidation["additionalProperties"] is False
 
 
 def test_the_status_tool_accepts_only_the_two_states() -> None:

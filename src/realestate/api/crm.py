@@ -171,6 +171,9 @@ DENIAL_REASON_LABELS = {
     DenialReason.ELIGIBILITY_EVIDENCE_MISSING.value: (
         "Falta la evidencia de elegibilidad"
     ),
+    DenialReason.ENGAGEMENT_NOT_ACTIVE.value: (
+        "La reactivación o campaña se detuvo antes de entregar"
+    ),
 }
 
 PURPOSE_LABELS = {
@@ -184,6 +187,8 @@ PURPOSE_LABELS = {
     Purpose.APPOINTMENT_CANCELLATION.value: "Cancelación de cita",
     Purpose.APPOINTMENT_NEEDS_REVIEW.value: "Cita en revisión",
     Purpose.LEAD_FOLLOW_UP.value: "Seguimiento",
+    Purpose.REACTIVATION.value: "Reactivación revisada",
+    Purpose.DEVELOPMENT_CAMPAIGN.value: "Campaña de desarrollo",
 }
 
 # Suppression reasons are free-form strings written by the paths that create
