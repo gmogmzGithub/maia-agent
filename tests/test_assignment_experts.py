@@ -14,14 +14,11 @@ need different actions.
 
 from __future__ import annotations
 
-import uuid
 from datetime import timedelta
-from pathlib import Path
 
 import pytest
 from sqlalchemy import select
 
-from realestate.db.engine import Database
 from realestate.db.models import (
     AssignmentBasis,
     AssignmentQueueReason,
@@ -46,25 +43,11 @@ from realestate.domain.commercial.team import (
     StartAbsence,
     TeamAdministration,
 )
-from tests.conftest import DATABASE_URL, requires_postgres
+from tests.conftest import requires_postgres
+from tests.fixtures.visits import key
 from tests.fixtures import commercial, visits
 
 pytestmark = requires_postgres
-
-
-@pytest.fixture
-async def operation(tmp_path: Path):
-    database = Database(DATABASE_URL)
-    async with database.session_scope() as session:
-        await visits.reset(session)
-        built = await visits.build(session, tmp_path / "artifacts")
-        await session.commit()
-    yield database, built
-    await database.dispose()
-
-
-def key(name: str) -> str:
-    return f"{name}:{uuid.uuid4().hex}"
 
 
 async def opportunity_about_the_property(session, built, *, wa_id="5213311110000"):  # noqa: ANN001, ANN202

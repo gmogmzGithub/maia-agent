@@ -191,7 +191,6 @@ class RoutingDecision:
     handed_off: bool
     reason: str | None = None
     request_id: uuid.UUID | None = None
-    post_handoff_route: PostHandoffRoute | None = None
 
 
 class InboundRouting:
@@ -255,7 +254,7 @@ class InboundRouting:
             # Maia keeps the bounded logistics work — the one thing ADR-0037
             # leaves her after the handoff — and a bare pleasantry, which asks
             # for nothing and would otherwise generate an alert per "gracias".
-            return RoutingDecision(handed_off=False, post_handoff_route=route)
+            return RoutingDecision(handed_off=False)
 
         recorded = await handoff.request(
             actor,
@@ -277,7 +276,6 @@ class InboundRouting:
             handed_off=True,
             reason="PostAppointmentQuestion",
             request_id=recorded.request_id,
-            post_handoff_route=route,
         )
 
     async def handoff_in_force(self, conversation_id: uuid.UUID) -> bool:

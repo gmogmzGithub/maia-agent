@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -18,15 +17,12 @@ from realestate.db.models import (
     ListingOffer,
     ListingOfferOperation,
     OfferAvailability,
-    Property,
     PublicPriceVisibility,
-    UnitModel,
 )
 from realestate.domain.audit import record_audit
-from realestate.domain.catalog.presentation import (
-    OfferPresentation,
-    automatic_presentation_tier,
-)
+from realestate.domain.catalog.presentation import recalculate_automatic_tier
+from realestate.domain.clock import utc_now
+from realestate.domain.catalog.records import visible_listing
 from realestate.domain.commercial.actors import Actor, InvalidTransition, NotFound
 from realestate.domain.commercial.idempotency import CommercialCommands
 
@@ -63,10 +59,6 @@ class OfferRecorded:
     replayed: bool
 
 
-def _now() -> datetime:
-    return datetime.now(tz=UTC)
-
-
 class OfferManagement:
     """One write interface for prices, terms, availability and completion."""
 
@@ -76,7 +68,7 @@ class OfferManagement:
 
     async def record(self, actor: Actor, command: Command) -> OfferRecorded:
         actor.require_administrator()
-        listing = await self._listing(actor, command.listing_id, lock=True)
+        listing = await visible_listing(self._session, actor, command.listing_id, lock=True)
         if isinstance(command, CompleteOperation):
             return await self._complete(actor, listing, command)
         return await self._upsert(actor, listing, command)
@@ -168,9 +160,9 @@ class OfferManagement:
             row.terms_review_state = review.value
             row.availability = availability.value
             row.unavailable_reason = None
-            row.updated_at = _now()
+            row.updated_at = utc_now()
         await self._session.flush()
-        await self._recalculate_tier(listing)
+        await recalculate_automatic_tier(self._session, listing)
         await self._audit(
             actor,
             "RecordListingOffer",
@@ -250,7 +242,7 @@ class OfferManagement:
             affected = [row for row in offers if row.id == selected.id]
             reason = "CompletedPresale"
 
-        moment = _now()
+        moment = utc_now()
         for offer in affected:
             offer.availability = OfferAvailability.COMPLETED.value
             offer.unavailable_reason = reason
@@ -271,7 +263,7 @@ class OfferManagement:
                 )
         for row in related:
             row.updated_at = moment
-            await self._recalculate_tier(row)
+            await recalculate_automatic_tier(self._session, row, offers=offers)
         await self._audit(
             actor,
             "CompleteListingOperation",
@@ -285,45 +277,6 @@ class OfferManagement:
         )
         await self._session.flush()
         return OfferRecorded(selected.id, listing.id, False)
-
-    async def _recalculate_tier(self, listing: CatalogListing) -> None:
-        offers = list(
-            await self._session.scalars(
-                select(ListingOffer).where(
-                    ListingOffer.listing_id == listing.id,
-                    ListingOffer.availability == OfferAvailability.AVAILABLE.value,
-                )
-            )
-        )
-        property_type = await self._property_type(listing)
-        tier = automatic_presentation_tier(
-            property_type,
-            [
-                OfferPresentation(row.operation, row.price_amount, row.price_currency)
-                for row in offers
-            ],
-        )
-        listing.automatic_tier = tier.value if tier is not None else None
-        listing.updated_at = _now()
-
-    async def _property_type(self, listing: CatalogListing) -> str:
-        if listing.property_uuid is not None:
-            prop = await self._session.get(Property, listing.property_uuid)
-            return prop.property_type if prop is not None else "Other"
-        model = await self._session.get(UnitModel, listing.unit_model_id)
-        return str(model.facts.get("property_type", "Other")) if model else "Other"
-
-    async def _listing(
-        self, actor: Actor, listing_id: uuid.UUID, *, lock: bool
-    ) -> CatalogListing:
-        statement = select(CatalogListing).where(CatalogListing.id == listing_id)
-        if lock:
-            statement = statement.with_for_update()
-        row = await self._session.scalar(statement)
-        if row is None:
-            raise NotFound()
-        actor.require_same_organization(row.organization_id)
-        return row
 
     async def _audit(
         self,

@@ -381,6 +381,7 @@ async def list_pending_admin_work(
             session,
             request.app.state.calendars,
             request.app.state.appointment_policy.schedule,
+            request.app.state.appointment_policy.day_of_reminder_hour,
         ).list_pending()
 
 

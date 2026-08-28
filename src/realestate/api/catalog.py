@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -12,6 +12,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette.datastructures import UploadFile
 
 from realestate.api.operator import (
+    form_uuid,
     command_field,
     command_key,
     require_actor,
@@ -19,7 +20,15 @@ from realestate.api.operator import (
     shell,
     tag,
 )
-from realestate.api.ui import empty, errors_box, escape, flash, options, table
+from realestate.api.ui import (
+    empty,
+    errors_box,
+    escape,
+    flash,
+    options,
+    parse_datetime_input,
+    table,
+)
 from realestate.db.models import (
     CatalogPresentationTier,
     FactsReviewState,
@@ -43,6 +52,8 @@ from realestate.domain.catalog.administration import (
     SetTierOverride,
 )
 from realestate.domain.catalog.media import (
+    ACCEPTED_CONTENT_TYPES,
+    MAX_MEDIA_BYTES,
     AddMedia,
     ArrangeMedia,
     MediaAdministration,
@@ -58,6 +69,7 @@ from realestate.domain.catalog.projection import (
     AdministrationListing,
     CatalogProjection,
 )
+from realestate.domain.clock import utc_now
 from realestate.domain.commercial.actors import Actor, CommercialError
 
 router = APIRouter(prefix="/crm/catalogo", tags=["catalogo"])
@@ -106,19 +118,16 @@ OFFER_AVAILABILITY_LABELS = {
 }
 
 
-def _now() -> datetime:
-    return datetime.now(tz=UTC)
-
-
 def _enum_options(enum_type: Any, current: str, labels: dict[str, str]) -> str:
     return options([member.value for member in enum_type], current, labels)
 
 
 def _uuid(value: object, label: str) -> uuid.UUID:
-    try:
-        return uuid.UUID(str(value))
-    except (ValueError, TypeError, AttributeError) as exc:
-        raise ValueError(f"{label} no es válido.") from exc
+    """The form reader's answer, as a labelled refusal this router can raise."""
+    parsed = form_uuid(value)
+    if parsed is None:
+        raise ValueError(f"{label} no es válido.")
+    return parsed
 
 
 def _decimal(value: object) -> Decimal:
@@ -132,14 +141,19 @@ def _decimal(value: object) -> Decimal:
 
 
 def _optional_datetime(value: object) -> datetime | None:
+    """The revalidation deadline, read the way every other operator field is.
+
+    The form sends a ``datetime-local`` value, which carries no offset. Reading
+    it as UTC here would land the deadline six hours from the one the operator
+    typed and sees rendered back.
+    """
     text = str(value or "").strip()
     if not text:
         return None
-    try:
-        parsed = datetime.fromisoformat(text)
-    except ValueError as exc:
-        raise ValueError("La fecha de revalidación no es válida.") from exc
-    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed
+    parsed = parse_datetime_input(text)
+    if parsed is None:
+        raise ValueError("La fecha de revalidación no es válida.")
+    return parsed
 
 
 def _money(amount: Decimal, currency: str) -> str:
@@ -281,7 +295,7 @@ def _media_section(row: AdministrationListing, editable: bool) -> str:
 <form method="post" action="/crm/catalogo/{row.listing_id}/medios" enctype="multipart/form-data">
 {command_field()}<input type="hidden" name="accion" value="agregar">
 <div class="grid">
-<label>Archivo JPG, PNG o WebP *<input type="file" name="archivo" accept="image/jpeg,image/png,image/webp" required></label>
+<label>Archivo JPG, PNG o WebP *<input type="file" name="archivo" accept="{",".join(ACCEPTED_CONTENT_TYPES)}" required></label>
 <label>Procedencia *<input name="procedencia" required></label>
 <label>Evidencia de autoridad *<input name="evidencia" required></label>
 <label>Orden *<input type="number" name="orden" min="0" required></label>
@@ -289,7 +303,8 @@ def _media_section(row: AdministrationListing, editable: bool) -> str:
 <label class="check"><input type="checkbox" name="portada" value="1"> Usar como portada</label>
 <label class="check"><input type="checkbox" name="alta_resolucion" value="1"> Alta resolución confirmada por Admin</label>
 </div><button>Guardar después de confirmar almacenamiento</button>
-</form>"""
+</form>
+<p class="hint">Una imagen por carga, máximo {MAX_MEDIA_BYTES // (1024 * 1024)} MB.</p>"""
     return f'<section class="card"><h2>Medios</h2>{arrangement}{cleanup}{upload}</section>'
 
 
@@ -379,7 +394,7 @@ async def catalog_index(
     actor: Actor = Depends(require_actor),
 ) -> HTMLResponse:
     async with request.app.state.database.session_scope() as session:
-        rows = await CatalogProjection(session, actor).list_for_administration(_now())
+        rows = await CatalogProjection(session, actor).list_for_administration(utc_now())
     return _list_page(actor, rows, message="El servidor confirmó el registro." if saved else None)
 
 
@@ -480,7 +495,7 @@ async def create_catalog_listing(
 
 async def _load_detail(request: Request, actor: Actor, listing_id: uuid.UUID) -> AdministrationListing:
     async with request.app.state.database.session_scope() as session:
-        return await CatalogProjection(session, actor).get_for_administration(listing_id, _now())
+        return await CatalogProjection(session, actor).get_for_administration(listing_id, utc_now())
 
 
 @router.get("/{listing_id}", response_class=HTMLResponse)
@@ -510,7 +525,7 @@ async def change_catalog_listing(
         key = command_key(form, f"catalogo:{listing_id}")
         action = str(form.get("accion", ""))
         async with request.app.state.database.session_scope() as session:
-            row = await CatalogProjection(session, actor).get_for_administration(listing_id, _now())
+            row = await CatalogProjection(session, actor).get_for_administration(listing_id, utc_now())
             catalog = CatalogAdministration(session)
             if action == "revisar_inmueble":
                 if row.property_uuid is None:
@@ -542,7 +557,7 @@ async def change_catalog_listing(
                     listing_id=listing_id,
                     authority=ListingAuthority(str(form.get("estado", ""))),
                     evidence=str(form.get("evidencia", "")) or None,
-                    checked_at=_now(),
+                    checked_at=utc_now(),
                     revalidate_by=_optional_datetime(form.get("revalidar")),
                     command_key=key,
                 ))
@@ -613,7 +628,7 @@ async def change_catalog_media(
                     command_key=key,
                 ))
             elif action == "ordenar":
-                row = await CatalogProjection(session, actor).get_for_administration(listing_id, _now())
+                row = await CatalogProjection(session, actor).get_for_administration(listing_id, utc_now())
                 active = [item for item in row.media if item.revoked_at is None]
                 cover = _uuid(form.get("portada"), "La portada")
                 placements = tuple(

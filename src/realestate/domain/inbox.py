@@ -105,11 +105,6 @@ class AcceptedMessage:
     # delivery already reported.
     contact_id: uuid.UUID | None = None
     opportunity_id: uuid.UUID | None = None
-    # Whether Product paused Maia on this message and asked for a human
-    # (ADR-0029, ADR-0037), and why. Reported so the webhook path can log it and
-    # a test can assert it without re-deriving the rule.
-    handed_off: bool = False
-    handoff_reason: str | None = None
 
 
 def combined_text(messages: Sequence[InboxMessage]) -> str:
@@ -237,7 +232,7 @@ class InboxService:
             # the opt-out and the commercial record — a handoff request that
             # outlived the message asking for it would be a record of something
             # that never durably happened.
-            routing = await InboundRouting(self._session).route(
+            await InboundRouting(self._session).route(
                 lead=lead,
                 conversation=conversation,
                 inbox_id=row.id,
@@ -260,8 +255,6 @@ class InboxService:
             cycle_created=cycle_created,
             contact_id=intake_result.contact_id,
             opportunity_id=intake_result.opportunity_id,
-            handed_off=routing.handed_off,
-            handoff_reason=routing.reason,
         )
 
     async def _lead(self, message: InboundMessage, organization_id: uuid.UUID) -> Lead:

@@ -34,7 +34,7 @@ import uuid
 from collections.abc import Iterable, Sequence
 from typing import Any
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 
 from sqlalchemy import Select, func, select
 from sqlalchemy.exc import IntegrityError
@@ -55,6 +55,7 @@ from realestate.db.models import (
     PropertyExpertRole,
 )
 from realestate.domain.audit import record_audit
+from realestate.domain.clock import utc_now
 from realestate.domain.commercial.actors import (
     Actor,
     CommercialError,
@@ -68,18 +69,9 @@ from realestate.domain.internal_alerts import InternalAlerts
 logger = logging.getLogger(__name__)
 
 
-def _now() -> datetime:
-    return datetime.now(tz=UTC)
-
-
 EXPERT_ROLE_LABELS: dict[str, str] = {
     PropertyExpertRole.PRIMARY.value: "Especialista principal",
     PropertyExpertRole.BACKUP.value: "Especialista suplente",
-}
-
-PROVISIONING_LABELS: dict[str, str] = {
-    MemberProvisioning.CONFIGURATION.value: "Alta por configuración",
-    MemberProvisioning.ADMINISTRATOR.value: "Alta por el administrador",
 }
 
 
@@ -447,7 +439,7 @@ class TeamAdministration:
 
         if not changes:
             return TeamRecorded("OrganizationMember", member.id, changed=False)
-        member.updated_at = _now()
+        member.updated_at = utc_now()
         await self._session.flush()
         await self._audit(actor, "UpdateOrganizationMember", member.id, changes)
         return TeamRecorded("OrganizationMember", member.id, changed=True)
@@ -475,7 +467,7 @@ class TeamAdministration:
             member.is_default_advisor = False
         else:
             member.active = True
-        member.updated_at = _now()
+        member.updated_at = utc_now()
         await self._session.flush()
         await self._audit(
             actor,
@@ -666,7 +658,7 @@ class TeamAdministration:
         if replay or absence.cancelled_at is not None:
             return TeamRecorded("AdvisorAbsence", absence.id, changed=False)
 
-        moment = _now()
+        moment = utc_now()
         if moment <= absence.starts_at:
             # It never took effect, so it is voided rather than truncated: a
             # zero-length period would violate ``ck_advisor_absence_period``.
@@ -721,7 +713,7 @@ class TeamAdministration:
                 .with_for_update()
             )
         )
-        moment = _now()
+        moment = utc_now()
         for row in live:
             same_person = row.advisor_id == command.advisor_id
             displaced_primary = (
@@ -786,7 +778,7 @@ class TeamAdministration:
         if row is None or replay:
             return TeamRecorded("PropertyExpert", command.property_uuid, changed=False)
         actor.require_same_organization(row.organization_id)
-        row.revoked_at = _now()
+        row.revoked_at = utc_now()
         await self._session.flush()
         await self._audit(
             actor,
@@ -806,7 +798,7 @@ class TeamAdministration:
         is how a human decides whether to wait or escalate, and it discloses no
         Contact. Only an Administrator can *change* any of it.
         """
-        moment = now or _now()
+        moment = now or utc_now()
         members = list(
             await self._session.scalars(
                 select(OrganizationMember)
@@ -875,7 +867,7 @@ class TeamAdministration:
     async def absences(
         self, actor: Actor, *, include_past: bool = False, now: datetime | None = None
     ) -> list[AdvisorAbsence]:
-        moment = now or _now()
+        moment = now or utc_now()
         query = (
             select(AdvisorAbsence)
             .where(AdvisorAbsence.organization_id == actor.organization_id)
@@ -1025,7 +1017,7 @@ class TeamAdministration:
                 Appointment.starts_at < window[1]
             )
         else:
-            visit_query = visit_query.where(Appointment.starts_at > _now())
+            visit_query = visit_query.where(Appointment.starts_at > utc_now())
         visits = await self._session.scalar(visit_query)
         body = "\n".join(
             [

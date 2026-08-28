@@ -24,17 +24,14 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import timedelta
-from pathlib import Path
 
 import pytest
 from sqlalchemy import select
 
-from realestate.db.engine import Database
 from realestate.db.models import (
     AuditEvent,
     ConversationHandlingState,
     HandlingMode,
-    InboxGroupStatus,
     InboxMessage,
     InboxStatus,
     OutboxMessage,
@@ -52,26 +49,12 @@ from realestate.domain.commercial.handling import (
 )
 from realestate.domain.inbox import InboxService
 from realestate.domain.outbound import DenialReason, Purpose
-from tests.conftest import DATABASE_URL, age_pending_inbox, requires_postgres
+from tests.conftest import age_pending_inbox, requires_postgres
+from tests.fixtures.visits import key
 from tests.fixtures import visits
 from tests.fixtures.stubs import SCHEDULE, StubWhatsApp
 
 pytestmark = requires_postgres
-
-
-@pytest.fixture
-async def operation(tmp_path: Path):
-    database = Database(DATABASE_URL)
-    async with database.session_scope() as session:
-        await visits.reset(session)
-        built = await visits.build(session, tmp_path / "artifacts")
-        await session.commit()
-    yield database, built
-    await database.dispose()
-
-
-def key(name: str) -> str:
-    return f"{name}:{uuid.uuid4().hex}"
 
 
 async def assigned_inbound(session, built, **kwargs):  # noqa: ANN001, ANN202
@@ -983,10 +966,3 @@ async def test_a_conversation_with_no_inbound_message_cannot_be_answered(
 
     assert not recorded.queued
     assert recorded.denied_reason == DenialReason.MISSING_REACTIVE_TRIGGER.value
-
-
-def test_the_mid_turn_marker_names_the_processing_state() -> None:
-    """Shared so the CRM warning and the worker agree about "Maia is mid-turn"."""
-    from realestate.domain.commercial.handling import unused_group_states
-
-    assert unused_group_states() == (InboxGroupStatus.PROCESSING.value,)

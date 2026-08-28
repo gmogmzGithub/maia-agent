@@ -29,7 +29,7 @@ from realestate.db.models import (
     Property,
 )
 from realestate.domain.administration import Administrator
-from realestate.domain.commercial.actors import Actor, Authority
+from realestate.domain.commercial.actors import Actor
 from realestate.domain.appointments import NEEDS_REVIEW_MESSAGE, confirmation_message
 from realestate.domain.audit import record_audit
 from realestate.domain.availability import WeeklySchedule
@@ -90,7 +90,7 @@ class AdminWorkService:
         session: AsyncSession,
         calendars: CalendarDirectory,
         schedule: WeeklySchedule,
-        day_of_reminder_hour: int = 9,
+        day_of_reminder_hour: int,
     ) -> None:
         self._session = session
         self._calendars = calendars
@@ -117,7 +117,7 @@ class AdminWorkService:
             found = self._calendars.for_calendar_id(row.calendar_id)
             if found is not None:
                 return found
-        advisor_id = row.conducting_advisor_id or row.advisor_id
+        advisor_id = row.attending_advisor_id
         if advisor_id is not None:
             advisor = await self._session.get(OrganizationMember, advisor_id)
             if advisor is not None:
@@ -322,12 +322,8 @@ class AdminWorkService:
                 original.last_error = (
                     "El evento anterior no se pudo eliminar del calendario."
                 )
-                product = Actor(
-                    organization_id=row.organization_id,
-                    authority=Authority.PRODUCT,
-                    member_id=None,
-                    label="AppointmentReconciliation",
-                    display_name="Maia",
+                product = Actor.product(
+                    row.organization_id, "AppointmentReconciliation"
                 )
                 await InternalAlerts(self._session).raise_alert(
                     product,
@@ -356,13 +352,7 @@ class AdminWorkService:
         row.last_error = None
         if action == CONFIRM:
             await self._handoff.complete(
-                Actor(
-                    organization_id=row.organization_id,
-                    authority=Authority.PRODUCT,
-                    member_id=None,
-                    label="AppointmentReconciliation",
-                    display_name="Maia",
-                ),
+                Actor.product(row.organization_id, "AppointmentReconciliation"),
                 row,
             )
         notification = await self._release_resolution(row)

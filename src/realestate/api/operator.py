@@ -18,9 +18,10 @@ from __future__ import annotations
 import uuid
 from collections.abc import Mapping
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import Depends, HTTPException, Request, status
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from realestate.api.developer import require_developer
 from realestate.api.ui import escape, layout
@@ -146,3 +147,32 @@ def refusal(actor: Actor, exc: CommercialError, *, active: str) -> HTMLResponse:
     )
     response.status_code = status.HTTP_404_NOT_FOUND
     return response
+
+
+def redirect_back(
+    path: str, *, saved: str | None = None, error: str | None = None
+) -> RedirectResponse:
+    """Return to a surface carrying one outcome. The only redirect builder.
+
+    ``303`` so the browser re-issues the follow-up as a GET, which is what makes
+    a refresh after a mutation harmless. The message is percent-encoded here
+    rather than at each call site: one that forgot would break on any Spanish
+    text containing ``&``.
+    """
+    query = f"?guardado={quote(saved)}" if saved else ""
+    if error:
+        query = f"?error={quote(error)}"
+    return RedirectResponse(f"{path}{query}", status_code=303)
+
+
+def form_uuid(value: object) -> uuid.UUID | None:
+    """A UUID from a form field, or ``None`` when the field cannot supply one.
+
+    ``None`` rather than an exception because every caller answers a malformed
+    id with its own Spanish sentence next to the field it came from — "elige un
+    asesor" and "no encontramos esa solicitud" are different remedies.
+    """
+    try:
+        return uuid.UUID(str(value))
+    except (ValueError, TypeError, AttributeError):
+        return None

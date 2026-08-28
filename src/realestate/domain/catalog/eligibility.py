@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from realestate.db.models import (
     CatalogListing,
+    CatalogPresentationTier,
     FactsReviewState,
     ListingAuthority,
     ListingAvailability,
@@ -37,6 +38,25 @@ class EligibilityPurpose(str, enum.Enum):
     RECOMMEND = "Recommend"
     APPOINTMENT = "Appointment"
     AGENT_DISCLOSURE = "AgentDisclosure"
+
+
+@dataclass(frozen=True)
+class TierRequirement:
+    """What Presentation Readiness demands of one tier's gallery."""
+
+    photos: int
+    space_groups: int
+    high_resolution_cover: bool
+
+
+#: Keyed on the tier enum rather than on its spelling: a renamed member is a
+#: type error here, where three string-keyed maps would each silently degrade
+#: to "no requirement".
+_TIER_REQUIREMENTS: dict[str, TierRequirement] = {
+    CatalogPresentationTier.LAREVIA.value: TierRequirement(6, 0, False),
+    CatalogPresentationTier.PREMIUM.value: TierRequirement(12, 4, True),
+    CatalogPresentationTier.SUPER_PREMIUM.value: TierRequirement(20, 6, True),
+}
 
 
 @dataclass(frozen=True)
@@ -68,22 +88,33 @@ class ListingEligibility:
         listing_id: uuid.UUID,
         purpose: EligibilityPurpose,
         at: datetime,
+        *,
+        offers: list[ListingOffer] | None = None,
+        media: list[ListingMedia] | None = None,
     ) -> EligibilityDecision:
+        """The decision for one Listing and one purpose.
+
+        ``offers`` and ``media`` are read here unless a caller that already
+        holds them passes them in.  A projection loads both to render the
+        Listing and would otherwise pay for the same two selects twice per row.
+        """
         listing = await self._session.get(CatalogListing, listing_id)
         if listing is None:
             raise NotFound()
         self._actor.require_same_organization(listing.organization_id)
 
-        offers = list(
-            await self._session.scalars(
-                select(ListingOffer).where(ListingOffer.listing_id == listing.id)
+        if offers is None:
+            offers = list(
+                await self._session.scalars(
+                    select(ListingOffer).where(ListingOffer.listing_id == listing.id)
+                )
             )
-        )
-        media = list(
-            await self._session.scalars(
-                select(ListingMedia).where(ListingMedia.listing_id == listing.id)
+        if media is None:
+            media = list(
+                await self._session.scalars(
+                    select(ListingMedia).where(ListingMedia.listing_id == listing.id)
+                )
             )
-        )
         readiness = await self._readiness(listing, offers, media)
         reasons: list[str] = []
 
@@ -160,19 +191,22 @@ class ListingEligibility:
         if cover is None:
             failures.append("falta una fotografía de portada autorizada")
 
-        required_count = {"Larevia": 6, "Premium": 12, "SuperPremium": 20}.get(
-            tier or "", 0
-        )
-        if required_count and len(approved) < required_count:
-            failures.append(
-                f"se requieren {required_count} fotografías autorizadas"
-            )
-        required_groups = {"Premium": 4, "SuperPremium": 6}.get(tier or "", 0)
-        groups = {row.space_group for row in approved if row.space_group}
-        if required_groups and len(groups) < required_groups:
-            failures.append(f"se requieren {required_groups} grupos fotográficos")
-        if tier in {"Premium", "SuperPremium"} and cover is not None:
-            if not cover.high_resolution:
+        requirement = _TIER_REQUIREMENTS.get(tier or "")
+        if requirement is not None:
+            if len(approved) < requirement.photos:
+                failures.append(
+                    f"se requieren {requirement.photos} fotografías autorizadas"
+                )
+            groups = {row.space_group for row in approved if row.space_group}
+            if len(groups) < requirement.space_groups:
+                failures.append(
+                    f"se requieren {requirement.space_groups} grupos fotográficos"
+                )
+            if (
+                requirement.high_resolution_cover
+                and cover is not None
+                and not cover.high_resolution
+            ):
                 failures.append("la portada debe estar confirmada en alta resolución")
 
         overridden = bool(listing.readiness_override)

@@ -21,12 +21,12 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from realestate.api.operator import (
+    redirect_back,
     command_field,
     command_key,
     command_payload,
@@ -199,23 +199,15 @@ def _now() -> datetime:
     return datetime.now(tz=UTC)
 
 
-# The shared operator plumbing, under the local names this file already uses.
-_shell = shell
-_tag = tag
-_command_field = command_field
-_command_key = command_key
-_command_payload = command_payload
-
-
 def _stage_tag(stage: str | None) -> str:
     if stage is None:
-        return _tag("Sin oportunidad", "warn")
+        return tag("Sin oportunidad", "warn")
     kind = ""
     if stage == OpportunityStage.WON.value:
         kind = "ok"
     elif stage in (OpportunityStage.LOST.value, OpportunityStage.DORMANT.value):
         kind = "warn"
-    return _tag(STAGE_LABELS[stage], kind)
+    return tag(STAGE_LABELS[stage], kind)
 
 
 def _action_cell(
@@ -224,17 +216,17 @@ def _action_cell(
     if action is None:
         if exception_reason is not None:
             return (
-                _tag("Excepción registrada", "warn")
+                tag("Excepción registrada", "warn")
                 + '<br><span class="muted">'
                 + escape(
                     EXCEPTION_REASON_LABELS.get(exception_reason, exception_reason)
                 )
                 + "</span>"
             )
-        return _tag("Sin siguiente acción", "bad")
+        return tag("Sin siguiente acción", "bad")
     label = ACTION_KIND_LABELS.get(action.kind, action.kind)
     due = local(action.due_at)
-    marker = _tag("Vencida", "bad") if overdue else _tag("A tiempo", "ok")
+    marker = tag("Vencida", "bad") if overdue else tag("A tiempo", "ok")
     return f"{escape(label)}<br><span class='muted'>{escape(due)}</span><br>{marker}"
 
 
@@ -246,12 +238,12 @@ def _restriction_note(restriction: RestrictionView) -> str:
             "Restricción de comunicación activa",
         )
         parts.append(
-            _tag("No contactar", "bad")
+            tag("No contactar", "bad")
             + f" <span class='muted'>{escape(reason)}</span>"
         )
     if restriction.denied_count:
         parts.append(
-            _tag(f"{restriction.denied_count} envío(s) no permitido(s)", "warn")
+            tag(f"{restriction.denied_count} envío(s) no permitido(s)", "warn")
         )
     return "<br>".join(parts)
 
@@ -364,7 +356,7 @@ async def panel(
         f"<h2>Huecos de seguimiento</h2>{gaps_table}"
         f"{overdue_block}{queue_block}"
     )
-    return _shell(actor, "Panel de operación", content, active="/crm")
+    return shell(actor, "Panel de operación", content, active="/crm")
 
 
 # --------------------------------------------------------------- Bandeja -----
@@ -385,11 +377,11 @@ async def inbox(
         f"{escape(entry.contact_name or 'Contacto sin nombre')}</a><br>"
         f"<span class='muted'>{escape(entry.channel_identity)}</span></td>"
         f"<td>{escape(entry.preview)}"
-        + ("<br>" + _tag("Contenido expirado", "warn") if entry.preview_expired else "")
+        + ("<br>" + tag("Contenido expirado", "warn") if entry.preview_expired else "")
         + "</td>"
         f"<td>{escape(local(entry.last_inbound_at))}<br>"
         f"<span class='muted'>{escape(relative(entry.last_inbound_at, now=moment))}</span>"
-        + ("<br>" + _tag("Espera respuesta", "warn") if entry.awaiting_reply else "")
+        + ("<br>" + tag("Espera respuesta", "warn") if entry.awaiting_reply else "")
         + "</td>"
         f"<td>{_stage_tag(entry.stage)}<br>"
         f"<span class='muted'>{escape(entry.advisor_name or 'Sin asesor')}</span></td>"
@@ -412,7 +404,7 @@ async def inbox(
         empty_hint="Quita los filtros o espera el primer mensaje de WhatsApp.",
     )
     content = _inbox_filter_form(filters) + listing
-    return _shell(actor, "Bandeja de conversaciones", content, active="/crm/bandeja")
+    return shell(actor, "Bandeja de conversaciones", content, active="/crm/bandeja")
 
 
 #: What each scope means to an operator. One vocabulary, keyed off the tuple
@@ -475,7 +467,7 @@ async def conversation(
         try:
             view = await CommercialInbox(session).conversation(actor, conversation_id)
         except CommercialError as exc:
-            return _refusal(actor, exc, active="/crm/bandeja")
+            return refusal(actor, exc, active="/crm/bandeja")
         handling = await ConversationHandling(session).snapshot(conversation_id)
         pending_handoff = await HumanHandoff(session).open_for_conversation(
             conversation_id
@@ -573,7 +565,7 @@ async def conversation(
         f"<div class='card'><h2>Oportunidad</h2>{opportunity_block}</div>"
         f"<h2>Conversación</h2>{thread}"
     )
-    return _shell(
+    return shell(
         actor,
         f"Conversación con {view.contact.display_name or view.channel_identity}",
         content,
@@ -616,12 +608,12 @@ async def opportunities(
         + (
             ""
             if row.opportunity.responsible_advisor_id
-            else "<br>" + _tag("Sin asesor", "bad")
+            else "<br>" + tag("Sin asesor", "bad")
         )
         + "</td>"
         f"<td>{_action_cell(row.next_action, row.overdue, row.exception_reason)}</td>"
         f"<td>{escape(local(row.opportunity.last_activity_at))}</td>"
-        f"<td>{_tag('Cumple', 'ok') if row.covered else _tag('Hueco', 'bad')}</td></tr>"
+        f"<td>{tag('Cumple', 'ok') if row.covered else tag('Hueco', 'bad')}</td></tr>"
         for row in rows
     )
     listing = table(
@@ -653,7 +645,7 @@ async def opportunities(
 </div>
 <div class="actions"><button type="submit">Aplicar filtros</button>
 <a class="button quiet" href="/crm/oportunidades">Limpiar</a></div></form>"""
-    return _shell(
+    return shell(
         actor, "Oportunidades", filter_form + listing, active="/crm/oportunidades"
     )
 
@@ -672,7 +664,7 @@ async def opportunity_detail(
         try:
             opportunity = await management.opportunity(actor, opportunity_id)
         except CommercialError as exc:
-            return _refusal(actor, exc, active="/crm/oportunidades")
+            return refusal(actor, exc, active="/crm/oportunidades")
         identity = CommercialIdentity(session)
         contact = await identity.contact(actor, opportunity.contact_id)
         identities = await identity.identities(contact.id)
@@ -759,7 +751,7 @@ async def opportunity_detail(
         + _exception_card(opportunity, exception)
         + _history_card(transitions)
     )
-    return _shell(
+    return shell(
         actor,
         f"Oportunidad de {contact.display_name or 'contacto sin nombre'}",
         content,
@@ -818,23 +810,23 @@ def _criteria_card(
                 "Esta oportunidad no tiene una necesidad registrada.",
                 "Regístrala para poder capturar y confirmar los criterios.",
             )
-            + f"""<form method="post" action="/crm/oportunidades/{opportunity.id}/necesidad">{_command_field()}
+            + f"""<form method="post" action="/crm/oportunidades/{opportunity.id}/necesidad">{command_field()}
 <div class="actions"><button type="submit">Registrar la necesidad</button></div>
 </form></div>"""
         )
     confirmed_rows = "".join(
         f"<tr><td>{escape(criterion_label(name))}</td>"
         f"<td>{escape(INTENT_LABELS.get(value, value) if name == INTENT else value)}</td>"
-        f"<td>{_tag('Confirmado', 'ok')}</td><td></td></tr>"
+        f"<td>{tag('Confirmado', 'ok')}</td><td></td></tr>"
         for name, value in snapshot.confirmed.items()
     )
     pending_rows = "".join(
         f"<tr><td>{escape(criterion_label(name))}</td>"
         f"<td>{escape(INTENT_LABELS.get(value, value) if name == INTENT else value)}</td>"
-        f"<td>{_tag('Por confirmar', 'warn')}</td>"
+        f"<td>{tag('Por confirmar', 'warn')}</td>"
         f"<td><form method='post' "
         f"action='/crm/oportunidades/{opportunity.id}/criterios'>"
-        f"<input type='hidden' name='intent' value='confirmar'>{_command_field()}"
+        f"<input type='hidden' name='intent' value='confirmar'>{command_field()}"
         f"<input type='hidden' name='nombre' value='{escape(name)}'>"
         f"<button class='quiet'>Confirmar con el contacto</button></form></td></tr>"
         for name, value in snapshot.pending.items()
@@ -860,7 +852,7 @@ def _criteria_card(
     )
     record_form = f"""<h3>Registrar un criterio confirmado</h3>
 <form method="post" action="/crm/oportunidades/{opportunity.id}/criterios">
-<input type="hidden" name="intent" value="registrar">{_command_field()}
+<input type="hidden" name="intent" value="registrar">{command_field()}
 <div class="grid">
 <label for="c-nombre">Criterio
 <select id="c-nombre" name="nombre">
@@ -923,10 +915,10 @@ def _next_action_card(
 <dt>Acción</dt><dd>{escape(ACTION_KIND_LABELS.get(pending.kind, pending.kind))}</dd>
 <dt>Vence</dt><dd>{escape(local(pending.due_at))}
  <span class="muted">({escape(relative(pending.due_at, now=moment))})</span>
- {_tag("Vencida", "bad") if overdue else _tag("A tiempo", "ok")}</dd>
+ {tag("Vencida", "bad") if overdue else tag("A tiempo", "ok")}</dd>
 <dt>Nota</dt><dd>{escape(pending.note or "—")}</dd>
 </dl>
-<form method="post" action="/crm/acciones/{pending.id}/completar">{_command_field()}
+<form method="post" action="/crm/acciones/{pending.id}/completar">{command_field()}
 <div class="grid">
 <label for="a-resultado">Resultado
 <select id="a-resultado" name="resultado" required>
@@ -959,7 +951,7 @@ def _next_action_card(
         )
         form = f"""<h3>{"Sustituir la siguiente acción" if pending else "Agendar la siguiente acción"}</h3>
 {('<p class="hint">La acción vigente quedará marcada como sustituida.</p>' if pending else "")}
-<form method="post" action="/crm/oportunidades/{opportunity.id}/acciones">{_command_field()}
+<form method="post" action="/crm/oportunidades/{opportunity.id}/acciones">{command_field()}
 <div class="grid">
 <label for="a-tipo">Tipo de acción
 <select id="a-tipo" name="tipo" required>
@@ -1079,7 +1071,7 @@ def _outcome_form(opportunity: Opportunity, form: _OutcomeForm) -> str:
     button_class = f' class="{form.button_class}"' if form.button_class else ""
     return f"""<h3>{escape(form.heading)}</h3>{hint}
 <form method="post" action="/crm/oportunidades/{opportunity.id}/etapa">
-<input type="hidden" name="intent" value="{escape(form.intent)}">{_command_field()}
+<input type="hidden" name="intent" value="{escape(form.intent)}">{command_field()}
 <div class="grid">
 <label for="{field_id}">{escape(form.choice_label)}
 <select id="{field_id}" name="{escape(form.choice_name)}" required>
@@ -1116,7 +1108,7 @@ def _stage_card(opportunity: Opportunity, actor: Actor) -> str:
         blocks.append(
             f"""<h3>Mover de etapa</h3>
 <form method="post" action="/crm/oportunidades/{opportunity.id}/etapa">
-<input type="hidden" name="intent" value="avanzar">{_command_field()}
+<input type="hidden" name="intent" value="avanzar">{command_field()}
 <div class="grid">
 <label for="s-etapa">Nueva etapa
 <select id="s-etapa" name="etapa" required>
@@ -1132,7 +1124,7 @@ def _stage_card(opportunity: Opportunity, actor: Actor) -> str:
             f"""<h3>Calificar y dejar seguimiento</h3>
 <p class="hint">La calificación, la asignación y la siguiente acción se guardan juntas.</p>
 <form method="post" action="/crm/oportunidades/{opportunity.id}/etapa">
-<input type="hidden" name="intent" value="avanzar">{_command_field()}
+<input type="hidden" name="intent" value="avanzar">{command_field()}
 <div class="grid">
 <label for="q-etapa">Nueva etapa
 <select id="q-etapa" name="etapa" required>
@@ -1187,7 +1179,7 @@ def _assignment_card(
     )
     manual = (
         f"""<form method="post" action="/crm/oportunidades/{opportunity.id}/asignar">
-<input type="hidden" name="intent" value="manual">{_command_field()}
+<input type="hidden" name="intent" value="manual">{command_field()}
 <label for="as-advisor">Asesor responsable
 <select id="as-advisor" name="asesor" required>{advisor_options}</select></label>
 <div class="actions"><button type="submit">Asignar</button></div></form>"""
@@ -1199,12 +1191,12 @@ def _assignment_card(
         )
     )
     automatic = f"""<form method="post" action="/crm/oportunidades/{opportunity.id}/asignar">
-<input type="hidden" name="intent" value="automatica">{_command_field()}
+<input type="hidden" name="intent" value="automatica">{command_field()}
 <div class="actions"><button class="quiet" type="submit">
 Aplicar la regla automática</button></div></form>"""
     release = (
         f"""<form method="post" action="/crm/oportunidades/{opportunity.id}/asignar">
-<input type="hidden" name="intent" value="liberar">{_command_field()}
+<input type="hidden" name="intent" value="liberar">{command_field()}
 <div class="actions"><button class="secondary" type="submit">
 Liberar y enviar a la cola</button></div></form>"""
         if opportunity.responsible_advisor_id
@@ -1247,14 +1239,14 @@ def _exception_card(
 <dt>Registrada por</dt><dd>{escape(exception.recorded_by)} ·
 {escape(local(exception.recorded_at))}</dd></dl>
 <form method="post" action="/crm/oportunidades/{opportunity.id}/excepcion">
-<input type="hidden" name="intent" value="cerrar">{_command_field()}
+<input type="hidden" name="intent" value="cerrar">{command_field()}
 <div class="actions"><button class="quiet" type="submit">Cerrar excepción</button>
 </div></form></div>"""
     return f"""<div class="card"><h2>Excepción de seguimiento</h2>
 <p class="hint">Usa esto sólo cuando de verdad no corresponde una siguiente
 acción. Queda registrado con tu nombre.</p>
 <form method="post" action="/crm/oportunidades/{opportunity.id}/excepcion">
-<input type="hidden" name="intent" value="registrar">{_command_field()}
+<input type="hidden" name="intent" value="registrar">{command_field()}
 <div class="grid">
 <label for="e-motivo">Motivo <select id="e-motivo" name="motivo" required>
 {options(tuple(EXCEPTION_REASON_LABELS), "", EXCEPTION_REASON_LABELS)}</select></label>
@@ -1290,28 +1282,12 @@ def _history_card(transitions: list[OpportunityStageTransition]) -> str:
 # ----------------------------------------------------------- Mutations -------
 
 
-def _back(
-    path: str, *, saved: str | None = None, error: str | None = None
-) -> RedirectResponse:
-    """Return to a surface carrying one outcome. The only redirect builder.
-
-    ``303`` so the browser re-issues the follow-up as a GET, which is what makes
-    a refresh after a mutation harmless. The message is percent-encoded here
-    rather than at each call site: one that forgot would break on any Spanish
-    text containing ``&``.
-    """
-    query = f"?guardado={quote(saved)}" if saved else ""
-    if error:
-        query = f"?error={quote(error)}"
-    return RedirectResponse(f"{path}{query}", status_code=303)
-
-
 def _redirect(opportunity_id: uuid.UUID, saved: str) -> RedirectResponse:
-    return _back(f"/crm/oportunidades/{opportunity_id}", saved=saved)
+    return redirect_back(f"/crm/oportunidades/{opportunity_id}", saved=saved)
 
 
 def _redirect_error(opportunity_id: uuid.UUID, message: str) -> RedirectResponse:
-    return _back(f"/crm/oportunidades/{opportunity_id}", error=message)
+    return redirect_back(f"/crm/oportunidades/{opportunity_id}", error=message)
 
 
 @router.post("/oportunidades/{opportunity_id}/etapa")
@@ -1323,7 +1299,7 @@ async def change_stage(
     form = await request.form()
     intent = str(form.get("intent", ""))
     detail = str(form.get("detalle", "")).strip() or None
-    key = _command_key(form, "crm-stage")
+    key = command_key(form, "crm-stage")
     async with request.app.state.database.session_scope() as session:
         management = OpportunityManagement(session)
         try:
@@ -1333,7 +1309,7 @@ async def change_stage(
                 operation="ChangeOpportunityStage",
                 subject_type="Opportunity",
                 subject_id=str(opportunity_id),
-                payload=_command_payload(form),
+                payload=command_payload(form),
             )
             if replayed:
                 await session.commit()
@@ -1441,7 +1417,7 @@ async def schedule_action(
             responsible = uuid.UUID(responsible_raw)
         except ValueError:
             return _redirect_error(opportunity_id, "Responsable desconocido.")
-    key = _command_key(form, "crm-action")
+    key = command_key(form, "crm-action")
     async with request.app.state.database.session_scope() as session:
         try:
             replayed = await CommercialCommands(session).claim(
@@ -1450,7 +1426,7 @@ async def schedule_action(
                 operation="ScheduleNextAction",
                 subject_type="Opportunity",
                 subject_id=str(opportunity_id),
-                payload=_command_payload(form),
+                payload=command_payload(form),
             )
             if replayed:
                 await session.commit()
@@ -1493,14 +1469,14 @@ async def complete_action(
         if outcome not in OUTCOME_LABELS:
             return _redirect_error(opportunity_id, "Resultado desconocido.")
         try:
-            key = _command_key(form, "crm-complete")
+            key = command_key(form, "crm-complete")
             replayed = await CommercialCommands(session).claim(
                 actor,
                 command_key=key,
                 operation="CompleteNextAction",
                 subject_type="NextAction",
                 subject_id=str(next_action_id),
-                payload=_command_payload(form),
+                payload=command_payload(form),
             )
             if replayed:
                 await session.commit()
@@ -1529,7 +1505,7 @@ async def assign(
 ) -> RedirectResponse:
     form = await request.form()
     intent = str(form.get("intent", ""))
-    key = _command_key(form, "crm-assignment")
+    key = command_key(form, "crm-assignment")
     async with request.app.state.database.session_scope() as session:
         assignment = Assignment(session)
         try:
@@ -1539,7 +1515,7 @@ async def assign(
                 operation="ManageAssignment",
                 subject_type="Opportunity",
                 subject_id=str(opportunity_id),
-                payload=_command_payload(form),
+                payload=command_payload(form),
             )
             if replayed:
                 await session.commit()
@@ -1571,7 +1547,7 @@ async def exception(
 ) -> RedirectResponse:
     form = await request.form()
     intent = str(form.get("intent", ""))
-    key = _command_key(form, "crm-exception")
+    key = command_key(form, "crm-exception")
     async with request.app.state.database.session_scope() as session:
         management = OpportunityManagement(session)
         try:
@@ -1581,7 +1557,7 @@ async def exception(
                 operation="ManageOpportunityException",
                 subject_type="Opportunity",
                 subject_id=str(opportunity_id),
-                payload=_command_payload(form),
+                payload=command_payload(form),
             )
             if replayed:
                 await session.commit()
@@ -1619,7 +1595,7 @@ async def attach_need(
 ) -> RedirectResponse:
     """Start a Property Need for an Opportunity that has none."""
     form = await request.form()
-    key = _command_key(form, "crm-attach-need")
+    key = command_key(form, "crm-attach-need")
     async with request.app.state.database.session_scope() as session:
         try:
             replayed = await CommercialCommands(session).claim(
@@ -1628,7 +1604,7 @@ async def attach_need(
                 operation="AttachPropertyNeed",
                 subject_type="Opportunity",
                 subject_id=str(opportunity_id),
-                payload=_command_payload(form),
+                payload=command_payload(form),
             )
             if not replayed:
                 await OpportunityManagement(session).attach_need(actor, opportunity_id)
@@ -1648,7 +1624,7 @@ async def criteria(
     form = await request.form()
     intent = str(form.get("intent", ""))
     name = str(form.get("nombre", "")).strip()
-    key = _command_key(form, "crm-criteria")
+    key = command_key(form, "crm-criteria")
     async with request.app.state.database.session_scope() as session:
         management = OpportunityManagement(session)
         try:
@@ -1663,7 +1639,7 @@ async def criteria(
                 operation="UpdatePropertyNeedCriteria",
                 subject_type="PropertyNeed",
                 subject_id=str(opportunity.property_need_id),
-                payload=_command_payload(form),
+                payload=command_payload(form),
             )
             if replayed:
                 await session.commit()
@@ -1712,7 +1688,7 @@ async def contacts(
         f"<td>{escape(', '.join(row.identities))}</td>"
         f"<td>{row.open_opportunities}</td>"
         f"<td>{escape(local(row.last_activity_at))}</td>"
-        f"<td>{_tag('No contactar', 'bad') if row.suppressed else '—'}</td></tr>"
+        f"<td>{tag('No contactar', 'bad') if row.suppressed else '—'}</td></tr>"
         for row in rows
     )
     listing = table(
@@ -1733,7 +1709,7 @@ async def contacts(
 <input id="c-q" name="q" value="{escape(q)}"></label>
 <div class="actions"><button type="submit">Buscar</button>
 <a class="button quiet" href="/crm/contactos">Limpiar</a></div></form>"""
-    return _shell(actor, "Contactos", search + listing, active="/crm/contactos")
+    return shell(actor, "Contactos", search + listing, active="/crm/contactos")
 
 
 @router.get("/contactos/{contact_id}", response_class=HTMLResponse)
@@ -1749,7 +1725,7 @@ async def contact_detail(
         try:
             contact = await identity.contact(actor, contact_id)
         except CommercialError as exc:
-            return _refusal(actor, exc, active="/crm/contactos")
+            return refusal(actor, exc, active="/crm/contactos")
         identities = await identity.identities(contact_id)
         duplicates = await identity.possible_duplicates(actor, contact_id)
         needs = PropertyNeeds(session)
@@ -1812,7 +1788,7 @@ persona. Revísalos y decide tú.</p><ul>{items}</ul></div>"""
         open_form = f"""<h3>Abrir una oportunidad nueva</h3>
 <p class="hint">Una captación es cuando la persona quiere que le ayudemos a
 vender o rentar su propiedad. En esta versión la continúa el administrador.</p>
-<form method="post" action="/crm/contactos/{contact_id}/oportunidades">{_command_field()}
+<form method="post" action="/crm/contactos/{contact_id}/oportunidades">{command_field()}
 <label for="o-tipo">Tipo
 <select id="o-tipo" name="tipo" required>
 {options(tuple(KIND_LABELS), OpportunityKind.LISTING_ACQUISITION.value, KIND_LABELS)}
@@ -1840,7 +1816,7 @@ Sólo una identidad idéntica resuelve al mismo contacto.</p>
         open_form
         or '<p class="hint">Sólo un administrador puede abrir una oportunidad nueva.</p>'
     }</div>"""
-    return _shell(
+    return shell(
         actor,
         contact.display_name or "Contacto sin nombre",
         content,
@@ -1865,11 +1841,11 @@ async def open_opportunity(
     contact_path = f"/crm/contactos/{contact_id}"
 
     def failed(message: str) -> RedirectResponse:
-        return _back(contact_path, error=message)
+        return redirect_back(contact_path, error=message)
 
     if kind not in KIND_LABELS:
         return failed("Tipo de oportunidad desconocido.")
-    key = _command_key(form, "crm-open")
+    key = command_key(form, "crm-open")
     async with request.app.state.database.session_scope() as session:
         try:
             actor.require_administrator()
@@ -1881,11 +1857,11 @@ async def open_opportunity(
                 operation="OpenOpportunity",
                 subject_type="Contact",
                 subject_id=str(contact_id),
-                payload=_command_payload(form),
+                payload=command_payload(form),
             )
             if replayed:
                 await session.commit()
-                return _back(contact_path, saved="oportunidad")
+                return redirect_back(contact_path, saved="oportunidad")
             need = await PropertyNeeds(session).open(actor, contact_id=contact_id)
             await OpportunityManagement(session).record(
                 actor,
@@ -1904,7 +1880,7 @@ async def open_opportunity(
         except CommercialError as exc:
             await session.rollback()
             return failed(exc.message)
-    return _back(contact_path, saved="oportunidad")
+    return redirect_back(contact_path, saved="oportunidad")
 
 
 # ------------------------------------------------------------ Asignación -----
@@ -1922,7 +1898,7 @@ async def assignment_queue(
         try:
             queue = await Assignment(session).queue(actor)
         except CommercialError as exc:
-            return _refusal(actor, exc, active="/crm/asignacion")
+            return refusal(actor, exc, active="/crm/asignacion")
         advisors = await OrganizationDirectory(session).members(
             actor.organization_id, advisors_only=True
         )
@@ -1944,7 +1920,7 @@ async def assignment_queue(
         )
         + "</td>"
         f"<td>{escape(local(item.since))}</td>"
-        f"<td><form method='post' action='/crm/asignacion/{item.opportunity.id}'>{_command_field()}"
+        f"<td><form method='post' action='/crm/asignacion/{item.opportunity.id}'>{command_field()}"
         f"<label class='muted' for='q-{item.opportunity.id}'>Asesor</label>"
         f"<select id='q-{item.opportunity.id}' name='asesor' required>{advisor_options}</select>"
         f"<div class='actions'><button type='submit'>Asignar</button></div>"
@@ -1973,7 +1949,7 @@ async def assignment_queue(
         + warning
         + listing
     )
-    return _shell(actor, "Cola de asignación", content, active="/crm/asignacion")
+    return shell(actor, "Cola de asignación", content, active="/crm/asignacion")
 
 
 @router.post("/asignacion/{opportunity_id}")
@@ -1986,8 +1962,8 @@ async def assign_from_queue(
     try:
         advisor_id = uuid.UUID(str(form.get("asesor", "")))
     except ValueError:
-        return _back("/crm/asignacion", error="Asesor desconocido.")
-    key = _command_key(form, "crm-queue-assignment")
+        return redirect_back("/crm/asignacion", error="Asesor desconocido.")
+    key = command_key(form, "crm-queue-assignment")
     async with request.app.state.database.session_scope() as session:
         try:
             replayed = await CommercialCommands(session).claim(
@@ -1996,7 +1972,7 @@ async def assign_from_queue(
                 operation="AssignFromQueue",
                 subject_type="Opportunity",
                 subject_id=str(opportunity_id),
-                payload=_command_payload(form),
+                payload=command_payload(form),
             )
             if not replayed:
                 await Assignment(session).assign_manually(
@@ -2005,8 +1981,5 @@ async def assign_from_queue(
             await session.commit()
         except CommercialError as exc:
             await session.rollback()
-            return _back("/crm/asignacion", error=exc.message)
-    return _back("/crm/asignacion", saved="asignada")
-
-
-_refusal = refusal
+            return redirect_back("/crm/asignacion", error=exc.message)
+    return redirect_back("/crm/asignacion", saved="asignada")

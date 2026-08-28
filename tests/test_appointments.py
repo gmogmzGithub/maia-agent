@@ -52,6 +52,7 @@ def policy() -> AppointmentPolicy:
         visit_minutes=90,
         horizon_days=8,
         max_candidates=6,
+        day_of_reminder_hour=9,
     )
 
 

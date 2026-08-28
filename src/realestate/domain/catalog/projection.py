@@ -14,8 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from realestate.db.models import (
     CatalogListing,
     ListingAuthority,
+    ListingAvailability,
     ListingMedia,
     ListingOffer,
+    ListingPublicationState,
     ListingSourceKind,
     OfferAvailability,
     Property,
@@ -189,31 +191,71 @@ class CatalogProjection:
     ) -> tuple[AuthorizedListing, ...]:
         """All eligible Listings for a customer-facing catalog use.
 
-        Each row still travels through ``get_authorized_listing`` with its
-        explicit source identity. A failed row is omitted; it can never cause a
-        caller to substitute another source publication silently.
+        Each row is still evaluated under its own explicit source identity, so a
+        failed row is omitted and can never cause a caller to substitute another
+        source publication silently. What it does *not* do is ask one row at a
+        time: the states every purpose requires are filtered in SQL instead of
+        projecting a row and discarding it, and offers and media for the whole
+        page are read in two queries rather than four per Listing.
         """
-        listing_ids = tuple(
-            await self._session.scalars(
-                select(CatalogListing.id)
-                .where(CatalogListing.organization_id == self._actor.organization_id)
-                .order_by(CatalogListing.listing_key)
+        statement = (
+            select(CatalogListing)
+            .where(CatalogListing.organization_id == self._actor.organization_id)
+            .where(CatalogListing.authority == ListingAuthority.AUTHORIZED.value)
+            .where(
+                CatalogListing.availability == ListingAvailability.AVAILABLE.value
             )
+            .order_by(CatalogListing.listing_key)
         )
+        if purpose is EligibilityPurpose.PUBLIC_SHARE:
+            statement = statement.where(
+                CatalogListing.publication_state
+                == ListingPublicationState.PUBLISHED.value
+            )
+        listings = list(await self._session.scalars(statement))
+        if not listings:
+            return ()
+        offers, media = await self._children([row.id for row in listings])
+
         projected: list[AuthorizedListing] = []
-        for listing_id in listing_ids:
-            try:
-                row = await self.get_authorized_listing(
-                    AuthorizedListingQuery(
-                        purpose=purpose,
-                        at=at,
-                        listing_id=listing_id,
-                    )
-                )
-            except ListingNotEligible:
+        for listing in listings:
+            listing_offers = offers.get(listing.id, [])
+            listing_media = media.get(listing.id, [])
+            decision = await self._eligibility.evaluate(
+                listing.id,
+                purpose,
+                at,
+                offers=listing_offers,
+                media=listing_media,
+            )
+            if not decision.eligible:
                 continue
-            projected.append(row)
+            projected.append(
+                await self._project(
+                    listing,
+                    purpose,
+                    decision,
+                    offers=listing_offers,
+                    media=listing_media,
+                )
+            )
         return tuple(projected)
+
+    async def _children(
+        self, listing_ids: list[uuid.UUID]
+    ) -> tuple[dict[uuid.UUID, list[ListingOffer]], dict[uuid.UUID, list[ListingMedia]]]:
+        """Every offer and every media row for these Listings, in two queries."""
+        offers: dict[uuid.UUID, list[ListingOffer]] = {}
+        for offer in await self._session.scalars(
+            select(ListingOffer).where(ListingOffer.listing_id.in_(listing_ids))
+        ):
+            offers.setdefault(offer.listing_id, []).append(offer)
+        media: dict[uuid.UUID, list[ListingMedia]] = {}
+        for row in await self._session.scalars(
+            select(ListingMedia).where(ListingMedia.listing_id.in_(listing_ids))
+        ):
+            media.setdefault(row.listing_id, []).append(row)
+        return offers, media
 
     async def list_for_administration(
         self, at: datetime
@@ -263,6 +305,20 @@ class CatalogProjection:
     async def _project_for_administration(
         self, listing: CatalogListing, at: datetime
     ) -> AdministrationListing:
+        offer_rows = list(
+            await self._session.scalars(
+                select(ListingOffer)
+                .where(ListingOffer.listing_id == listing.id)
+                .order_by(ListingOffer.operation)
+            )
+        )
+        media_rows = list(
+            await self._session.scalars(
+                select(ListingMedia)
+                .where(ListingMedia.listing_id == listing.id)
+                .order_by(ListingMedia.revoked_at.nullsfirst(), ListingMedia.sort_order)
+            )
+        )
         offers = tuple(
             AdministrationOffer(
                 offer_id=row.id,
@@ -273,11 +329,7 @@ class CatalogProjection:
                 terms_review_state=row.terms_review_state,
                 availability=row.availability,
             )
-            for row in await self._session.scalars(
-                select(ListingOffer)
-                .where(ListingOffer.listing_id == listing.id)
-                .order_by(ListingOffer.operation)
-            )
+            for row in offer_rows
         )
         media = tuple(
             AdministrationMedia(
@@ -297,11 +349,7 @@ class CatalogProjection:
                     )
                 ),
             )
-            for row in await self._session.scalars(
-                select(ListingMedia)
-                .where(ListingMedia.listing_id == listing.id)
-                .order_by(ListingMedia.revoked_at.nullsfirst(), ListingMedia.sort_order)
-            )
+            for row in media_rows
         )
         if listing.property_uuid is not None:
             subject = await self._session.get(Property, listing.property_uuid)
@@ -320,7 +368,11 @@ class CatalogProjection:
             physical_facts = dict(subject_model.facts)
             physical_state = subject_model.facts_review_state
         decision = await self._eligibility.evaluate(
-            listing.id, EligibilityPurpose.PUBLISH, at
+            listing.id,
+            EligibilityPurpose.PUBLISH,
+            at,
+            offers=offer_rows,
+            media=media_rows,
         )
         return AdministrationListing(
             listing_id=listing.id,
@@ -398,28 +450,58 @@ class CatalogProjection:
         listing: CatalogListing,
         purpose: EligibilityPurpose,
         decision: EligibilityDecision,
+        *,
+        offers: list[ListingOffer] | None = None,
+        media: list[ListingMedia] | None = None,
     ) -> AuthorizedListing:
-        offers = list(
-            await self._session.scalars(
-                select(ListingOffer)
-                .where(
-                    ListingOffer.listing_id == listing.id,
-                    ListingOffer.availability == OfferAvailability.AVAILABLE.value,
+        """Render one authorized Listing.
+
+        A caller that already holds the Listing's unfiltered offers and media
+        passes them in; the two customer-facing filters are then applied here
+        rather than paid for as two more queries per row.
+        """
+        if offers is None:
+            offers = list(
+                await self._session.scalars(
+                    select(ListingOffer)
+                    .where(
+                        ListingOffer.listing_id == listing.id,
+                        ListingOffer.availability == OfferAvailability.AVAILABLE.value,
+                    )
+                    .order_by(ListingOffer.operation)
                 )
-                .order_by(ListingOffer.operation)
             )
-        )
-        media = list(
-            await self._session.scalars(
-                select(ListingMedia)
-                .where(
-                    ListingMedia.listing_id == listing.id,
-                    ListingMedia.authority == ListingAuthority.AUTHORIZED.value,
-                    ListingMedia.revoked_at.is_(None),
+        else:
+            offers = sorted(
+                (
+                    row
+                    for row in offers
+                    if row.availability == OfferAvailability.AVAILABLE.value
+                ),
+                key=lambda row: row.operation,
+            )
+        if media is None:
+            media = list(
+                await self._session.scalars(
+                    select(ListingMedia)
+                    .where(
+                        ListingMedia.listing_id == listing.id,
+                        ListingMedia.authority == ListingAuthority.AUTHORIZED.value,
+                        ListingMedia.revoked_at.is_(None),
+                    )
+                    .order_by(ListingMedia.sort_order)
                 )
-                .order_by(ListingMedia.sort_order)
             )
-        )
+        else:
+            media = sorted(
+                (
+                    row
+                    for row in media
+                    if row.authority == ListingAuthority.AUTHORIZED.value
+                    and row.revoked_at is None
+                ),
+                key=lambda row: row.sort_order,
+            )
         # Every AuthorizedListing projection is customer-facing. Internal
         # administration uses the separate AdministrationListing model, so a
         # hidden amount must never leak through recommendation, appointment or

@@ -60,6 +60,7 @@ from realestate.domain.outbound import (
 )
 from tests.conftest import DATABASE_URL, REPO_ROOT, requires_postgres
 from tests.fixtures import commercial
+from tests.fixtures.surfaces import visible_text
 
 pytestmark = requires_postgres
 
@@ -99,14 +100,6 @@ FORBIDDEN_WORDS = (
     r"\bqualified\b",
     r"\bbroker\b",
 )
-
-_TAGS = re.compile(r"<[^>]+>")
-_DROPPED = re.compile(r"<(style|script)\b.*?</\1>", re.DOTALL | re.IGNORECASE)
-
-
-def visible_text(html: str) -> str:
-    """What a person actually reads, without markup or the stylesheet."""
-    return _TAGS.sub(" ", _DROPPED.sub(" ", html))
 
 
 @pytest.fixture

@@ -210,6 +210,7 @@ async def test_whatsapp_lead_booking_reaches_telegram_without_provider_tokens(
         visit_minutes=90,
         horizon_days=8,
         max_candidates=6,
+        day_of_reminder_hour=9,
     )
 
     async with database.session_scope() as session:

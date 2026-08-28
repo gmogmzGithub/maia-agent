@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import timedelta
-from pathlib import Path
 
 import pytest
 from sqlalchemy import select
@@ -42,7 +41,6 @@ from realestate.db.models import (
     PropertyExpertRole,
     PropertyStatus,
 )
-from realestate.db.engine import Database
 from realestate.domain.commercial.actors import NotAuthorized, NotFound
 from realestate.domain.commercial.organization import (
     DirectoryPlan,
@@ -65,25 +63,11 @@ from realestate.domain.commercial.team import (
     absent_advisor_ids,
     current_absence,
 )
-from tests.conftest import DATABASE_URL, requires_postgres
+from tests.conftest import requires_postgres
+from tests.fixtures.visits import key
 from tests.fixtures import commercial, visits
 
 pytestmark = requires_postgres
-
-
-@pytest.fixture
-async def operation(tmp_path: Path):
-    database = Database(DATABASE_URL)
-    async with database.session_scope() as session:
-        await visits.reset(session)
-        built = await visits.build(session, tmp_path / "artifacts")
-        await session.commit()
-    yield database, built
-    await database.dispose()
-
-
-def key(name: str) -> str:
-    return f"{name}:{uuid.uuid4().hex}"
 
 
 # -- Administrator versus Advisor -----------------------------------------
@@ -1152,20 +1136,13 @@ async def test_an_administrator_added_as_an_administrator_does_not_advise(
 
 async def test_every_team_label_has_spanish(operation) -> None:
     """A value that reached a screen as an English identifier would be a leak."""
-    from realestate.domain.commercial.team import (
-        EXPERT_ROLE_LABELS,
-        PROVISIONING_LABELS,
-    )
+    from realestate.domain.commercial.team import EXPERT_ROLE_LABELS
 
     assert set(EXPERT_ROLE_LABELS) == {
         PropertyExpertRole.PRIMARY.value,
         PropertyExpertRole.BACKUP.value,
     }
-    assert set(PROVISIONING_LABELS) == {
-        MemberProvisioning.CONFIGURATION.value,
-        MemberProvisioning.ADMINISTRATOR.value,
-    }
-    for label in (*EXPERT_ROLE_LABELS.values(), *PROVISIONING_LABELS.values()):
+    for label in EXPERT_ROLE_LABELS.values():
         assert label and label[0].isupper()
 
 

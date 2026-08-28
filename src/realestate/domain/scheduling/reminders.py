@@ -28,8 +28,9 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -46,7 +47,8 @@ from realestate.db.models import (
 )
 from realestate.domain.audit import record_audit
 from realestate.domain.availability import WeeklySchedule
-from realestate.domain.copy import SPANISH_DAYS
+from realestate.domain.clock import utc_now
+from realestate.domain.copy import visit_stamp
 from realestate.domain.outbound import (
     Denied,
     OutboundIntent,
@@ -79,10 +81,6 @@ REMINDER_KIND_LABELS: dict[str, str] = {
     AppointmentReminderKind.DAY_BEFORE.value: "24 horas antes",
     AppointmentReminderKind.DAY_OF.value: "El día de la visita",
 }
-
-
-def _now() -> datetime:
-    return datetime.now(tz=UTC)
 
 
 @dataclass(frozen=True)
@@ -169,7 +167,7 @@ class AppointmentReminders:
 
     async def due(self, now: datetime | None = None) -> list[DueReminder]:
         """Reminders owed right now, earliest first."""
-        moment = now or _now()
+        moment = now or utc_now()
         rows = await self._session.execute(
             select(AppointmentReminder, Appointment)
             .join(Appointment, Appointment.id == AppointmentReminder.appointment_id)
@@ -186,7 +184,7 @@ class AppointmentReminders:
         tests assert on. Every path settles the row: a reminder left unsettled
         because the policy is off would be re-examined on every tick forever.
         """
-        moment = now or _now()
+        moment = now or utc_now()
         outcomes: dict[str, int] = {}
         for item in await self.due(moment):
             outcome = await self._settle_one(item, moment)
@@ -263,12 +261,27 @@ class AppointmentReminders:
     async def for_appointment(
         self, appointment_id: uuid.UUID
     ) -> list[AppointmentReminder]:
+        return (await self.for_appointments([appointment_id])).get(appointment_id, [])
+
+    async def for_appointments(
+        self, appointment_ids: Sequence[uuid.UUID]
+    ) -> dict[uuid.UUID, list[AppointmentReminder]]:
+        """Reminders for a whole agenda, in one query.
+
+        The agenda renders a reminder column per visit; asking per row turned a
+        two-week page into one query per appointment.
+        """
+        if not appointment_ids:
+            return {}
         rows = await self._session.scalars(
             select(AppointmentReminder)
-            .where(AppointmentReminder.appointment_id == appointment_id)
+            .where(AppointmentReminder.appointment_id.in_(appointment_ids))
             .order_by(AppointmentReminder.due_at)
         )
-        return list(rows)
+        grouped: dict[uuid.UUID, list[AppointmentReminder]] = {}
+        for row in rows:
+            grouped.setdefault(row.appointment_id, []).append(row)
+        return grouped
 
 
 def reminder_body(
@@ -279,11 +292,7 @@ def reminder_body(
     visit_address: str | None,
 ) -> str:
     """The Contact-facing reminder. Product copy, rendered from the row."""
-    local = starts_at.astimezone(schedule.zone)
-    stamp = (
-        f"{SPANISH_DAYS[local.weekday()]} {local.strftime('%d/%m')} a las "
-        f"{local.strftime('%H:%M')}"
-    )
+    stamp = visit_stamp(starts_at, schedule.zone)
     text = f"Te recordamos tu visita a {property_name} el {stamp}. "
     if visit_address:
         text += f"La dirección es: {visit_address}. "

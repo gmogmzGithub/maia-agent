@@ -64,7 +64,8 @@ from realestate.domain.catalog.media import (
     MediaPlacement,
     RevokeMedia,
 )
-from realestate.domain.catalog.storage import InMemoryMediaStorage, MediaStorageError
+from realestate.domain.catalog.storage import MediaStorageError
+from tests.fixtures.media import InMemoryMediaStorage
 from realestate.domain.catalog.projection import (
     AuthorizedListingQuery,
     CatalogProjection,
@@ -223,9 +224,13 @@ async def _listing(database, suffix: str = "offers") -> tuple[object, uuid.UUID,
 
 
 async def test_one_listing_has_sale_and_rental_offers_and_uses_the_highest_tier(
-    database,
+    database, monkeypatch,
 ) -> None:
     _admin, _property_id, listing_id = await _listing(database)
+    changed_at = datetime(2026, 8, 28, 19, 0, tzinfo=UTC)
+    monkeypatch.setattr(
+        "realestate.domain.catalog.presentation.utc_now", lambda: changed_at
+    )
     async with database.session_scope() as session:
         admin = await actor_for(session, ADMIN_LOGIN)
         offers = OfferManagement(session)
@@ -262,6 +267,7 @@ async def test_one_listing_has_sale_and_rental_offers_and_uses_the_highest_tier(
         assert sale.offer_id != rental.offer_id
         listing = await session.get(CatalogListing, listing_id)
         assert listing is not None and listing.automatic_tier == "SuperPremium"
+        assert listing.updated_at == changed_at
         rental_row = await session.get(ListingOffer, rental.offer_id)
         assert rental_row is not None
         assert rental_row.hidden_price_copy == "Precio disponible previa consulta"

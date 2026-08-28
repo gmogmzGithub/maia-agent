@@ -37,6 +37,7 @@ from realestate.db.models import (
 from realestate.domain.commercial.handling import ConversationHandling
 from tests.conftest import DATABASE_URL, requires_postgres
 from tests.fixtures import commercial, visits
+from tests.fixtures.surfaces import visible_text
 
 pytestmark = requires_postgres
 
@@ -65,13 +66,6 @@ FORBIDDEN_WORDS = (
     r"\badvisor\b",
     r"\bbroker\b",
 )
-
-_TAGS = re.compile(r"<[^>]+>")
-_DROPPED = re.compile(r"<(style|script)\b.*?</\1>", re.DOTALL | re.IGNORECASE)
-
-
-def visible_text(html: str) -> str:
-    return _TAGS.sub(" ", _DROPPED.sub(" ", html))
 
 
 @pytest.fixture
@@ -103,13 +97,12 @@ async def wired(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
 def local_input(moment) -> str:  # noqa: ANN001
     """A ``datetime-local`` value the surface will read back as this instant.
 
-    The field carries no offset, so Product reads it in the operation's zone.
-    Formatting a UTC instant directly would land six hours out and turn a past
-    absence into a future one.
+    Delegated to the helper the surface renders with, rather than restating the
+    format: a test carrying its own copy would keep passing while the page broke.
     """
-    from realestate.api.ui import OPERATION_TIMEZONE
+    from realestate.api.ui import datetime_input_value
 
-    return moment.astimezone(OPERATION_TIMEZONE).strftime("%Y-%m-%dT%H:%M")
+    return datetime_input_value(moment)
 
 
 def _another_time(html: str, current) -> str:  # noqa: ANN001

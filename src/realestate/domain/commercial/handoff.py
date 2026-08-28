@@ -31,7 +31,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -49,6 +49,7 @@ from realestate.db.models import (
     OrganizationMember,
 )
 from realestate.domain.audit import record_audit
+from realestate.domain.clock import utc_now
 from realestate.domain.commercial.actors import Actor, NotAuthorized, NotFound
 from realestate.domain.commercial.handling import ConversationHandling
 from realestate.domain.internal_alerts import InternalAlerts
@@ -80,10 +81,6 @@ HUMAN_HANDOFF_ACKNOWLEDGEMENT = (
     "este momento, pero haré todo lo posible para que se comunique contigo en "
     "los próximos minutos."
 )
-
-
-def _now() -> datetime:
-    return datetime.now(tz=UTC)
 
 
 # ---------------------------------------------------------------- Commands ---
@@ -160,9 +157,9 @@ class HumanHandoff:
         """
         conversation = command.conversation
         actor.require_same_organization(conversation.organization_id)
-        moment = _now()
+        moment = utc_now()
 
-        existing = await self._open_request(conversation.id, lock=True)
+        existing = await self.open_for_conversation(conversation.id, lock=True)
         if existing is not None:
             snapshot = await self._handling.snapshot(conversation.id)
             logger.info(
@@ -208,7 +205,7 @@ class HumanHandoff:
                 self._session.add(row)
                 await self._session.flush()
         except IntegrityError:
-            again = await self._open_request(conversation.id, lock=True)
+            again = await self.open_for_conversation(conversation.id, lock=True)
             if again is None:  # pragma: no cover - the index is the only writer
                 raise
             snapshot = await self._handling.snapshot(conversation.id)
@@ -306,7 +303,7 @@ class HumanHandoff:
                 mode=snapshot.mode.value,
             )
         row.status = HandoffStatus.ACKNOWLEDGED.value
-        row.resolved_at = _now()
+        row.resolved_at = utc_now()
         row.resolved_by = actor.member_id
         await self._session.flush()
         await record_audit(
@@ -335,11 +332,11 @@ class HumanHandoff:
         would leave the Administrator escalating a request somebody is already
         answering.
         """
-        row = await self._open_request(conversation_id, lock=True)
+        row = await self.open_for_conversation(conversation_id, lock=True)
         if row is None:
             return False
         row.status = HandoffStatus.ACKNOWLEDGED.value
-        row.resolved_at = _now()
+        row.resolved_at = utc_now()
         row.resolved_by = actor.member_id
         await self._session.flush()
         return True
@@ -353,11 +350,11 @@ class HumanHandoff:
         that makes an unmet request disappear, so it must be attributable.
         """
         actor.require_administrator()
-        row = await self._open_request(conversation_id, lock=True)
+        row = await self.open_for_conversation(conversation_id, lock=True)
         if row is None:
             return False
         row.status = HandoffStatus.CANCELLED.value
-        row.resolved_at = _now()
+        row.resolved_at = utc_now()
         row.resolved_by = actor.member_id
         await self._session.flush()
         await record_audit(
@@ -382,7 +379,7 @@ class HumanHandoff:
         requests whose stamp is still NULL. A restart mid-window changes
         nothing, because the deadline is stored rather than held in a timer.
         """
-        moment = now or _now()
+        moment = now or utc_now()
         rows = list(
             await self._session.scalars(
                 select(HumanHandoffRequest)
@@ -452,7 +449,7 @@ class HumanHandoff:
         self, actor: Actor, *, now: datetime | None = None
     ) -> list[HandoffView]:
         """Unmet requests this Actor should act on, longest wait first."""
-        moment = now or _now()
+        moment = now or utc_now()
         query = (
             select(HumanHandoffRequest)
             .where(HumanHandoffRequest.organization_id == actor.organization_id)
@@ -462,24 +459,49 @@ class HumanHandoff:
         if not actor.sees_whole_operation:
             query = query.where(HumanHandoffRequest.advisor_id == actor.member_id)
         rows = list(await self._session.scalars(query))
+        if not rows:
+            return []
+
+        # Four batched reads rather than four per row: this is the alert list an
+        # Administrator refreshes, and it grows with the operation's backlog.
+        contact_ids = {row.contact_id for row in rows if row.contact_id}
+        advisor_ids = {row.advisor_id for row in rows if row.advisor_id}
+        contacts = {
+            row.id: row
+            for row in await self._session.scalars(
+                select(Contact).where(Contact.id.in_(contact_ids))
+            )
+        } if contact_ids else {}
+        advisors = {
+            row.id: row
+            for row in await self._session.scalars(
+                select(OrganizationMember).where(
+                    OrganizationMember.id.in_(advisor_ids)
+                )
+            )
+        } if advisor_ids else {}
+        conversations = {
+            row.id: row
+            for row in await self._session.scalars(
+                select(Conversation).where(
+                    Conversation.id.in_({row.conversation_id for row in rows})
+                )
+            )
+        }
+        lead_ids = {row.lead_id for row in conversations.values()}
+        leads = {
+            row.id: row
+            for row in await self._session.scalars(
+                select(Lead).where(Lead.id.in_(lead_ids))
+            )
+        } if lead_ids else {}
+
         views: list[HandoffView] = []
         for row in rows:
-            contact = (
-                await self._session.get(Contact, row.contact_id)
-                if row.contact_id
-                else None
-            )
-            advisor = (
-                await self._session.get(OrganizationMember, row.advisor_id)
-                if row.advisor_id
-                else None
-            )
-            conversation = await self._session.get(Conversation, row.conversation_id)
-            lead = (
-                await self._session.get(Lead, conversation.lead_id)
-                if conversation
-                else None
-            )
+            contact = contacts.get(row.contact_id) if row.contact_id else None
+            advisor = advisors.get(row.advisor_id) if row.advisor_id else None
+            conversation = conversations.get(row.conversation_id)
+            lead = leads.get(conversation.lead_id) if conversation else None
             views.append(
                 HandoffView(
                     request=row,
@@ -494,15 +516,13 @@ class HumanHandoff:
         return views
 
     async def open_for_conversation(
-        self, conversation_id: uuid.UUID
-    ) -> HumanHandoffRequest | None:
-        return await self._open_request(conversation_id)
-
-    # -- Internals ---------------------------------------------------------
-
-    async def _open_request(
         self, conversation_id: uuid.UUID, *, lock: bool = False
     ) -> HumanHandoffRequest | None:
+        """This Conversation's unmet request, if it has one.
+
+        "Open" means ``Pending``: a request an Advisor has acknowledged is no
+        longer waiting for anybody.
+        """
         query = (
             select(HumanHandoffRequest)
             .where(HumanHandoffRequest.conversation_id == conversation_id)
@@ -513,6 +533,8 @@ class HumanHandoff:
             query = query.with_for_update()
         found: HumanHandoffRequest | None = await self._session.scalar(query)
         return found
+
+    # -- Internals ---------------------------------------------------------
 
     async def _opportunity_for(
         self, conversation: Conversation
@@ -659,5 +681,5 @@ class HumanHandoff:
             dedupe_key=f"handoff-request:{row.id}",
             recipient_member_id=row.advisor_id,
         )
-        row.advisor_alert_at = _now()
+        row.advisor_alert_at = utc_now()
         await self._session.flush()

@@ -127,8 +127,8 @@ class Operation:
             session,
             self.scheduling(session),
             schedule=SCHEDULE,
-            visit_minutes=90,
             day_of_reminder_hour=day_of_reminder_hour,
+            max_candidates=6,
         )
 
 
@@ -283,3 +283,8 @@ __all__ = [
     # second datetime import just to age a row.
     "timedelta",
 ]
+
+
+def key(name: str) -> str:
+    """A unique command key, so a replay is deliberate rather than accidental."""
+    return f"{name}:{uuid.uuid4().hex}"

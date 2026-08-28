@@ -81,10 +81,12 @@ class AppointmentPolicy:
     visit_minutes: int
     horizon_days: int
     max_candidates: int
-    event_title: str = "Visita — {property} — {name}"
     #: The local hour the day-of reminder is due (SAN-036 pending). Carried here
     #: so the conversational service and the CRM build the same visit module.
-    day_of_reminder_hour: int = 9
+    #: No default: when a customer is messaged is an operational decision, and a
+    #: number here would quietly stand in for the configured one.
+    day_of_reminder_hour: int
+    event_title: str = "Visita — {property} — {name}"
 
     @property
     def scheduling(self) -> SchedulingPolicy:
@@ -93,6 +95,7 @@ class AppointmentPolicy:
             schedule=self.schedule,
             visit_minutes=self.visit_minutes,
             horizon_days=self.horizon_days,
+            max_candidates=self.max_candidates,
         )
 
 
@@ -171,8 +174,8 @@ class AppointmentService:
             session,
             self._scheduling,
             schedule=policy.schedule,
-            visit_minutes=policy.visit_minutes,
-            day_of_reminder_hour=policy.day_of_reminder_hour,
+                day_of_reminder_hour=policy.day_of_reminder_hour,
+            max_candidates=policy.max_candidates,
             event_title=policy.event_title,
         )
 

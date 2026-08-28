@@ -30,7 +30,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, time
+from datetime import date, datetime, time
 from enum import Enum
 
 from sqlalchemy import and_, or_, select
@@ -49,13 +49,10 @@ from realestate.domain.availability import (
     filter_slots,
     horizon_end,
 )
+from realestate.domain.clock import utc_now
 from realestate.domain.scheduling.calendars import CalendarDirectory, CalendarPort
 
 logger = logging.getLogger(__name__)
-
-
-def _now() -> datetime:
-    return datetime.now(tz=UTC)
 
 
 class Unavailable(str, Enum):
@@ -112,7 +109,7 @@ class SlotQuery:
 
     @property
     def moment(self) -> datetime:
-        return self.now or _now()
+        return self.now or utc_now()
 
 
 @dataclass(frozen=True)
@@ -157,6 +154,9 @@ class SchedulingPolicy:
     schedule: WeeklySchedule
     visit_minutes: int
     horizon_days: int
+    #: How many candidate starts one availability answer may offer (P-059).
+    #: Carried here so a refusal's alternatives and a quote agree about it.
+    max_candidates: int
 
 
 class AdvisorScheduling:

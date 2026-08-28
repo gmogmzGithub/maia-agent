@@ -37,7 +37,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -49,13 +49,13 @@ from realestate.db.models import (
     ConversationHandlingState,
     HandlingMode,
     InboxGroup,
-    InboxGroupStatus,
     InboxMessage,
     OrganizationMember,
     OutboundInitiation,
     OutboxMessage,
 )
 from realestate.domain.audit import record_audit
+from realestate.domain.clock import utc_now
 from realestate.domain.commercial.actors import (
     Actor,
     CommercialError,
@@ -72,10 +72,6 @@ from realestate.domain.outbound import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _now() -> datetime:
-    return datetime.now(tz=UTC)
 
 
 MODE_LABELS: dict[str, str] = {
@@ -179,6 +175,52 @@ class HandlingSnapshot:
             and self.holder_member_id == actor.member_id
         )
 
+    def may_reply(self, actor: Actor) -> bool:
+        """Whether this Actor may write to the Contact right now.
+
+        The holder, or an Administrator while a human holds it — somebody has to
+        be able to answer a Contact held by a person who went home. One
+        definition, because the reply box, the release controls and
+        :meth:`ConversationHandling.reply` must not be able to disagree about
+        who is allowed to speak for the Organization.
+        """
+        return self.held_by(actor) or (
+            actor.is_administrator and self.mode is HandlingMode.HUMAN
+        )
+
+
+
+def _authority_of(
+    conversation_id: uuid.UUID,
+    row: ConversationHandlingState | None,
+    *,
+    holder_name: str | None = None,
+) -> HandlingSnapshot:
+    """A snapshot of a row already in hand. An absent row means Maia.
+
+    ``holder_name`` is supplied only by the read path that needs it; the
+    authorization checks do not, and should not pay for a second query.
+    """
+    if row is None:
+        return HandlingSnapshot(
+            conversation_id=conversation_id,
+            mode=HandlingMode.MAIA,
+            holder_member_id=None,
+            holder_name=None,
+            since=None,
+            reason=None,
+            version=0,
+        )
+    return HandlingSnapshot(
+        conversation_id=conversation_id,
+        mode=HandlingMode(row.mode),
+        holder_member_id=row.holder_member_id,
+        holder_name=holder_name,
+        since=row.since,
+        reason=row.reason,
+        version=row.version,
+    )
+
 
 @dataclass(frozen=True)
 class ReplyRecorded:
@@ -208,29 +250,11 @@ class ConversationHandling:
     async def snapshot(self, conversation_id: uuid.UUID) -> HandlingSnapshot:
         """The current authority. An absent row means Maia."""
         row = await self._row(conversation_id)
-        if row is None:
-            return HandlingSnapshot(
-                conversation_id=conversation_id,
-                mode=HandlingMode.MAIA,
-                holder_member_id=None,
-                holder_name=None,
-                since=None,
-                reason=None,
-                version=0,
-            )
         holder_name = None
-        if row.holder_member_id is not None:
+        if row is not None and row.holder_member_id is not None:
             holder = await self._session.get(OrganizationMember, row.holder_member_id)
             holder_name = holder.display_name if holder else None
-        return HandlingSnapshot(
-            conversation_id=conversation_id,
-            mode=HandlingMode(row.mode),
-            holder_member_id=row.holder_member_id,
-            holder_name=holder_name,
-            since=row.since,
-            reason=row.reason,
-            version=row.version,
-        )
+        return _authority_of(conversation_id, row, holder_name=holder_name)
 
     async def maia_may_reply(self, conversation_id: uuid.UUID, *, lock: bool = False) -> bool:
         """Whether the Lead worker may release a draft for this Conversation.
@@ -312,7 +336,7 @@ class ConversationHandling:
         previous = row.mode
         row.mode = HandlingMode.HUMAN.value
         row.holder_member_id = actor.member_id
-        row.since = _now()
+        row.since = utc_now()
         row.reason = command.reason
         row.version += 1
         row.updated_at = row.since
@@ -371,7 +395,7 @@ class ConversationHandling:
 
         row.mode = command.to_mode.value
         row.holder_member_id = None
-        row.since = _now()
+        row.since = utc_now()
         row.reason = command.reason
         row.version += 1
         row.updated_at = row.since
@@ -405,17 +429,7 @@ class ConversationHandling:
             raise NotAuthorized("El mensaje no puede ir vacío.")
         conversation = await self._conversation(actor, command.conversation_id)
         authority = await self._row(conversation.id, lock=True)
-        held_by_actor = (
-            authority is not None
-            and authority.mode == HandlingMode.HUMAN.value
-            and authority.holder_member_id == actor.member_id
-        )
-        administrator_override = (
-            actor.is_administrator
-            and authority is not None
-            and authority.mode == HandlingMode.HUMAN.value
-        )
-        if not (held_by_actor or administrator_override):
+        if not _authority_of(conversation.id, authority).may_reply(actor):
             raise NotHandling()
 
         triggers = await self._unanswered_inbound(conversation)
@@ -482,7 +496,7 @@ class ConversationHandling:
         else:
             row.mode = HandlingMode.HUMAN.value
             row.holder_member_id = advisor_id
-        row.since = _now()
+        row.since = utc_now()
         row.reason = reason
         row.version += 1
         row.updated_at = row.since
@@ -511,7 +525,7 @@ class ConversationHandling:
             return None
         row.mode = HandlingMode.MAIA.value
         row.holder_member_id = None
-        row.since = _now()
+        row.since = utc_now()
         row.reason = "ContactWroteAgain"
         row.version += 1
         row.updated_at = row.since
@@ -553,7 +567,7 @@ class ConversationHandling:
             organization_id=conversation.organization_id,
             conversation_id=conversation.id,
             mode=HandlingMode.MAIA.value,
-            since=_now(),
+            since=utc_now(),
         )
         self._session.add(fresh)
         try:
@@ -651,13 +665,3 @@ class ConversationHandling:
             details=details,
             commit=False,
         )
-
-
-def unused_group_states() -> tuple[str, ...]:
-    """Inbox group states that mean a Maia turn is in flight.
-
-    Exported so the Lead worker and the handling surface agree on when "Maia is
-    mid-turn" is true; the CRM warns the operator that taking over now will
-    discard a draft.
-    """
-    return (InboxGroupStatus.PROCESSING.value,)

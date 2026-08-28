@@ -20,7 +20,7 @@ from realestate.db.models import (
     Property,
     PropertyExpert,
 )
-from realestate.domain.catalog.storage import InMemoryMediaStorage
+from tests.fixtures.media import InMemoryMediaStorage
 from tests.conftest import DATABASE_URL, requires_postgres, reset_property_inventory
 from tests.fixtures import commercial
 

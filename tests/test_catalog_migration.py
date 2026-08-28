@@ -13,7 +13,7 @@ pytestmark = requires_postgres
 
 MIGRATION_DATABASE = "realestate_catalog_migration_test"
 STAGE_3_HEAD = "0019_appointment_authority"
-HEAD = "0020_authoritative_catalog"
+HEAD = "0021_stage_three_query_indexes"
 
 
 @pytest.fixture

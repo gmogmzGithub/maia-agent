@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import timedelta
-from pathlib import Path
 
 import pytest
 from sqlalchemy import select
@@ -46,25 +45,11 @@ from realestate.domain.commercial.routing import (
 from realestate.domain.commercial.team import StartAbsence, TeamAdministration
 from realestate.domain.internal_alerts import InternalAlerts
 from tests.conftest import DATABASE_URL, requires_postgres
+from tests.fixtures.visits import key
 from tests.fixtures import commercial, visits
 from tests.fixtures.stubs import SCHEDULE, StubTelegram
 
 pytestmark = requires_postgres
-
-
-@pytest.fixture
-async def operation(tmp_path: Path):
-    database = Database(DATABASE_URL)
-    async with database.session_scope() as session:
-        await visits.reset(session)
-        built = await visits.build(session, tmp_path / "artifacts")
-        await session.commit()
-    yield database, built
-    await database.dispose()
-
-
-def key(name: str) -> str:
-    return f"{name}:{uuid.uuid4().hex}"
 
 
 # -- Recognising the request ----------------------------------------------
@@ -553,13 +538,66 @@ async def test_an_alert_with_no_channel_stays_visible_as_undeliverable(
 
     assert telegram.sent == []
     async with database.session_scope() as session:
-        alert = await session.scalar(select(InternalAlert))
+        alert = await session.scalar(
+            select(InternalAlert).where(
+                InternalAlert.kind == InternalAlertKind.HUMAN_HANDOFF_REQUESTED.value
+            )
+        )
+        notice = await session.scalar(
+            select(InternalAlert).where(
+                InternalAlert.kind == InternalAlertKind.ALERT_UNDELIVERABLE.value
+            )
+        )
         visible = await InternalAlerts(session).open_for(built.admin)
 
     assert alert is not None
     assert alert.status == InternalAlertStatus.UNDELIVERABLE.value
     # Still on the Administrator's screen, which is the point.
-    assert [row.id for row in visible] == [alert.id]
+    assert alert.id in {row.id for row in visible}
+
+    # ADR-0049's other half: the Administrators are told it could not be
+    # delivered, rather than the failure living only in a log line.
+    assert notice is not None
+    assert notice.recipient_member_id is None
+    assert notice.subject_id == str(alert.id)
+    assert alert.title in notice.body
+    assert notice.id in {row.id for row in visible}
+
+
+async def test_an_undeliverable_broadcast_does_not_alert_about_itself(
+    operation,
+) -> None:
+    """Otherwise the notice about a notice would never terminate.
+
+    An undeliverable broadcast means no Administrator has a channel at all, so
+    there is nobody left to tell. The CRM row is the answer in that case.
+    """
+    database, built = operation
+    async with database.session_scope() as session:
+        alerts = InternalAlerts(session)
+        raised = await alerts.raise_alert(
+            built.product,
+            kind=InternalAlertKind.HUMAN_HANDOFF_ESCALATED,
+            subject_type="Conversation",
+            subject_id="broadcast",
+            title="Solicitud sin tomar",
+            body="Nadie la ha tomado.",
+            dedupe_key="broadcast-undeliverable",
+            recipient_member_id=None,
+        )
+        await session.commit()
+        await alerts.mark_undeliverable(raised.id, "Sin canal.")
+
+    async with database.session_scope() as session:
+        kinds = list(
+            await session.scalars(
+                select(InternalAlert.kind).where(
+                    InternalAlert.kind
+                    == InternalAlertKind.ALERT_UNDELIVERABLE.value
+                )
+            )
+        )
+    assert kinds == []
 
 
 async def test_a_delivered_alert_is_not_sent_twice(operation) -> None:

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime, tzinfo
 
 from realestate.domain.text import strip_diacritics
 
@@ -59,6 +60,19 @@ SPANISH_DAYS = (
     "sábado",
     "domingo",
 )
+
+
+def visit_stamp(moment: datetime, zone: tzinfo) -> str:
+    """When a visit happens, as Product writes it to a person.
+
+    One spelling, because the Contact's reminder and the Advisor's notice are
+    about the same appointment and two renderings of it read as two visits.
+    """
+    local = moment.astimezone(zone)
+    return (
+        f"{SPANISH_DAYS[local.weekday()]} {local.strftime('%d/%m')} a las "
+        f"{local.strftime('%H:%M')}"
+    )
 
 
 def _loose(text: str) -> str:

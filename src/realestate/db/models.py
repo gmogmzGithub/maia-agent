@@ -1169,6 +1169,17 @@ class Appointment(Base):
     # look for the event where it was actually created, not wherever the
     # Advisor's configuration points today.
     calendar_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+    @property
+    def attending_advisor_id(self) -> uuid.UUID | None:
+        """Whoever will actually be at the property (ADR-0048).
+
+        Not a null-coalesce spelled out at each caller: it is the rule that a
+        named conductor supersedes the owner for everything about being there —
+        the calendar the event lands on, the reminder, the notice. Written once
+        so a third role could not be added to five of six places.
+        """
+        return self.conducting_advisor_id or self.advisor_id
     # The commercial pursuit this visit belongs to, when there is one.
     opportunity_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("opportunities.id", ondelete="SET NULL"),
@@ -1238,6 +1249,9 @@ class Appointment(Base):
         ),
         Index("ix_appointments_upcoming", "status", "starts_at"),
         Index("ix_appointments_advisor", "advisor_id", "starts_at"),
+        # Availability asks for one calendar over a window as two inequalities,
+        # a shape the GiST exclusion below cannot serve.
+        Index("ix_appointments_calendar", "calendar_id", "starts_at"),
         Index(
             "uq_appointments_active_reschedule",
             "rescheduled_from_id",
@@ -2496,6 +2510,9 @@ class InternalAlertKind(str, enum.Enum):
     HUMAN_HANDOFF_ESCALATED = "HumanHandoffEscalated"
     APPOINTMENT_ADVISOR_REVIEW = "AppointmentAdvisorReview"
     ABSENCE_REVIEW = "AbsenceReview"
+    #: One addressed notice could not be delivered, so the Administrators are
+    #: told it could not (ADR-0049).
+    ALERT_UNDELIVERABLE = "AlertUndeliverable"
 
 
 class AppointmentAttendance(str, enum.Enum):
@@ -2573,6 +2590,7 @@ class AdvisorAbsence(Base):
             name="ck_advisor_absence_ended_by",
         ),
         Index("ix_advisor_absences_advisor", "advisor_id", "starts_at"),
+        Index("ix_advisor_absences_org", "organization_id", "starts_at"),
     )
 
     def covers(self, moment: datetime) -> bool:
@@ -2858,6 +2876,12 @@ class InternalAlert(Base):
         ),
         Index("ix_internal_alerts_pending", "status", "created_at"),
         Index("ix_internal_alerts_recipient", "recipient_member_id", "created_at"),
+        Index(
+            "ix_internal_alerts_open",
+            "organization_id",
+            "created_at",
+            postgresql_where=sql_text("acknowledged_at IS NULL"),
+        ),
     )
 
 

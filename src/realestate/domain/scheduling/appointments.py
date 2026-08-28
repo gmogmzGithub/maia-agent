@@ -35,7 +35,7 @@ import logging
 import secrets
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from enum import Enum
 
 from sqlalchemy import select
@@ -63,6 +63,7 @@ from realestate.db.models import (
 )
 from realestate.domain.audit import record_audit
 from realestate.domain.availability import Interval, WeeklySchedule
+from realestate.domain.clock import utc_now
 from realestate.domain.commercial.actors import Actor, NotAuthorized, NotFound
 from realestate.domain.commercial.idempotency import CommercialCommands
 from realestate.domain.internal_alerts import InternalAlerts
@@ -84,10 +85,6 @@ class _SlotAlreadyClaimed(Exception):
 
 class _RescheduleAlreadyInProgress(Exception):
     """One original appointment already has an unrejected successor."""
-
-
-def _now() -> datetime:
-    return datetime.now(tz=UTC)
 
 
 def _reference() -> str:
@@ -311,6 +308,16 @@ class VisitOutcome:
     next_action_id: uuid.UUID | None = None
 
 
+#: How far back a read of "the agenda" reaches when the caller does not say.
+#: Maia only needs the current week of visits to answer about one.
+AGENDA_LOOKBACK = timedelta(days=7)
+
+#: The operator's agenda page reaches further back on purpose: an Advisor needs
+#: the last fortnight to record an outcome for a visit they did not write up on
+#: the day. Named beside the default so the two cannot silently diverge again.
+OPERATOR_AGENDA_LOOKBACK = timedelta(days=14)
+
+
 class Appointments:
     """The visit module.
 
@@ -326,14 +333,14 @@ class Appointments:
         scheduling: AdvisorScheduling,
         *,
         schedule: WeeklySchedule,
-        visit_minutes: int,
         day_of_reminder_hour: int,
+        max_candidates: int,
         event_title: str = "Visita — {property} — {name}",
     ) -> None:
         self._session = session
         self._scheduling = scheduling
         self._schedule = schedule
-        self._visit_minutes = visit_minutes
+        self._max_candidates = max_candidates
         self._event_title = event_title
         self._commands = CommercialCommands(session)
         self._alerts = InternalAlerts(session)
@@ -364,7 +371,7 @@ class Appointments:
         actor.require_same_organization(conversation.organization_id)
 
         cycle = await self._session.get(LeadEngagementCycle, conversation.cycle_id)
-        if cycle is None or not cycle.is_active(_now()):
+        if cycle is None or not cycle.is_active(utc_now()):
             return VisitRefused(Refusal.CONVERSATION_EXPIRED)
 
         prop = await self._session.get(Property, command.property_uuid)
@@ -378,7 +385,7 @@ class Appointments:
             select(Appointment).where(Appointment.idempotency_key == key)
         )
         if existing is not None:
-            attending_id = existing.conducting_advisor_id or existing.advisor_id
+            attending_id = existing.attending_advisor_id
             attending = (
                 await self._session.get(OrganizationMember, attending_id)
                 if attending_id is not None
@@ -427,8 +434,7 @@ class Appointments:
                 _FROM_SCHEDULING[resolved.reason.value], detail=resolved.detail
             )
         attending, calendar = resolved
-        absent = await self._absent_at(attending.id, command.start)
-        if absent:
+        if await self._absent_at(attending.id, command.start):
             return VisitRefused(Refusal.ADVISOR_ABSENT)
 
         # The live authority check: the schedule, the horizon and the calendar
@@ -446,7 +452,7 @@ class Appointments:
         if slot is None:
             return VisitRefused(
                 Refusal.SLOT_UNAVAILABLE,
-                alternatives=found.slots[:6],
+                alternatives=found.slots[: self._max_candidates],
             )
 
         attending_name = attending.display_name
@@ -482,7 +488,7 @@ class Appointments:
                 Refusal.SLOT_UNAVAILABLE,
                 alternatives=tuple(
                     offered for offered in found.slots if offered.start != slot.start
-                )[:6],
+                )[: self._max_candidates],
             )
         if attempt is None:
             # Another worker committed the same key first. The rollback inside
@@ -506,7 +512,7 @@ class Appointments:
         if event.outcome is CalendarOutcome.OK:
             attempt.status = AppointmentStatus.CONFIRMED.value
             attempt.calendar_event_id = event.event_id
-            attempt.resolved_at = _now()
+            attempt.resolved_at = utc_now()
             await self._on_confirmed(actor, attempt, opportunity)
         else:
             # Inconclusive: the event may exist. Not a Confirmed Appointment,
@@ -556,7 +562,7 @@ class Appointments:
         )
         if active_successor is not None:
             return VisitRefused(Refusal.INCONCLUSIVE, appointment_id=original.id)
-        if original.starts_at <= _now():
+        if original.starts_at <= utc_now():
             return VisitRefused(Refusal.ALREADY_STARTED, appointment_id=original.id)
         if original.advisor_id is None:
             return VisitRefused(
@@ -577,7 +583,7 @@ class Appointments:
         if prop.status != PropertyStatus.ACTIVE.value:
             return VisitRefused(Refusal.PROPERTY_INACTIVE)
 
-        attending_id = original.conducting_advisor_id or original.advisor_id
+        attending_id = original.attending_advisor_id
         resolved = await self._scheduling.resolve_advisor(
             SlotQuery(
                 organization_id=actor.organization_id, advisor_id=attending_id
@@ -601,7 +607,8 @@ class Appointments:
         slot = next((s for s in found.slots if s.start == command.new_start), None)
         if slot is None:
             return VisitRefused(
-                Refusal.SLOT_UNAVAILABLE, alternatives=found.slots[:6]
+                Refusal.SLOT_UNAVAILABLE,
+                alternatives=found.slots[: self._max_candidates],
             )
 
         key = f"apt:{conversation.id}:{prop.id}:{slot.start.isoformat()}"
@@ -629,7 +636,7 @@ class Appointments:
                         offered
                         for offered in found.slots
                         if offered.start != slot.start
-                    )[:6],
+                    )[: self._max_candidates],
                     appointment_id=original.id,
                 )
             except _RescheduleAlreadyInProgress:
@@ -685,7 +692,7 @@ class Appointments:
 
         replacement.status = AppointmentStatus.CONFIRMED.value
         replacement.calendar_event_id = event.event_id
-        replacement.resolved_at = _now()
+        replacement.resolved_at = utc_now()
 
         # Only now is the old slot released. A failure here does not un-book the
         # new visit — the customer has a confirmed time and taking it away
@@ -693,7 +700,7 @@ class Appointments:
         released = await self._release(calendar, original)
         original.status = AppointmentStatus.RESCHEDULED.value
         original.rescheduled_to_id = replacement.id
-        original.resolved_at = original.resolved_at or _now()
+        original.resolved_at = original.resolved_at or utc_now()
         if released:
             original.calendar_event_id = None
         else:
@@ -791,7 +798,7 @@ class Appointments:
                 Refusal.INCONCLUSIVE, appointment_id=appointment.id
             )
 
-        moment = _now()
+        moment = utc_now()
         appointment.status = AppointmentStatus.CANCELLED.value
         appointment.cancelled_at = moment
         appointment.calendar_event_id = None
@@ -891,7 +898,7 @@ class Appointments:
             return VisitRefused(
                 Refusal.NOT_CONFIRMED, appointment_id=appointment.id
             )
-        if appointment.starts_at > _now():
+        if appointment.starts_at > utc_now():
             return VisitRefused(
                 Refusal.NOT_YET_HELD, appointment_id=appointment.id
             )
@@ -912,7 +919,7 @@ class Appointments:
                 recorded=False,
             )
 
-        moment = _now()
+        moment = utc_now()
         appointment.attendance = command.attendance.value
         appointment.attendance_recorded_at = moment
         appointment.attendance_recorded_by = actor.member_id
@@ -964,11 +971,10 @@ class Appointments:
         because somebody standing at a door needs the address whether or not
         they own the Opportunity. An Administrator sees the whole operation.
         """
-        moment = since or (_now() - timedelta(days=7))
+        moment = since or (utc_now() - AGENDA_LOOKBACK)
         query = (
             select(Appointment)
-            .join(Conversation, Conversation.id == Appointment.conversation_id)
-            .where(Conversation.organization_id == actor.organization_id)
+            .where(Appointment.organization_id == actor.organization_id)
             .where(Appointment.starts_at >= moment)
             .order_by(Appointment.starts_at)
         )
@@ -995,8 +1001,7 @@ class Appointments:
         actor.require_administrator()
         query = (
             select(Appointment)
-            .join(Conversation, Conversation.id == Appointment.conversation_id)
-            .where(Conversation.organization_id == actor.organization_id)
+            .where(Appointment.organization_id == actor.organization_id)
             .where(Appointment.advisor_id.is_(None))
             .where(
                 Appointment.status.in_(
@@ -1078,6 +1083,13 @@ class Appointments:
         return member
 
     async def _absent_at(self, advisor_id: uuid.UUID, moment: datetime) -> bool:
+        """Whether this Advisor is away at *moment*.
+
+        Kept at the booking callers rather than folded into
+        ``resolve_advisor``: availability deliberately reports an absence as a
+        successful answer with no free slots, while a booking has to *refuse*.
+        Collapsing the two would turn "genuinely busy" into "cannot answer".
+        """
         from realestate.domain.commercial.team import current_absence
 
         return await current_absence(self._session, advisor_id, moment) is not None
@@ -1181,18 +1193,13 @@ class Appointments:
             found = self._scheduling.calendars.for_calendar_id(appointment.calendar_id)
             if found is not None:
                 return found
-        advisor_id = appointment.conducting_advisor_id or appointment.advisor_id
+        advisor_id = appointment.attending_advisor_id
         if advisor_id is None:
             return None
         advisor = await self._session.get(OrganizationMember, advisor_id)
         if advisor is None:
             return None
         return self._scheduling.calendars.for_advisor(advisor)
-
-    async def _advisor_of(self, appointment: Appointment) -> OrganizationMember | None:
-        if appointment.advisor_id is None:
-            return None
-        return await self._session.get(OrganizationMember, appointment.advisor_id)
 
     async def _describe(
         self,

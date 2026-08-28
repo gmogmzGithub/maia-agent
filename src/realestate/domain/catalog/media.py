@@ -5,15 +5,16 @@ from __future__ import annotations
 import hashlib
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from realestate.db.models import CatalogListing, ListingAuthority, ListingMedia
+from realestate.db.models import ListingAuthority, ListingMedia
 from realestate.domain.audit import record_audit
 from realestate.domain.catalog.storage import MediaStorage, MediaStorageError
+from realestate.domain.clock import utc_now
+from realestate.domain.catalog.records import visible_listing
 from realestate.domain.commercial.actors import (
     Actor,
     CommercialError,
@@ -24,16 +25,18 @@ from realestate.domain.commercial.idempotency import CommercialCommands
 
 MAX_MEDIA_BYTES = 20 * 1024 * 1024
 
+#: Accepted upload extensions per content type. The first entry is the one
+#: stored objects are named with, so the two facts cannot drift apart.
 _EXTENSIONS = {
     "image/jpeg": (".jpg", ".jpeg"),
     "image/png": (".png",),
     "image/webp": (".webp",),
 }
-_STORAGE_EXTENSION = {
-    "image/jpeg": ".jpg",
-    "image/png": ".png",
-    "image/webp": ".webp",
-}
+
+#: Derived, not restated: the upload form has to offer exactly what this module
+#: accepts, and an ``accept`` attribute maintained separately is a form that
+#: silently proposes files the domain will refuse.
+ACCEPTED_CONTENT_TYPES: tuple[str, ...] = tuple(_EXTENSIONS)
 
 
 class MediaCleanupPending(CommercialError):
@@ -93,10 +96,6 @@ class MediaRecorded:
     cleanup_complete: bool = True
 
 
-def _now() -> datetime:
-    return datetime.now(tz=UTC)
-
-
 class MediaAdministration:
     """Media commands plus recoverable storage/cache side effects.
 
@@ -119,7 +118,7 @@ class MediaAdministration:
         return await self._revoke(actor, command)
 
     async def _add(self, actor: Actor, command: AddMedia) -> MediaRecorded:
-        listing = await self._listing(actor, command.listing_id, lock=True)
+        listing = await visible_listing(self._session, actor, command.listing_id, lock=True)
         checksum = self._validate_upload(command)
         media_id = uuid.uuid5(
             uuid.NAMESPACE_URL,
@@ -127,7 +126,7 @@ class MediaAdministration:
         )
         storage_key = (
             f"{actor.organization_id}/{listing.id}/{media_id}"
-            f"{_STORAGE_EXTENSION[command.content_type]}"
+            f"{_EXTENSIONS[command.content_type][0]}"
         )
         replayed = await self._commands.claim(
             actor,
@@ -225,23 +224,23 @@ class MediaAdministration:
             )
             await self._session.commit()
             return MediaRecorded(row.id, row.listing_id, False)
-        except IntegrityError as exc:
+        except Exception as exc:
+            # One compensating path: whatever went wrong, the row is rolled back
+            # and a stored object that no row now references is removed. Written
+            # once so a fix to the cleanup cannot land on only one failure mode.
             await self._session.rollback()
             if stored:
                 await self._storage.delete(storage_key)
-            raise InvalidTransition(
-                "La fotografía duplica el orden, contenido o portada de otra activa."
-            ) from exc
-        except Exception:
-            await self._session.rollback()
-            if stored:
-                await self._storage.delete(storage_key)
+            if isinstance(exc, IntegrityError):
+                raise InvalidTransition(
+                    "La fotografía duplica el orden, contenido o portada de otra activa."
+                ) from exc
             raise
 
     async def _arrange(
         self, actor: Actor, command: ArrangeMedia
     ) -> MediaRecorded:
-        listing = await self._listing(actor, command.listing_id, lock=True)
+        listing = await visible_listing(self._session, actor, command.listing_id, lock=True)
         replayed = await self._commands.claim(
             actor,
             command_key=command.command_key,
@@ -258,6 +257,8 @@ class MediaAdministration:
                 ],
             },
         )
+        if replayed:
+            return MediaRecorded(command.cover_id, listing.id, True)
         rows = list(
             await self._session.scalars(
                 select(ListingMedia)
@@ -268,8 +269,6 @@ class MediaAdministration:
                 .with_for_update()
             )
         )
-        if replayed:
-            return MediaRecorded(command.cover_id, listing.id, True)
         active_ids = {row.id for row in rows}
         requested_ids = {row.media_id for row in command.placements}
         orders = [row.sort_order for row in command.placements]
@@ -330,7 +329,7 @@ class MediaAdministration:
         )
         if row.revoked_at is None:
             row.authority = ListingAuthority.REVOKED.value
-            row.revoked_at = _now()
+            row.revoked_at = utc_now()
             row.revoked_by = actor.member_id
             row.is_cover = False
             await record_audit(
@@ -354,28 +353,16 @@ class MediaAdministration:
         try:
             if row.storage_deleted_at is None:
                 await self._storage.delete(row.storage_key)
-                row.storage_deleted_at = _now()
+                row.storage_deleted_at = utc_now()
                 await self._session.commit()
             if row.cache_purged_at is None:
                 await self._storage.purge_cache(tuple(row.cache_keys))
-                row.cache_purged_at = _now()
+                row.cache_purged_at = utc_now()
                 await self._session.commit()
         except MediaStorageError as exc:
             await self._session.rollback()
             raise MediaCleanupPending() from exc
         return MediaRecorded(row.id, row.listing_id, replayed)
-
-    async def _listing(
-        self, actor: Actor, listing_id: uuid.UUID, *, lock: bool
-    ) -> CatalogListing:
-        statement = select(CatalogListing).where(CatalogListing.id == listing_id)
-        if lock:
-            statement = statement.with_for_update()
-        row = await self._session.scalar(statement)
-        if row is None:
-            raise NotFound()
-        actor.require_same_organization(row.organization_id)
-        return row
 
     @staticmethod
     def _validate_upload(command: AddMedia) -> str:

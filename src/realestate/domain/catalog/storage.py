@@ -1,4 +1,4 @@
-"""Media-storage port with local production and in-memory test adapters."""
+"""The media-storage port, and the filesystem adapter production runs on."""
 
 from __future__ import annotations
 
@@ -34,10 +34,13 @@ class LocalMediaStorage:
         await asyncio.to_thread(self._path(self._root, key).unlink, missing_ok=True)
 
     async def purge_cache(self, keys: tuple[str, ...]) -> None:
-        for key in keys:
-            await asyncio.to_thread(
-                self._path(self._cache_root, key).unlink, missing_ok=True
-            )
+        paths = [self._path(self._cache_root, key) for key in keys]
+        await asyncio.to_thread(self._unlink_all, paths)
+
+    @staticmethod
+    def _unlink_all(paths: list[Path]) -> None:
+        for path in paths:
+            path.unlink(missing_ok=True)
 
     @staticmethod
     def _write(path: Path, content: bytes) -> None:
@@ -52,28 +55,3 @@ class LocalMediaStorage:
         if candidate != root and root not in candidate.parents:
             raise MediaStorageError("La clave de almacenamiento salió de su raíz.")
         return candidate
-
-
-class InMemoryMediaStorage:
-    """Deterministic adapter for behavior and recovery tests."""
-
-    def __init__(self) -> None:
-        self.objects: dict[str, bytes] = {}
-        self.cache_objects: set[str] = set()
-        self.fail_delete_once = False
-        self.fail_cache_once = False
-
-    async def put(self, key: str, content: bytes) -> None:
-        self.objects[key] = bytes(content)
-
-    async def delete(self, key: str) -> None:
-        if self.fail_delete_once:
-            self.fail_delete_once = False
-            raise MediaStorageError("Falla de prueba al borrar el original.")
-        self.objects.pop(key, None)
-
-    async def purge_cache(self, keys: tuple[str, ...]) -> None:
-        if self.fail_cache_once:
-            self.fail_cache_once = False
-            raise MediaStorageError("Falla de prueba al purgar cache.")
-        self.cache_objects.difference_update(keys)

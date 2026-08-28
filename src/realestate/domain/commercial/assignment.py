@@ -427,10 +427,13 @@ class Assignment:
         # together would put the wrong instruction in front of the
         # Administrator.
         absent_candidate = False
+        away = await self._absent_among(
+            opportunity.organization_id, [member.id for member, _ in experts], moment
+        )
         for member, basis in experts:
             if member.active and member.advises:
                 absent_candidate = True
-            if await self._present(member, moment):
+            if member.active and member.advises and member.id not in away:
                 logger.info(
                     "Opportunity %s goes to the Property Expert %s (%s)",
                     opportunity.id,
@@ -489,9 +492,20 @@ class Assignment:
         from realestate.domain.commercial.team import TeamAdministration
 
         designations = await TeamAdministration(self._session).experts_for(property_uuid)
+        candidates = expert_candidates(designations)
+        if not candidates:
+            return []
+        members = {
+            member.id: member
+            for member in await self._session.scalars(
+                select(OrganizationMember).where(
+                    OrganizationMember.id.in_([advisor_id for advisor_id, _ in candidates])
+                )
+            )
+        }
         chain: list[tuple[OrganizationMember, AssignmentBasis]] = []
-        for advisor_id, role in expert_candidates(designations):
-            member = await self._session.get(OrganizationMember, advisor_id)
+        for advisor_id, role in candidates:
+            member = members.get(advisor_id)
             if member is None:
                 continue
             chain.append(
@@ -503,6 +517,25 @@ class Assignment:
                 )
             )
         return chain
+
+    async def _absent_among(
+        self,
+        organization_id: uuid.UUID,
+        member_ids: list[uuid.UUID],
+        moment: datetime,
+    ) -> set[uuid.UUID]:
+        """Which of these Advisors are away, in one query.
+
+        The batched form of the absence half of :meth:`_present`, used when the
+        whole expert chain is being considered at once.
+        """
+        if not member_ids:
+            return set()
+        from realestate.domain.commercial.team import absent_advisor_ids
+
+        return await absent_advisor_ids(
+            self._session, organization_id, moment, among=member_ids
+        )
 
     async def _present(self, member: OrganizationMember, moment: datetime) -> bool:
         """Active, able to own work, and not away right now.

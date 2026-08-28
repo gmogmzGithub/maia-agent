@@ -2,7 +2,10 @@
 
 The port is the shape :class:`~realestate.channels.google.calendar.GoogleCalendar`
 already has, so the real adapter is that class with a per-Advisor calendar id and
-the test adapter is a dictionary of stubs. Nothing in the domain names Google.
+the test adapter is a dictionary of stubs. No *caller* names a provider: every
+one of them depends on :class:`CalendarPort` and on ``for_advisor`` returning
+``None``. The Google directory below is the one place the provider is named, and
+it is the only thing that would be replaced to run on another calendar.
 
 The interesting method is the one that returns ``None``. An Advisor whose
 ``calendar_id`` is unset has no authoritative availability, and every caller has

@@ -9,14 +9,16 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
-from decimal import Decimal
+from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from realestate.db.models import (
+    CatalogPresentationTier,
+    PropertyInactiveReason,
     CatalogListing,
     Development,
     FactsReviewState,
@@ -31,15 +33,71 @@ from realestate.db.models import (
     UnitModel,
 )
 from realestate.domain.audit import record_audit
+from realestate.domain.clock import utc_now
+from realestate.domain.catalog.records import visible_listing
 from realestate.domain.commercial.actors import Actor, InvalidTransition, NotFound
 from realestate.domain.commercial.idempotency import CommercialCommands
 from realestate.domain.property_document import PROPERTY_KEY_PATTERN, normalize_name
 from realestate.domain.catalog.presentation import (
+    PRESENTATION_POLICY_VERSION,
     OfferPresentation,
     automatic_presentation_tier,
+    recalculate_automatic_tier,
 )
 
-PRESENTATION_POLICY_VERSION = "initial-2026-08-pending-san-058"
+
+@dataclass(frozen=True)
+class _InactiveCascade:
+    """What one legacy inactive reason means for a Listing and its Offers.
+
+    One table rather than a mapping plus a parallel ``if`` ladder over the same
+    key: the two used to be edited independently, and the ladder's ``else``
+    silently absorbed anything the mapping had not been taught.
+    """
+
+    listing: ListingAvailability
+    offer: OfferAvailability
+    reason: str
+    #: Rental is the only operation a rented Property *completes*. Its other
+    #: offers are off the market while the tenancy runs, not finished.
+    completes_only_rental: bool = False
+
+    def offer_for(self, operation: str) -> OfferAvailability:
+        if self.completes_only_rental and operation != "Rental":
+            return OfferAvailability.TEMPORARILY_UNAVAILABLE
+        return self.offer
+
+
+_INACTIVE_CASCADE: dict[str | None, _InactiveCascade] = {
+    PropertyInactiveReason.SOLD.value: _InactiveCascade(
+        ListingAvailability.SOLD, OfferAvailability.COMPLETED, "Sold"
+    ),
+    PropertyInactiveReason.RENTED.value: _InactiveCascade(
+        ListingAvailability.RENTED,
+        OfferAvailability.COMPLETED,
+        "Rented",
+        completes_only_rental=True,
+    ),
+    PropertyInactiveReason.RESERVED.value: _InactiveCascade(
+        ListingAvailability.RESERVED, OfferAvailability.RESERVED, "Reserved"
+    ),
+    PropertyInactiveReason.WITHDRAWN.value: _InactiveCascade(
+        ListingAvailability.TEMPORARILY_UNAVAILABLE,
+        OfferAvailability.WITHDRAWN,
+        "Withdrawn",
+    ),
+    PropertyInactiveReason.TEMPORARILY_UNAVAILABLE.value: _InactiveCascade(
+        ListingAvailability.TEMPORARILY_UNAVAILABLE,
+        OfferAvailability.TEMPORARILY_UNAVAILABLE,
+        "TemporarilyUnavailable",
+    ),
+    PropertyInactiveReason.UNSPECIFIED.value: _InactiveCascade(
+        ListingAvailability.UNKNOWN, OfferAvailability.UNKNOWN, "Unspecified"
+    ),
+}
+
+#: An unrecognised reason is treated as unspecified rather than guessed at.
+_UNSPECIFIED_CASCADE = _INACTIVE_CASCADE[PropertyInactiveReason.UNSPECIFIED.value]
 
 
 @dataclass(frozen=True)
@@ -210,10 +268,6 @@ class CatalogRecorded:
     replayed: bool
 
 
-def _now() -> datetime:
-    return datetime.now(tz=UTC)
-
-
 def _required(value: str, label: str) -> str:
     cleaned = value.strip()
     if not cleaned:
@@ -279,6 +333,8 @@ class CatalogAdministration:
                 "inactive_reason": command.inactive_reason,
             },
         )
+        if replayed:
+            return CatalogRecorded("Property", prop.id, True)
         listings = list(
             await self._session.scalars(
                 select(CatalogListing)
@@ -286,21 +342,12 @@ class CatalogAdministration:
                 .with_for_update()
             )
         )
-        if replayed:
-            return CatalogRecorded("Property", prop.id, True)
-        mapping = {
-            None: ListingAvailability.AVAILABLE,
-            "Sold": ListingAvailability.SOLD,
-            "Rented": ListingAvailability.RENTED,
-            "Reserved": ListingAvailability.RESERVED,
-            "TemporarilyUnavailable": ListingAvailability.TEMPORARILY_UNAVAILABLE,
-            "Withdrawn": ListingAvailability.TEMPORARILY_UNAVAILABLE,
-            "Unspecified": ListingAvailability.UNKNOWN,
-        }
+        active = command.status == PropertyStatus.ACTIVE.value
+        cascade = _INACTIVE_CASCADE.get(command.inactive_reason, _UNSPECIFIED_CASCADE)
         target = (
             ListingAvailability.AVAILABLE
-            if command.status == PropertyStatus.ACTIVE.value
-            else mapping.get(command.inactive_reason, ListingAvailability.UNKNOWN)
+            if active or command.inactive_reason is None
+            else cascade.listing
         )
         listing_ids = [row.id for row in listings]
         offers = list(
@@ -312,51 +359,17 @@ class CatalogAdministration:
         ) if listing_ids else []
         for listing in listings:
             listing.availability = target.value
-            listing.updated_at = _now()
+            listing.updated_at = utc_now()
         for offer in offers:
-            if command.status == PropertyStatus.ACTIVE.value:
+            if active:
                 offer.availability = OfferAvailability.AVAILABLE.value
                 offer.unavailable_reason = None
-            elif command.inactive_reason == "Sold":
-                offer.availability = OfferAvailability.COMPLETED.value
-                offer.unavailable_reason = "Sold"
-            elif command.inactive_reason == "Rented":
-                offer.availability = (
-                    OfferAvailability.COMPLETED.value
-                    if offer.operation == "Rental"
-                    else OfferAvailability.TEMPORARILY_UNAVAILABLE.value
-                )
-                offer.unavailable_reason = "Rented"
-            elif command.inactive_reason == "Reserved":
-                offer.availability = OfferAvailability.RESERVED.value
-                offer.unavailable_reason = "Reserved"
-            elif command.inactive_reason == "Withdrawn":
-                offer.availability = OfferAvailability.WITHDRAWN.value
-                offer.unavailable_reason = "Withdrawn"
-            elif command.inactive_reason == "TemporarilyUnavailable":
-                offer.availability = OfferAvailability.TEMPORARILY_UNAVAILABLE.value
-                offer.unavailable_reason = "TemporarilyUnavailable"
             else:
-                offer.availability = OfferAvailability.UNKNOWN.value
-                offer.unavailable_reason = "Unspecified"
-            offer.updated_at = _now()
+                offer.availability = cascade.offer_for(offer.operation).value
+                offer.unavailable_reason = cascade.reason
+            offer.updated_at = utc_now()
         for listing in listings:
-            active_presentations = [
-                OfferPresentation(
-                    operation=offer.operation,
-                    price=offer.price_amount,
-                    currency=offer.price_currency,
-                )
-                for offer in offers
-                if offer.listing_id == listing.id
-                and offer.availability == OfferAvailability.AVAILABLE.value
-            ]
-            tier = automatic_presentation_tier(
-                prop.property_type,
-                active_presentations,
-            )
-            listing.automatic_tier = tier.value if tier is not None else None
-            listing.presentation_policy_version = PRESENTATION_POLICY_VERSION
+            await recalculate_automatic_tier(self._session, listing, offers=offers)
         await self._audit(
             actor,
             "SyncLegacyPropertyStatus",
@@ -414,7 +427,7 @@ class CatalogAdministration:
         currency = str(metadata.get("price_currency", ""))
         try:
             price = Decimal(str(metadata.get("price_amount", "")))
-        except Exception as exc:
+        except (InvalidOperation, TypeError, ValueError) as exc:
             raise InvalidTransition(
                 "El documento aceptado no tiene un precio compatible."
             ) from exc
@@ -452,7 +465,7 @@ class CatalogAdministration:
             authority_evidence=(
                 "Aceptación administrativa legacy del documento de propiedad"
             ),
-            freshness_checked_at=_now(),
+            freshness_checked_at=utc_now(),
             automatic_tier=tier.value if tier is not None else None,
             presentation_policy_version=PRESENTATION_POLICY_VERSION,
             gallery_path=f"/catalogo/{listing_key}/galeria",
@@ -518,8 +531,8 @@ class CatalogAdministration:
         row.physical_facts = dict(command.facts)
         row.facts_review_state = command.review_state.value
         row.facts_reviewed_by = actor.member_id
-        row.facts_reviewed_at = _now()
-        row.updated_at = _now()
+        row.facts_reviewed_at = utc_now()
+        row.updated_at = utc_now()
         await self._audit(
             actor,
             "ReviewPhysicalPropertyFacts",
@@ -586,8 +599,8 @@ class CatalogAdministration:
         row.facts = dict(facts)
         row.facts_review_state = review_state.value
         row.reviewed_by = actor.member_id
-        row.reviewed_at = _now()
-        row.updated_at = _now()
+        row.reviewed_at = utc_now()
+        row.updated_at = utc_now()
         await self._audit(
             actor,
             operation,
@@ -831,7 +844,7 @@ class CatalogAdministration:
         | SetReadinessOverride
         | SetPublicationState,
     ) -> CatalogRecorded:
-        listing = await self._listing(actor, command.listing_id, lock=True)
+        listing = await visible_listing(self._session, actor, command.listing_id, lock=True)
         operation = type(command).__name__
         replayed = await self._commands.claim(
             actor,
@@ -846,7 +859,7 @@ class CatalogAdministration:
 
         before: dict[str, Any] = {}
         after: dict[str, Any] = {}
-        moment = _now()
+        moment = utc_now()
         if isinstance(command, SetListingAuthority):
             if command.authority is ListingAuthority.AUTHORIZED and not (
                 command.evidence or ""
@@ -874,7 +887,7 @@ class CatalogAdministration:
             listing.facts_review_state = command.review_state.value
             after = {"facts_review_state": listing.facts_review_state}
         elif isinstance(command, SetTierOverride):
-            allowed = {None, "Larevia", "Premium", "SuperPremium"}
+            allowed = {None} | {member.value for member in CatalogPresentationTier}
             if command.tier not in allowed:
                 raise InvalidTransition("El nivel de presentación no es válido.")
             before = {"tier_override": listing.tier_override}
@@ -914,18 +927,6 @@ class CatalogAdministration:
         })
         await self._session.flush()
         return CatalogRecorded("CatalogListing", listing.id, False)
-
-    async def _listing(
-        self, actor: Actor, listing_id: uuid.UUID, *, lock: bool = False
-    ) -> CatalogListing:
-        statement = select(CatalogListing).where(CatalogListing.id == listing_id)
-        if lock:
-            statement = statement.with_for_update()
-        row = await self._session.scalar(statement)
-        if row is None:
-            raise NotFound()
-        actor.require_same_organization(row.organization_id)
-        return row
 
     async def _development(self, actor: Actor, development_id: uuid.UUID) -> Development:
         row = await self._session.get(Development, development_id)

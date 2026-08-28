@@ -13,12 +13,9 @@ remedies differ: configure a calendar, end an absence, wait for the provider.
 from __future__ import annotations
 
 from datetime import timedelta
-from pathlib import Path
 
-import pytest
 
 from realestate.channels.google.calendar import CalendarOutcome
-from realestate.db.engine import Database
 from realestate.db.models import PropertyExpertRole
 from realestate.domain.availability import Interval
 from realestate.domain.commercial.team import (
@@ -34,27 +31,11 @@ from realestate.domain.scheduling.advisors import (
     SlotsUnavailable,
     Unavailable,
 )
-from tests.conftest import DATABASE_URL, requires_postgres
+from tests.conftest import requires_postgres
+from tests.fixtures.visits import key
 from tests.fixtures import visits
 
 pytestmark = requires_postgres
-
-
-@pytest.fixture
-async def operation(tmp_path: Path):
-    database = Database(DATABASE_URL)
-    async with database.session_scope() as session:
-        await visits.reset(session)
-        built = await visits.build(session, tmp_path / "artifacts")
-        await session.commit()
-    yield database, built
-    await database.dispose()
-
-
-def key(name: str) -> str:
-    import uuid
-
-    return f"{name}:{uuid.uuid4().hex}"
 
 
 async def test_each_advisor_is_quoted_from_their_own_calendar(operation) -> None:
