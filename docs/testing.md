@@ -14,7 +14,8 @@ every push to `main`. The job:
 2. builds and starts the complete Product, Hermes, and PostgreSQL Compose
    topology, waiting on the healthchecks that prove Product can reach the
    loopback-only Hermes endpoint;
-3. runs Ruff and every test except those marked `live_provider`;
+3. runs Ruff and every test except those marked `live_provider` or
+   `live_external_inventory`;
 4. fails below the coverage floor set in `pyproject.toml`;
 5. fails if any selected test is skipped, so a missing service cannot silently
    turn a required integration scenario green;
@@ -71,7 +72,8 @@ With the Compose runtime running:
 docker compose up --build -d
 docker compose exec product ruff check src plugin tests migrations
 docker compose exec product mypy
-docker compose exec product pytest -m 'not live_provider' --strict-markers --cov
+docker compose exec product pytest \
+  -m 'not live_provider and not live_external_inventory' --strict-markers --cov
 ```
 
 The measured packages, the report format, the coverage floor, and the
@@ -103,6 +105,18 @@ credential. It does not replace the required token-free gate. A real WhatsApp,
 Calendar, and Telegram rehearsal remains a manual release check because it
 creates provider-side effects.
 
+EasyBroker staging is separate and read-only. It is never required by public CI:
+
+```bash
+docker compose exec \
+  -e RUN_EASYBROKER_LIVE_TESTS=1 \
+  -e EASYBROKER_STAGING_API_KEY=... \
+  product pytest -m live_external_inventory --strict-markers
+```
+
+Use only a separate staging key. This proves transport compatibility, not API MLS
+entitlement, collaborator authority, retention permission, or production access.
+
 ## Where each kind of confidence comes from
 
 | Layer | Credential-free | What it protects |
@@ -114,4 +128,5 @@ creates provider-side effects.
 | Operator surface tests | Yes | Mexican Spanish, accessibility, empty states, refusals, and that a CRM reply goes out only through the outbound eligibility gate |
 | Vertical system scenario | Yes | WhatsApp inquiry through booking and Broker notification, and Inbox to Next Action |
 | Live model evaluation | No | Hermes/model tool choice, grounding, and conversational quality |
+| EasyBroker staging smoke test | No | Opt-in read-only provider transport compatibility only |
 | Manual channel rehearsal | No | Real Meta, Google Calendar, and Telegram configuration and delivery |

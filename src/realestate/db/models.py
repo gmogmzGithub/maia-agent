@@ -148,6 +148,32 @@ class PublicAnalyticsEventName(str, enum.Enum):
     APPOINTMENT_REQUESTED = "AppointmentRequested"
 
 
+class ExternalInventoryScope(str, enum.Enum):
+    ORGANIZATION = "Organization"
+    COLLABORATOR = "Collaborator"
+
+
+class ExternalCandidateState(str, enum.Enum):
+    AUTHORIZED = "Authorized"
+    PENDING = "Pending"
+    DENIED = "Denied"
+
+
+class InventorySourceStatus(str, enum.Enum):
+    DISABLED = "Disabled"
+    NEVER_SYNCED = "NeverSynced"
+    HEALTHY = "Healthy"
+    PARTIAL = "Partial"
+    RATE_LIMITED = "RateLimited"
+    FAILED = "Failed"
+
+
+class RevalidationOutcome(str, enum.Enum):
+    ELIGIBLE = "Eligible"
+    PENDING = "Pending"
+    DENIED = "Denied"
+
+
 class AgentRole(str, enum.Enum):
     """Separate conversational roles with separate authority (ADR-0001)."""
 
@@ -3607,4 +3633,293 @@ class PublicAnalyticsEvent(Base):
             name="ck_public_analytics_tier",
         ),
         Index("ix_public_analytics_funnel", "organization_id", "occurred_at", "name"),
+    )
+
+
+class ExternalListingCandidate(Base):
+    """A source record under review; deliberately not an authoritative Listing."""
+
+    __tablename__ = "external_listing_candidates"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source: Mapped[str] = mapped_column(String(40), nullable=False)
+    source_listing_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    source_scope: Mapped[str] = mapped_column(String(20), nullable=False)
+    source_status: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    source_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    freshness_deadline: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    payload_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    raw_payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    provenance: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    title: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    public_location: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    municipality: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    location_precision: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="Unknown"
+    )
+    property_type: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    facts: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    availability: Mapped[str] = mapped_column(
+        String(30), nullable=False, default=ListingAvailability.UNKNOWN.value
+    )
+    attribution: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_agency: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    source_agent: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    authority_state: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=ExternalCandidateState.PENDING.value
+    )
+    authority_evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    collaboration_authorized: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True
+    )
+    commission_known: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    commission: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    commercial_review_state: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=FactsReviewState.PENDING.value
+    )
+    mapping_issues: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    changed_fields: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list
+    )
+    withdrawn_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    deletion_due_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    cache_deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "source_scope IN ('Organization', 'Collaborator')",
+            name="ck_external_candidates_scope",
+        ),
+        CheckConstraint(
+            "location_precision IN ('Exact', 'Approximate', 'Unknown')",
+            name="ck_external_candidates_location_precision",
+        ),
+        CheckConstraint(
+            "availability IN ('Available', 'Reserved', 'Sold', 'Rented', "
+            "'TemporarilyUnavailable', 'Unknown')",
+            name="ck_external_candidates_availability",
+        ),
+        CheckConstraint(
+            "authority_state IN ('Authorized', 'Pending', 'Denied')",
+            name="ck_external_candidates_authority",
+        ),
+        CheckConstraint(
+            "commercial_review_state IN ('Pending', 'Approved', 'NeedsReview')",
+            name="ck_external_candidates_commercial_review",
+        ),
+        CheckConstraint(
+            "(withdrawn_at IS NULL AND deletion_due_at IS NULL) OR "
+            "(withdrawn_at IS NOT NULL AND deletion_due_at IS NOT NULL)",
+            name="ck_external_candidates_withdrawal_deadline",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "source",
+            "source_listing_id",
+            name="uq_external_candidates_source_identity",
+        ),
+        UniqueConstraint(
+            "organization_id", "id", name="uq_external_candidates_org_id"
+        ),
+        Index(
+            "ix_external_candidates_search",
+            "organization_id",
+            "source",
+            "municipality",
+            "authority_state",
+            "availability",
+        ),
+        Index(
+            "ix_external_candidates_cleanup",
+            "deletion_due_at",
+            postgresql_where=sql_text("cache_deleted_at IS NULL"),
+        ),
+    )
+
+
+class ExternalOfferCandidate(Base):
+    """A lossless source Offer mapping beneath one External Listing Candidate."""
+
+    __tablename__ = "external_offer_candidates"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    listing_candidate_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False
+    )
+    source_offer_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    operation: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    price_amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
+    price_currency: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    price_unit: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    availability: Mapped[str] = mapped_column(
+        String(30), nullable=False, default=OfferAvailability.UNKNOWN.value
+    )
+    terms: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    raw_payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "listing_candidate_id"],
+            [
+                "external_listing_candidates.organization_id",
+                "external_listing_candidates.id",
+            ],
+            ondelete="CASCADE",
+            name="fk_external_offers_candidate_org",
+        ),
+        CheckConstraint(
+            "operation IS NULL OR operation IN ('Sale', 'Rental', 'Presale')",
+            name="ck_external_offers_operation",
+        ),
+        CheckConstraint(
+            "price_amount IS NULL OR price_amount > 0",
+            name="ck_external_offers_price",
+        ),
+        CheckConstraint(
+            "availability IN ('Available', 'Reserved', 'Completed', "
+            "'TemporarilyUnavailable', 'Withdrawn', 'Unknown')",
+            name="ck_external_offers_availability",
+        ),
+        UniqueConstraint(
+            "listing_candidate_id",
+            "source_offer_key",
+            name="uq_external_offers_source_key",
+        ),
+        Index(
+            "ix_external_offers_listing",
+            "listing_candidate_id",
+            "availability",
+        ),
+    )
+
+
+class InventorySourceHealthRecord(Base):
+    __tablename__ = "inventory_source_health"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=InventorySourceStatus.NEVER_SYNCED.value
+    )
+    credential_configured: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    mls_access_confirmed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    retention_permission_confirmed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    last_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_success_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_cursor: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    last_error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fetched_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    accepted_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rejected_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rate_limited_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('Disabled', 'NeverSynced', 'Healthy', 'Partial', "
+            "'RateLimited', 'Failed')",
+            name="ck_inventory_source_health_status",
+        ),
+        CheckConstraint(
+            "fetched_count >= 0 AND accepted_count >= 0 AND rejected_count >= 0",
+            name="ck_inventory_source_health_counts",
+        ),
+        UniqueConstraint(
+            "organization_id", "source", name="uq_inventory_source_health"
+        ),
+    )
+
+
+class ListingRevalidationRecord(Base):
+    __tablename__ = "listing_revalidations"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    listing_candidate_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), nullable=False
+    )
+    intended_action: Mapped[str] = mapped_column(String(20), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(20), nullable=False)
+    reasons: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    snapshot_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "listing_candidate_id"],
+            [
+                "external_listing_candidates.organization_id",
+                "external_listing_candidates.id",
+            ],
+            ondelete="CASCADE",
+            name="fk_listing_revalidations_candidate_org",
+        ),
+        CheckConstraint(
+            "intended_action IN ('Recommend', 'Share', 'Appointment')",
+            name="ck_listing_revalidations_action",
+        ),
+        CheckConstraint(
+            "outcome IN ('Eligible', 'Pending', 'Denied')",
+            name="ck_listing_revalidations_outcome",
+        ),
+        Index(
+            "ix_listing_revalidations_candidate",
+            "listing_candidate_id",
+            "evaluated_at",
+        ),
     )

@@ -148,6 +148,23 @@ class Settings(BaseSettings):
         default="var/listing-media/cache", alias="LISTING_MEDIA_CACHE_ROOT"
     )
 
+    # --- EasyBroker read-only adapter (Stage 6) -----------------------------
+    # The key is the only secret. Product never sends a write request and never
+    # exposes this value through health, logs, audit or the operator UI.
+    easybroker_api_key: str = Field(default="", alias="EASYBROKER_API_KEY")
+    easybroker_base_url: str = Field(
+        default="https://api.easybroker.com/v1", alias="EASYBROKER_BASE_URL"
+    )
+    # Fail closed until the account owner has confirmed the separate API MLS
+    # plan and Guillermo explicitly activates it. Presence of a key is not MLS
+    # authority.
+    easybroker_mls_access_confirmed: bool = Field(
+        default=False, alias="EASYBROKER_MLS_ACCESS_CONFIRMED"
+    )
+    easybroker_retention_permission_confirmed: bool = Field(
+        default=False, alias="EASYBROKER_RETENTION_PERMISSION_CONFIRMED"
+    )
+
     # --- Meta WhatsApp Cloud API (P-021, TC-003) -----------------------------
     meta_app_secret: str = Field(default="", alias="META_APP_SECRET")
     meta_verify_token: str = Field(default="", alias="META_VERIFY_TOKEN")

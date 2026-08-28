@@ -47,6 +47,9 @@ FROZEN_TOOL_SURFACE: tuple[str, ...] = (
     # operation with an alert and a deadline behind it, not a sentence.
     "reschedule_appointment",
     "request_human_handoff",
+    # Stage 6: both remain thin Product calls; the plugin owns no inventory.
+    "search_inventory",
+    "revalidate_external_listing",
 )
 
 # The tools registered so far, as ``(name, schema, handler)``. Checkpoint 1 adds
@@ -83,6 +86,12 @@ TOOLS: tuple[tuple[str, dict[str, Any], object], ...] = (
         "request_human_handoff",
         schemas.REQUEST_HUMAN_HANDOFF,
         tools.request_human_handoff,
+    ),
+    ("search_inventory", schemas.SEARCH_INVENTORY, tools.search_inventory),
+    (
+        "revalidate_external_listing",
+        schemas.REVALIDATE_EXTERNAL_LISTING,
+        tools.revalidate_external_listing,
     ),
 )
 

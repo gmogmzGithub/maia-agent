@@ -218,3 +218,41 @@ def request_human_handoff(args: dict[str, Any], **kwargs: Any) -> str:
     if reason:
         body["reason"] = reason
     return _forward("request_human_handoff", body, kwargs)
+
+
+def search_inventory(args: dict[str, Any], **kwargs: Any) -> str:
+    municipality = args.get("municipality")
+    if municipality not in {"Guadalajara", "Zapopan", "Tlaquepaque"}:
+        return _result(
+            {
+                "result": "ambiguous",
+                "detail": "municipality must be Guadalajara, Zapopan, or Tlaquepaque.",
+            }
+        )
+    body: dict[str, Any] = {"municipality": municipality}
+    for key in (
+        "operation",
+        "property_type",
+        "min_price",
+        "max_price",
+        "min_bedrooms",
+    ):
+        if args.get(key) is not None:
+            body[key] = args[key]
+    return _forward("search_inventory", body, kwargs)
+
+
+def revalidate_external_listing(args: dict[str, Any], **kwargs: Any) -> str:
+    reference = _text(args, "reference")
+    action = args.get("intended_action")
+    if reference is None:
+        return _result(
+            {"result": "not_found", "detail": "A source reference is required."}
+        )
+    if action not in {"Recommend", "Share", "Appointment"}:
+        return _result({"result": "invalid_action"})
+    return _forward(
+        "revalidate_external_listing",
+        {"reference": reference, "intended_action": action},
+        kwargs,
+    )

@@ -1,359 +1,314 @@
-# EasyBroker integration: verified scope, constraints, and open questions
+# EasyBroker read-only integration: Stage 6 revalidation
 
 Status: research note, not an architecture decision  
-Verified: 2026-08-27  
-Sources: official EasyBroker product pages, developer documentation, help center,
-terms, and privacy policy only
+Verified: 2026-08-28
+Method: public, unauthenticated review of official EasyBroker developer
+documentation, API references, help center, terms, and privacy policy. No API key
+was used and no staging or production request was made.
 
-## Executive conclusion
+## Conclusion
 
-Maia must not describe EasyBroker as containing **all properties in Mexico**.
-EasyBroker calls its Bolsa Inmobiliaria the largest in Mexico, but its official API
-documentation makes a narrower promise: the MLS endpoint returns published
-properties that share commission from the authenticated organization's
-collaborators, plus the organization's own properties, and it requires a separate
-API MLS plan. Membership in a real-estate association is not documented as
-automatically granting API access to every EasyBroker listing. [EasyBroker's Bolsa
-description](https://ayuda.easybroker.com/article/82-que-es-la-bolsa-inmobiliaria),
-[MLS list endpoint](https://dev.easybroker.com/reference/get_mls-properties),
-[MLS guide](https://dev.easybroker.com/docs/propiedades-mls)
-
-A defensible product statement is:
-
-> Maia first searches the brokerage's authorized inventory. If the tenant has
-> contracted and configured EasyBroker API MLS access, Maia may also search the
-> commission-sharing inventory available through that tenant's EasyBroker
-> collaborations.
-
-EasyBroker should therefore be modeled as a replaceable, tenant-authorized catalog
-provider—not as Maia's source of truth, not as a guaranteed national inventory, and
-not as a dataset that Maia is automatically entitled to retain or resell.
-
-## Two APIs with materially different purposes
-
-EasyBroker documents two relevant integration surfaces. They should not be treated
-as interchangeable.
-
-### Account API
-
-The ordinary account API exposes information from one EasyBroker account. The
-official introduction says it can query that company's properties, create
-properties, and create or update prospects. `GET /properties` specifically returns
-properties from the authenticated organization. A paid EasyBroker account is
-required. [Account API introduction](https://dev.easybroker.com/docs/api-de-easybroker),
-[`GET /properties`](https://dev.easybroker.com/reference/get_properties)
-
-The separate MLS endpoints extend that account-level surface to published,
-commission-sharing properties from the organization's collaborators, but only for
-subscribers to the API MLS plan. They do not promise access to every property in
-EasyBroker, let alone every property in Mexico. [MLS list
-endpoint](https://dev.easybroker.com/reference/get_mls-properties), [MLS
+EasyBroker can be an optional, organization-authorized source of the
+authenticated organization's properties and, only with an API MLS plan, published
+commission-sharing properties from its collaborators. The public API does not
+promise all EasyBroker properties or all properties in Mexico. [Account API
+introduction](https://dev.easybroker.com/docs/api-de-easybroker), [MLS list
+reference](https://dev.easybroker.com/reference/get_mls-properties), [MLS
 guide](https://dev.easybroker.com/docs/propiedades-mls)
 
-This is the likely surface for an initial Santiago-owned deployment, subject to
-confirming his plan and actual collaborator graph.
+The defensible Stage 6 boundary is therefore:
 
-### Integration Partners API
+> Maia searches Product's authoritative Organization Listings first. An enabled
+> EasyBroker connection may add currently authorized candidates from that
+> organization's own account and API MLS collaborator scope. Every external
+> candidate remains provenance-bearing, approximate when necessary, and pending
+> until its action-specific facts can be revalidated.
 
-EasyBroker separately documents a partner program for external applications that
-publish customer listings to their own portals. Partner endpoints use the
-`/v1/integration_partners` base path, require both `X-Authorization` and a
-`Country-Code`, and only operate in countries where the integration has been
-activated. The documented onboarding requirements include linking and unlinking
-EasyBroker accounts, processing listing changes, reporting publication status,
-sending contact requests back to EasyBroker, testing with EasyBroker, and receiving
-approval before customers can connect. [Integration Partners
-introduction](https://dev.easybroker.com/docs/introducci%C3%B3n)
+The public documentation is sufficient to build a fake-backed port and a
+read-only HTTP adapter contract. It is not sufficient to activate collaborator
+inventory, publication, durable retention, or production access without the
+account holder's authorization and written commercial confirmation.
 
-This is the stronger candidate for a future Maia platform serving multiple
-independent brokerages. It is an approval path, not an entitlement Maia already
-has, and the documented use case is portal syndication rather than unrestricted
-MLS search or data resale.
+## Verified versus unverified
 
-## Authentication and tenant isolation
+| Topic | Evidence status | What the public official material establishes | Stage 6 consequence |
+| --- | --- | --- | --- |
+| Account access | **Verified** | The account API requires a paid EasyBroker account and a per-account API key in `X-Authorization`; only an administrator can obtain or regenerate the key. [API introduction](https://dev.easybroker.com/docs/api-de-easybroker), [authentication](https://dev.easybroker.com/docs/autenticaci%C3%B3n) | Credential configuration must be organization-scoped and server-only. |
+| Read-only credential | **Unverified** | The public authentication guide describes one key that can access and modify private account information; no read-only key scope or OAuth scope is documented. [Authentication](https://dev.easybroker.com/docs/autenticaci%C3%B3n), [API index](https://dev.easybroker.com/llms.txt) | Enforce read-only behavior in Maia by exposing only `GET` operations and by testing method/path allowlists. Do not call the credential itself read-only. |
+| Own inventory | **Verified** | `GET /properties` returns properties from the authenticated organization; `GET /properties/{property_id}` returns one account property by public or internal ID. [`GET /properties`](https://dev.easybroker.com/reference/get_properties), [`GET /properties/{property_id}`](https://dev.easybroker.com/reference/get_properties-property-id) | This is the only publicly documented account-level inventory entitlement that does not require API MLS. |
+| MLS inventory | **Verified, plan-dependent** | `GET /mls_properties` returns published properties with shared commissions from the organization's collaborators and its own organization; list and detail endpoints require the API MLS plan and may return `403` when the plan is absent. [MLS list](https://dev.easybroker.com/reference/get_mls-properties), [MLS detail](https://dev.easybroker.com/reference/get_mls-properties-property-id) | Keep MLS disabled until the actual organization plan and access are confirmed. A paid account alone is insufficient. |
+| Universal inventory | **Not supported** | The help center markets the Bolsa Inmobiliaria as the largest in Mexico, while the API reference limits the MLS result to the authenticated organization's collaboration scope. [Bolsa help](https://ayuda.easybroker.com/article/82-que-es-la-bolsa-inmobiliaria), [MLS list](https://dev.easybroker.com/reference/get_mls-properties) | Never claim “all properties in Mexico,” and never use association membership as proof of API-wide access. |
+| Collaborations and associations | **Partially verified** | `GET /collaborations` returns organization collaborations with agency ID/name and a flag identifying a group or association. Help documentation says active collaborators and collaboration groups can share eligible inventory. [`GET /collaborations`](https://dev.easybroker.com/reference/get_collaborations), [collaborations help](https://ayuda.easybroker.com/article/95-que-son-las-colaboraciones) | The current account's actual collaborators, group coverage, and whether each relationship is active remain provider/account facts to verify. |
+| Property location search | **Not available in the published search schema** | The own and MLS property-list schemas expose filters for type, timestamps, operation, price, minimum rooms/parking, sizes, statuses, and update-time sorting, but no location predicate. `/locations` is a separate hierarchy lookup. [Own-property guide](https://dev.easybroker.com/docs/propiedades), [MLS guide](https://dev.easybroker.com/docs/propiedades-mls), [`GET /locations`](https://dev.easybroker.com/reference/get_locations) | Guadalajara, Zapopan, and Tlaquepaque filtering must be performed by Maia over authorized results; ambiguous or hidden location must fail closed. |
+| Pagination | **Verified as page-based, not cursor-based** | Property lists use `page` plus `limit` (default 20, maximum 50) and return `pagination.limit`, `page`, `total`, and nullable `next_page`. [Own list](https://dev.easybroker.com/reference/get_properties), [MLS list](https://dev.easybroker.com/reference/get_mls-properties) | The stable port may call its continuation a cursor, but the EasyBroker adapter must translate it to page/`next_page` semantics; no provider cursor exists in the public contract. |
+| Snapshot consistency | **Unverified** | The public list references do not document snapshot isolation, cursor stability, duplicate prevention, or behavior when inventory changes between pages. [Own list](https://dev.easybroker.com/reference/get_properties), [MLS list](https://dev.easybroker.com/reference/get_mls-properties) | Make upserts idempotent, preserve source IDs, tolerate repeated items, and reconcile rather than treating one traversal as an immutable snapshot. |
+| Current listing state | **Partially verified** | `GET /listing_statuses` returns `public_id`, status, and `updated_at`; with API MLS it can include all published collaborator properties and collaborator properties unpublished in the previous month. [`GET /listing_statuses`](https://dev.easybroker.com/reference/get_listing-statuses) | A missed removal older than one month cannot be recovered from the collaborator change feed alone; periodic comparison with the current MLS list is required. |
+| Webhooks | **Unverified/not publicly documented** | No webhook guide or endpoint appears in the current official developer-documentation index. [Documentation index](https://dev.easybroker.com/llms.txt) | Stage 6 must not depend on a webhook. This is an absence in public docs, not proof that EasyBroker has no private offering. |
+| Rate limit | **Verified** | EasyBroker documents a limit of 20 requests per second and HTTP `429` when it is exceeded; the error guide says to wait before retrying. [API introduction](https://dev.easybroker.com/docs/api-de-easybroker), [API errors](https://dev.easybroker.com/docs/errores-de-la-api) | Bound concurrency below the published ceiling and classify `429` as retryable. |
+| Retry contract | **Unverified** | The public docs do not specify the rate-limit scope/window, `Retry-After`, retry headers, backoff formula, timeout, request ID, or `5xx` semantics. [API introduction](https://dev.easybroker.com/docs/api-de-easybroker), [API errors](https://dev.easybroker.com/docs/errores-de-la-api) | Backoff, jitter, timeout, attempt caps, and circuit behavior are Maia policy, not provider guarantees; preserve a provider `Retry-After` header if one is observed later. |
+| Commission | **Partially verified** | MLS detail exposes nullable `shared_commission_percentage` (currently documented as `50` or `null`) and nullable free-text `collaboration_notes`; MLS operations do not expose the account property's operation-level `commission` object. [MLS detail](https://dev.easybroker.com/reference/get_mls-properties-property-id), [own detail](https://dev.easybroker.com/reference/get_properties-property-id) | `null`, missing, or ambiguous notes mean commission is unknown. Do not calculate or promise a commission from MLS data alone. |
+| External publication authority | **Partially verified** | The terms say an accepted collaboration authorizes the collaborator to edit, offer, manage, and publish the other agent's listings on third-party sites; such publication must include the EasyBroker code. On withdrawal, use must cease and external publications must be removed within 24 hours. [Terms, sections 5 and 7](https://cdn.easybroker.com/mx/terms) | Treat public publication as a separate authorization decision. A candidate being visible through MLS is not by itself a Maia publication decision. |
+| Private recommendation and scheduling authority | **Unverified** | Public terms describe offering and external publication through collaborations, but do not define autonomous WhatsApp recommendations, appointment scheduling, or the evidence Maia must retain for those actions. [Terms](https://cdn.easybroker.com/mx/terms) | Require business/provider confirmation; return `Pending` when action-specific authority cannot be established. |
+| Retention and redistribution | **Unverified except for the 24-hour depublication duty** | The terms prohibit copying, resale, distribution, third-party use, or exploitation of the service without express written consent and impose the 24-hour withdrawal rule, but publish no general cache, tombstone, or historical-listing retention schedule. [Terms, sections 7 and 20](https://cdn.easybroker.com/mx/terms) | Written permission is required for durable collaborator caches, history, analytics, model training, cross-organization aggregation, or re-exposure through Maia's API. |
+| Staging | **Verified, not exercised here** | EasyBroker publishes a fictitious-data staging environment separate from production; production keys do not work there. [API introduction](https://dev.easybroker.com/docs/api-de-easybroker) | Fixtures remain the public-CI contract. Any provider-backed staging check must be separate and opt-in; this research did not use the published staging credential. |
 
-The account API uses a unique API key per EasyBroker account, sent in the
-`X-Authorization` header. Only an account administrator can obtain it. EasyBroker
-warns that the key can expose or modify private account information and must never
-be included in browser or mobile code. [Authentication
-guide](https://dev.easybroker.com/docs/autenticaci%C3%B3n), [Account API
-introduction](https://dev.easybroker.com/docs/api-de-easybroker)
+## Stage 6 HTTP contract
 
-EasyBroker's terms call the key secret, unique, exclusive, and non-transferable,
-while also explaining that it can authorize third-party access to account data.
-The account holder remains responsible for protecting it. [Terms, API key and
-credentials](https://cdn.easybroker.com/mx/terms)
-
-Implications for Maia:
-
-- calls must be server-to-server;
-- each brokerage must have an independently encrypted credential and connection
-  record;
-- authorization decisions, audit records, rotation, and revocation must be scoped
-  by tenant;
-- no tenant may inherit Santiago's credential or catalog permissions;
-- an EasyBroker key must never be a Hermes tool argument, prompt value, browser
-  value, log field, or analytics property.
-
-These are architecture implications derived from EasyBroker's credential model,
-not claims that EasyBroker has approved Maia's multi-tenant design.
-
-## Query capability and its limits
-
-### Inventory lists and pagination
-
-`GET /properties` lists the authenticated organization's properties;
-`GET /mls_properties` lists the eligible collaborator inventory when the API MLS
-plan is present. Both document `page` with a default of 1 and `limit` with a default
-of 20 and maximum of 50. [Own-property
-guide](https://dev.easybroker.com/docs/propiedades), [MLS list
-reference](https://dev.easybroker.com/reference/get_mls-properties)
-
-The documented list filters include property type, update timestamps, operation
-type, price range, minimum bedrooms, bathrooms and parking spaces, and construction
-and lot-size ranges. They also support update-time sorting. Full details require a
-second request to `/properties/{property_id}` or
-`/mls_properties/{property_id}`. [Own-property
-guide](https://dev.easybroker.com/docs/propiedades), [MLS
-guide](https://dev.easybroker.com/docs/propiedades-mls), [MLS detail
-reference](https://dev.easybroker.com/reference/get_mls-properties-property-id)
-
-### Location is a material gap
-
-The currently documented `/properties` and `/mls_properties` search schemas do
-**not** include a location filter. EasyBroker has a `/locations` endpoint for
-retrieving its location hierarchy, but the property-list documentation does not
-show a corresponding location predicate. [Property search
-filters](https://dev.easybroker.com/docs/propiedades), [MLS search
-filters](https://dev.easybroker.com/docs/propiedades-mls), [Locations
-endpoint](https://dev.easybroker.com/reference/get_locations)
-
-That creates an engineering constraint for requests such as “three bedrooms in
-Querétaro”: either EasyBroker must confirm an undocumented search capability, or
-Maia needs an authorized local search index synchronized from the accessible
-catalog. The latter must not be implemented until the caching, redistribution, and
-deletion rights are confirmed in writing.
-
-### Property detail and commercial provenance
-
-The MLS list/detail schemas expose a stable EasyBroker public ID, property facts,
-prices, images, source agent/agency information, public URL, collaboration notes,
-exclusivity, and shared-commission fields. Exact location may be hidden or
-approximated when the listing owner has disabled it. [MLS list
-reference](https://dev.easybroker.com/reference/get_mls-properties), [MLS detail
-reference](https://dev.easybroker.com/reference/get_mls-properties-property-id)
-
-Maia should preserve the listing's provenance and commercial constraints rather
-than flattening an EasyBroker listing into a property that appears to be owned by
-the tenant. At minimum, a synchronized record would need source, EasyBroker public
-ID, source organization and agent, public URL, commission-sharing state,
-collaboration notes, exact-location visibility, upstream status, and last observed
-update time. This is a proposed Maia data contract inferred from the fields and
-obligations, not an EasyBroker requirement stated in that form.
-
-## Publication, attribution, and collaboration authority
-
-EasyBroker's terms distinguish visibility in the Bolsa from authority to publish a
-third party's listing elsewhere. An accepted collaboration gives the requesting
-agent authority to edit, offer, manage, and publish that collaborator's listings on
-third-party sites. If the collaboration is withdrawn, the former collaborator must
-cease using the listings and remove external publications within 24 hours. [Terms,
-Bolsa Inmobiliaria](https://cdn.easybroker.com/mx/terms)
-
-The same terms state that EasyBroker may suspend a listing or account when the
-publisher lacks the owner's authorization or omits the corresponding EasyBroker
-code on the external site. Listing owners are responsible for the truth and rights
-in prices, photos, descriptions, and other listing content; EasyBroker does not
-guarantee that content. [Terms, listings and
-properties](https://cdn.easybroker.com/mx/terms)
-
-EasyBroker's help center says commission-sharing properties from an active
-collaborator can be displayed on an EasyBroker website and that the displayed
-listing uses the receiving collaborator's contact information. This supports the
-general collaboration model, but it does not by itself define permission for a
-custom Maia website or autonomous WhatsApp outreach. [Collaborations help
-article](https://ayuda.easybroker.com/article/95-que-son-las-colaboraciones)
-
-Therefore:
-
-- `share_commission = true` should not be treated as universal permission to copy,
-  rebrand, or permanently retain a listing;
-- public display must preserve the EasyBroker identifier and any agreed
-  attribution;
-- Maia needs rapid depublication and cache invalidation when upstream authority or
-  status changes;
-- an outbound message proposing another agency's property should record which
-  authorized listing version and collaboration supported that proposal;
-- the commercial commission is an inter-agent matter; EasyBroker says it does not
-  intermediate or monitor those relationships. [Terms, Bolsa
-  Inmobiliaria](https://cdn.easybroker.com/mx/terms)
-
-## Synchronization, webhooks, and failure handling
-
-No webhook appears in the current public developer-documentation index. That is an
-absence in the reviewed public documentation, not proof that EasyBroker offers no
-private webhook under a commercial agreement. EasyBroker's documented partner
-flow instead uses polling: check listing statuses every 15–30 minutes, process
-published and unpublished changes, and run a daily full reconciliation as a safety
-net. [`llms.txt` documentation index](https://dev.easybroker.com/llms.txt),
-[Integration Partners introduction](https://dev.easybroker.com/docs/introducci%C3%B3n),
-[Listing Statuses guide](https://dev.easybroker.com/docs/listing-statuses)
-
-For the account API, `listing_statuses` can include collaborator changes under an
-API MLS plan. The reference says published collaborator properties are included,
-while unpublished collaborator properties remain visible in this change feed only
-for the previous month. [Listing Statuses
-reference](https://dev.easybroker.com/reference/get_listing-statuses)
-
-The documented API limit is 20 requests per second, and exceeding it can produce
-HTTP 429. A production connector therefore needs bounded concurrency, retry with
-backoff, durable cursors/checkpoints, idempotent upserts, tombstones, and a full
-reconciliation path. [Account API introduction](https://dev.easybroker.com/docs/api-de-easybroker),
-[API errors](https://dev.easybroker.com/docs/errores-de-la-api)
-
-EasyBroker's partner flow also requires reporting each external publication as
-`pending`, `successful` with its direct listing URL, or `failed` with errors, and
-requires sending property-originated contact requests back through its API. [Property
-Integration](https://dev.easybroker.com/docs/property-integration-1), [Contact
-Request](https://dev.easybroker.com/docs/contact-request)
-
-## Sandbox and production readiness
-
-EasyBroker provides a public staging environment with fictitious data at
-`https://api.stagingeb.com/v1`; production keys do not work there. Production uses
-`https://api.easybroker.com/v1`. The official documentation publishes a shared
-staging credential, which should be loaded from the documentation or local test
-configuration rather than copied into Maia's public repository. [Account API
-introduction](https://dev.easybroker.com/docs/api-de-easybroker)
-
-The create-property endpoint is currently marked beta. The retrieve endpoints are
-not marked beta in the reference. Maia should avoid making beta write behavior an
-irreversible dependency of its own property system of record. [Create-property
-reference](https://dev.easybroker.com/reference/post_properties), [Retrieve-property
-reference](https://dev.easybroker.com/reference/get_properties-property-id)
-
-The sandbox can validate schemas, pagination, authentication failures, and retry
-behavior. It cannot validate Santiago's plan, collaborator coverage, real data
-quality, permission changes, commission terms, or production performance. Those
-require a tenant-authorized production pilot and commercial confirmation.
-
-## Storage, website display, BI, and redistribution
-
-EasyBroker expressly supports building a custom website connected to one's own
-account. Its partner documentation also describes synchronizing customer listings
-onto an approved external portal. These sources support an operational replica for
-an authorized integration, but neither grants an explicit general right to create
-a permanent cross-tenant data lake, resell listing data, train models on it, or keep
-third-party listing history after authority is withdrawn. [Account API
+The relevant Account API base URL is `https://api.easybroker.com/v1`. The
+`/v1/integration_partners` API is a separate approved-portal integration program,
+not the account/MLS API required by this stage. [Account API
 introduction](https://dev.easybroker.com/docs/api-de-easybroker), [Integration
 Partners introduction](https://dev.easybroker.com/docs/introducci%C3%B3n)
 
-The terms grant users a limited, revocable, non-transferable, non-sublicensable
-license to the EasyBroker service. They prohibit reproducing, selling, reselling,
-distributing, or exploiting the service or using it for a third party without
-EasyBroker's express written consent. [Terms, license and prohibited
+| Purpose | Method and path | Publicly documented result |
+| --- | --- | --- |
+| Search own organization inventory | `GET /properties` | Paginated account properties, with optional filters and update-time sort. [`GET /properties`](https://dev.easybroker.com/reference/get_properties) |
+| Refresh one own property | `GET /properties/{property_id}` | Detailed account property by public or internal ID; `404` when the property is not found. [`GET /properties/{property_id}`](https://dev.easybroker.com/reference/get_properties-property-id) |
+| Search eligible own plus collaborator inventory | `GET /mls_properties` | Paginated published, commission-sharing properties; requires API MLS. [`GET /mls_properties`](https://dev.easybroker.com/reference/get_mls-properties) |
+| Refresh one MLS property | `GET /mls_properties/{property_id}` | Detailed MLS property by EasyBroker public ID; requires API MLS; documents `403` and `404`. [`GET /mls_properties/{property_id}`](https://dev.easybroker.com/reference/get_mls-properties-property-id) |
+| Read lifecycle changes | `GET /listing_statuses` | Paginated source IDs, statuses, and update timestamps; optional collaborator inclusion requires API MLS. [`GET /listing_statuses`](https://dev.easybroker.com/reference/get_listing-statuses) |
+| Read organization collaborations | `GET /collaborations` | Paginated agency IDs/names and group-or-association flags. [`GET /collaborations`](https://dev.easybroker.com/reference/get_collaborations) |
+| Resolve EasyBroker location hierarchy | `GET /locations?query=...` | A matching location with parent-qualified `full_name` and child localities. [`GET /locations`](https://dev.easybroker.com/reference/get_locations) |
+| Resolve stable property-type symbols | `GET /property_types` | Current property-type symbols and localized names for the account country. [`GET /property_types`](https://dev.easybroker.com/reference/get_property-types) |
+
+The Stage 6 provider path uses only `GET` routes. EasyBroker's ordinary account
+API also documents write operations, which is why a general account key must never
+be described as provider-enforced read-only. [API introduction](https://dev.easybroker.com/docs/api-de-easybroker),
+[authentication](https://dev.easybroker.com/docs/autenticaci%C3%B3n)
+
+## Search, pagination, and service-area enforcement
+
+Both property-list endpoints document these search inputs: property-type symbols;
+`updated_after`/`updated_before`; operation type (`sale`, `rental`, or
+`temporary_rental`); minimum/maximum price; minimum bedrooms, bathrooms, and
+parking spaces; minimum/maximum construction and lot size; statuses; and
+`updated_at-asc`/`updated_at-desc` sorting. Price filters require an operation
+type. [Own list reference](https://dev.easybroker.com/reference/get_properties),
+[MLS list reference](https://dev.easybroker.com/reference/get_mls-properties)
+
+With no filters, `/properties` returns all of the organization's properties,
+including non-lead-facing statuses; a customer search must request allowed statuses
+explicitly rather than treating the unfiltered result as available inventory.
+[Own-property guide](https://dev.easybroker.com/docs/propiedades), [own list
+reference](https://dev.easybroker.com/reference/get_properties)
+
+Property-type symbols should come from `/property_types`; the reference says names
+remain accepted only for backward compatibility and may change or be translated.
+[Own list reference](https://dev.easybroker.com/reference/get_properties)
+
+Neither property list has a documented location, title, keyword, feature, or free-
+text filter. List records contain a location string, and detail records contain a
+location object with `name`, nullable coordinates/street/postal code, and
+`show_exact_location`. For MLS responses, coordinates can be hidden or approximate
+when exact location is disabled. [Own list
+reference](https://dev.easybroker.com/reference/get_properties), [MLS list
+reference](https://dev.easybroker.com/reference/get_mls-properties), [MLS detail
+reference](https://dev.easybroker.com/reference/get_mls-properties-property-id)
+
+The own-account detail endpoint can expose stored coordinates even when
+`show_exact_location` is false. Maia must enforce the disclosure flag and must not
+pass a raw detail payload to Hermes or a lead. [Own detail
+reference](https://dev.easybroker.com/reference/get_properties-property-id)
+
+Therefore, `/locations` can help normalize the EasyBroker hierarchy but cannot
+restrict `/properties` or `/mls_properties` at the provider. The adapter must map
+the returned location without inventing precision, and Product must reject or mark
+pending any candidate that cannot be proven to fall in Guadalajara, Zapopan, or
+Tlaquepaque. [`GET /locations`](https://dev.easybroker.com/reference/get_locations),
+[MLS guide](https://dev.easybroker.com/docs/propiedades-mls)
+
+The property-list continuation is page-based. The request uses integer `page` and
+`limit`; the response returns `limit`, `page`, `total`, and nullable `next_page`.
+The public schema does not define an opaque cursor. [Own list
+reference](https://dev.easybroker.com/reference/get_properties), [MLS list
+reference](https://dev.easybroker.com/reference/get_mls-properties)
+
+One documentation inconsistency must be covered by fixtures: the
+`/listing_statuses` parameter allows up to 100 items, but its reused pagination
+schema still declares a maximum of 50. The returned value, not the reused schema's
+maximum, should remain authoritative at runtime, and the adapter should not request
+more than the endpoint parameter permits. [`GET /listing_statuses`](https://dev.easybroker.com/reference/get_listing-statuses)
+
+## Fields and mapping limits
+
+The list schemas are smaller than the detail schemas. Stage 6 must not infer a
+missing detail field from a list record.
+
+| Surface | Important documented fields | Mapping caution |
+| --- | --- | --- |
+| Own-property list | `public_id`, title and title images, nullable room/size facts, location string, property type, `updated_at`, agent name, `show_prices`, `share_commission`, and operations including commission. [`GET /properties`](https://dev.easybroker.com/reference/get_properties) | `public_id` is the provider ID; `internal_id` is not present in the list. Nullable facts remain unknown. |
+| Own-property detail | Base facts, images, description, `internal_id`, maintenance, dates, features, `public_url`, files/media, collaboration notes, exclusivity, shared-commission percentage, private description, full location, tags, price visibility, sharing flag, and operations with commission. [`GET /properties/{property_id}`](https://dev.easybroker.com/reference/get_properties-property-id) | `private_description`, exact address/coordinates, source agent contact, and account-only metadata must not become customer facts. A write-capable account representation is still only an external candidate in Maia. |
+| MLS list | `public_id`, source agent and agency, title/title images, nullable room/size facts, location string, property type, `updated_at`, `public_url`, and operations. [`GET /mls_properties`](https://dev.easybroker.com/reference/get_mls-properties) | It does **not** expose collaboration notes, exclusivity, or shared-commission percentage; detail is required before action. |
+| MLS detail | Base facts/media, source agent, dates, `public_url`, nullable collaboration notes, exclusivity, nullable shared-commission percentage, operations, and a location that may hide or approximate exact coordinates. [`GET /mls_properties/{property_id}`](https://dev.easybroker.com/reference/get_mls-properties-property-id) | It does **not** expose a listing `status` or an operation-level commission object. Use lifecycle evidence separately and keep commission unknown when evidence is incomplete. |
+| Listing status | `public_id`, `status`, and `updated_at`. Response statuses are documented as `published`, `sold`, `rented`, `reserved`, `suspended`, and `not_published`. [`GET /listing_statuses`](https://dev.easybroker.com/reference/get_listing-statuses) | The search filter also accepts `flagged` and `disapproved`, although the response enum omits them. Preserve unknown provider values and fail closed rather than coercing them to `published`. |
+| Collaboration | `agency_id`, `agency_name`, and `group`. [`GET /collaborations`](https://dev.easybroker.com/reference/get_collaborations) | No per-listing publication grant, commission terms, expiry, or retention right is documented in this response. |
+
+Image URLs include a version query parameter that changes when an image changes;
+EasyBroker says to retain the complete URL and refresh it during synchronization.
+[Own detail reference](https://dev.easybroker.com/reference/get_properties-property-id)
+
+At minimum, the external candidate should preserve the source, EasyBroker
+`public_id`, source agency/agent identifiers, source URL, upstream timestamps,
+location precision, current lifecycle evidence, price operation/currency/unit,
+collaboration evidence, commission evidence, attribution, and the time each fact
+was observed. This is a proposed Maia mapping derived from the official schemas,
+not a provider-mandated data model.
+
+## Revalidation semantics
+
+The strongest public evidence available for an action-time revalidation is a
+fresh MLS detail response plus current lifecycle/collaboration evidence. The detail
+response refreshes price, facts, attribution, notes, and exact-location visibility;
+`/listing_statuses` carries the explicit lifecycle state. [MLS detail](https://dev.easybroker.com/reference/get_mls-properties-property-id),
+[listing statuses](https://dev.easybroker.com/reference/get_listing-statuses)
+
+The MLS detail endpoint documents `403` when API MLS is unavailable and `404` when
+the property cannot be found, but it does not document distinct error reasons for
+withdrawn collaboration, unpublished inventory, deleted inventory, or an unknown
+ID. [MLS detail](https://dev.easybroker.com/reference/get_mls-properties-property-id)
+
+Consequently, a `404` is evidence that Maia cannot currently revalidate the
+candidate, not proof of a specific business reason. `403`, `404`, stale lifecycle
+evidence, missing collaboration evidence, hidden/ambiguous service area, changed
+price, and incomplete commission evidence must not silently pass the Stage 6
+action gate.
+
+The status feed includes collaborator listings unpublished only during the
+previous month. A complete reconciliation against the current MLS list is therefore
+necessary to detect long-missed removals. [`GET /listing_statuses`](https://dev.easybroker.com/reference/get_listing-statuses),
+[`GET /mls_properties`](https://dev.easybroker.com/reference/get_mls-properties)
+
+The official 15–30 minute polling and daily safety-net advice belongs to the
+separate Integration Partners portal API. EasyBroker does not publish the same
+cadence as a contract for the ordinary account/MLS API, so Stage 6 freshness and
+staleness thresholds remain a Maia policy awaiting provider/business confirmation.
+[Integration Partners introduction](https://dev.easybroker.com/docs/introducci%C3%B3n),
+[Account API introduction](https://dev.easybroker.com/docs/api-de-easybroker)
+
+## Errors, rate limiting, and retries
+
+EasyBroker's current error guide documents:
+
+| HTTP status | Official meaning | Adapter classification |
+| --- | --- | --- |
+| `400` | Invalid filter or format. [API errors](https://dev.easybroker.com/docs/errores-de-la-api) | Permanent request/contract failure. |
+| `401` | Missing/invalid key or account cannot use the API. [API errors](https://dev.easybroker.com/docs/errores-de-la-api) | Connection/authentication failure; no blind retry. |
+| `403` | Plan does not allow the resource, including API MLS. [API errors](https://dev.easybroker.com/docs/errores-de-la-api) | Permission/plan denial; no blind retry. |
+| `404` | Resource does not exist or does not belong to the account. [API errors](https://dev.easybroker.com/docs/errores-de-la-api) | Unrevalidatable candidate outcome, with exact reason unknown. |
+| `422` | Submitted data violates resource rules. [API errors](https://dev.easybroker.com/docs/errores-de-la-api) | Not expected on the Stage 6 `GET` allowlist; treat as contract failure. |
+| `429` | Request limit exceeded; wait before trying again. [API errors](https://dev.easybroker.com/docs/errores-de-la-api) | Retryable with bounded backoff. |
+
+The guide warns clients not to compare exact error-message text because it can
+vary by language; use HTTP status and field names. [API errors](https://dev.easybroker.com/docs/errores-de-la-api)
+
+The documented ceiling is 20 requests per second. No public document reviewed
+specifies a `Retry-After` contract, attempt count, exponential-backoff formula,
+timeout, or server-error response body. [API introduction](https://dev.easybroker.com/docs/api-de-easybroker),
+[API errors](https://dev.easybroker.com/docs/errores-de-la-api)
+
+Therefore, bounded exponential backoff with jitter, timeout budgets, partial-page
+checkpoints, idempotent upserts, and a circuit/health state are Maia engineering
+policy. Tests should distinguish the documented provider facts (`429` and the
+20/second ceiling) from simulated but necessary transport failures (`timeout` and
+`5xx`).
+
+## Permissions, attribution, commission, and retention
+
+An accepted collaboration is the clearest public authorization described by
+EasyBroker: its terms say it authorizes the collaborator to edit, offer, manage,
+and publish the other agent's listings outside EasyBroker. If that collaboration
+is withdrawn, authorization ends and the former collaborator must cease use and
+remove external publications within 24 hours. [Terms, section 7](https://cdn.easybroker.com/mx/terms)
+
+For an externally published collaborator listing, the terms require inclusion of
+the EasyBroker identification code and permit suspension when authorization is
+missing or the code is omitted. [Terms, section 5](https://cdn.easybroker.com/mx/terms)
+
+EasyBroker does not mediate or monitor the commercial relationship or guarantee
+that a listing owner will share commission. The listing owners remain responsible
+for their listing content and authorization. [Terms, sections 5 and
+7](https://cdn.easybroker.com/mx/terms)
+
+The API MLS result already selects published, commission-sharing properties, but
+the detail contract still allows `shared_commission_percentage: null` and free-text
+collaboration notes. These are not enough to infer a payable amount or all
+conditions. [MLS list](https://dev.easybroker.com/reference/get_mls-properties),
+[MLS detail](https://dev.easybroker.com/reference/get_mls-properties-property-id)
+
+EasyBroker's publishing help identifies commission percentages and collaboration
+conditions as information for advisers, not final customers. [Property publishing
+help](https://ayuda.easybroker.com/article/482-agrega-y-publica-tus-propiedades)
+
+The help center says active collaborator properties with shared commission may be
+shown on an EasyBroker website and appear with the receiving collaborator's contact
+details. That product behavior does not itself establish a general license for a
+custom Maia site, API redistribution, autonomous outreach, or indefinite storage.
+[Collaborations help](https://ayuda.easybroker.com/article/95-que-son-las-colaboraciones)
+
+The terms provide a limited, revocable, non-transferable, non-sublicensable service
+license and prohibit copying, resale, distribution, third-party access/use, or
+exploitation without written consent. They do not publish a general retention
+schedule for cached collaborator listing content. [Terms, license and prohibited
 uses](https://cdn.easybroker.com/mx/terms)
 
-Consequently, Maia may design an internal operational cache with deletion and
-provenance controls, but the following uses remain **unresolved pending written
-permission**:
+The privacy policy makes the account holder responsible for lawful handling of
+third-party personal data, security, data-subject rights, and deletion when rights
+or processing purposes end. It also says EasyBroker may delete account information
+after cancellation or nonpayment and places backup responsibility on the account
+holder. [Mexico privacy policy](https://www.easybroker.com/mx/privacy)
 
-- retaining descriptions, images, files, or exact historical prices after a
-  listing is unpublished or a collaboration ends;
-- aggregating listing data across independent Maia tenants;
-- using EasyBroker content for machine-learning training or enrichment;
-- selling analytics derived from EasyBroker listing content;
-- exposing the MLS catalog through Maia's own API;
-- allowing one tenant's EasyBroker entitlement to benefit another tenant.
+The following remain written-permission gates:
 
-Business intelligence about Maia's own funnel—such as lead response time,
-follow-up completion, appointment conversion, consent, and attributed outcomes—is
-conceptually different from copying EasyBroker's catalog. Even there, personally
-identifiable lead data requires a lawful purpose, retention controls, and tenant
-isolation.
+- production API and API MLS entitlement for the actual organization;
+- the organization's current collaborator/group scope;
+- custom-site or WhatsApp attribution requirements beyond the EasyBroker code;
+- recommendation and appointment authority for collaborator listings;
+- commission interpretation when percentage or notes are missing or ambiguous;
+- cache duration, tombstones, and deletion beyond the 24-hour external-publication
+  rule;
+- retention of descriptions, images, files, prices, or commercial history after
+  unpublication or collaboration withdrawal;
+- analytics, model training, cross-organization aggregation, resale, or exposure
+  through Maia's own API.
 
-## Lead data and privacy
+## Provider readiness gates
 
-EasyBroker's privacy policy says the agent is responsible for third-party personal
-data and databases uploaded or managed through the service. It requires compliance
-with applicable data-protection rules, including consent where required, adequate
-security, mechanisms for access/rectification/cancellation/opposition, and deletion
-when rights or processing purposes end. [EasyBroker Mexico privacy
-policy](https://www.easybroker.com/mx/privacy)
+The following evidence cannot be obtained from public documentation and must not
+be represented as verified:
 
-The same policy warns that EasyBroker may delete account information after service
-termination or nonpayment and makes the agent responsible for independent backups.
-It also states that sharing an API key gives its recipient access to the associated
-information. [EasyBroker Mexico privacy
-policy](https://www.easybroker.com/mx/privacy)
+1. A real EasyBroker account or API key has been issued to Maia.
+2. The target organization has a paid account and an active API MLS plan.
+3. Any real collaborator, group, or association inventory is visible to that key.
+4. EasyBroker has approved Maia's caching, attribution, retention, WhatsApp,
+   scheduling, analytics, or multi-organization design.
+5. Production schemas, latency, error headers, data quality, and permission-change
+   behavior match public examples.
+6. A listing's legal facts, owner authorization, visit availability, price,
+   collaboration, or commission are true merely because its record is returned.
 
-These terms support keeping Maia's CRM—not EasyBroker—as the authoritative record
-for identity, channel consent, contact preferences, follow-up state, opt-outs,
-outcomes, and audit events. EasyBroker can receive contact requests when required
-by an integration agreement, but it should not be the only custodian of Maia's
-operational truth.
+Until those gates close, Stage 6 can truthfully claim only fake/fixture-backed
+behavior and a contract shaped by the current public documentation. Provider
+staging and production checks must remain separate, explicit, and opt-in.
 
-## Multi-tenant business risk
+## Official source set reviewed
 
-A single-brokerage pilot can use Santiago's account-specific credential and only
-the inventory authorized to that account. A commercial Maia SaaS must not reuse
-that credential or entitlement for other brokerages.
-
-The terms' restrictions on resale, third-party use, credential transfer, and
-sublicensing make “renting EasyBroker access through Maia” a contractual red flag.
-The documented Integration Partners program is evidence that EasyBroker has a
-supported multi-customer integration route, but Maia would still need approval,
-country activation, and written commercial/data terms. [Terms, API key and
-prohibited uses](https://cdn.easybroker.com/mx/terms), [Integration Partners
-introduction](https://dev.easybroker.com/docs/introducci%C3%B3n)
-
-The lowest-risk product boundary is:
-
-1. Maia licenses its own CRM, lead-follow-up engine, agent, audit trail, and
-   analytics to each brokerage.
-2. EasyBroker is an optional connector configured and authorized separately for
-   each tenant.
-3. Every property result carries its source, current authority, freshness, and
-   attribution.
-4. Maia's business still works with tenant-owned inventory when EasyBroker is
-   unavailable, revoked, commercially unsuitable, or replaced.
-
-This is an engineering recommendation based on the verified constraints, not a
-statement of EasyBroker's approval.
-
-## Questions EasyBroker must answer in writing
-
-Before designing the production connector or promising nationwide coverage, ask
-EasyBroker:
-
-1. Does Santiago's current account include API access and the API MLS plan?
-2. Which organizations and group/association listings would his account actually
-   receive through `/mls_properties`?
-3. Does association membership create an EasyBroker collaboration group, or are
-   bilateral collaborations still required?
-4. May Maia recommend an MLS property privately over WhatsApp without a separate
-   accepted collaboration? What changes for public website display?
-5. What EasyBroker ID, agency, agent, branding, link, and disclaimer must Maia show
-   in private messages and on public pages?
-6. May Maia cache listing facts, descriptions, images, attached files, and contact
-   details? For how long, and must images be hot-linked or copied?
-7. What deletion deadline applies to API caches and analytics after unpublication,
-   collaboration withdrawal, or account disconnection?
-8. May Maia retain historical prices and availability for internal BI? May it
-   compute tenant-level or cross-tenant aggregates?
-9. May any EasyBroker-derived data be used for model training, evaluation, search
-   embeddings, or recommendation features?
-10. Is the Integration Partners program the required route for a multi-tenant Maia
-    SaaS? What approval, certification, fees, and revenue terms apply?
-11. Are there private webhooks, service-level commitments, per-account quotas,
-    concurrency limits, or bulk-export mechanisms beyond the public documentation?
-12. Is location search supported by an undocumented property API parameter, or is
-    an authorized local index the expected implementation?
-13. How should commissions and lead attribution be evidenced when Maia introduces a
-    buyer to a collaborator's property?
-
-Until those answers exist, the contract-safe scope is a tenant-isolated,
-server-side proof of concept against EasyBroker staging and, with Santiago's
-explicit authorization, a read-only inventory pilot that does not promise all of
-Mexico, publish collaborators' listings publicly, or retain their data
-indefinitely.
+- [Developer documentation index](https://dev.easybroker.com/llms.txt)
+- [Account API introduction](https://dev.easybroker.com/docs/api-de-easybroker)
+- [Authentication](https://dev.easybroker.com/docs/autenticaci%C3%B3n)
+- [Own-property guide](https://dev.easybroker.com/docs/propiedades)
+- [MLS guide](https://dev.easybroker.com/docs/propiedades-mls)
+- [API errors](https://dev.easybroker.com/docs/errores-de-la-api)
+- [Own-property list reference](https://dev.easybroker.com/reference/get_properties)
+- [Own-property detail reference](https://dev.easybroker.com/reference/get_properties-property-id)
+- [MLS list reference](https://dev.easybroker.com/reference/get_mls-properties)
+- [MLS detail reference](https://dev.easybroker.com/reference/get_mls-properties-property-id)
+- [Listing-status reference](https://dev.easybroker.com/reference/get_listing-statuses)
+- [Collaborations reference](https://dev.easybroker.com/reference/get_collaborations)
+- [Locations reference](https://dev.easybroker.com/reference/get_locations)
+- [Property-types reference](https://dev.easybroker.com/reference/get_property-types)
+- [Integration Partners introduction](https://dev.easybroker.com/docs/introducci%C3%B3n)
+- [Bolsa Inmobiliaria help](https://ayuda.easybroker.com/article/82-que-es-la-bolsa-inmobiliaria)
+- [Collaborations help](https://ayuda.easybroker.com/article/95-que-son-las-colaboraciones)
+- [Property publishing help](https://ayuda.easybroker.com/article/482-agrega-y-publica-tus-propiedades)
+- [Mexico terms](https://cdn.easybroker.com/mx/terms)
+- [Mexico privacy policy](https://www.easybroker.com/mx/privacy)

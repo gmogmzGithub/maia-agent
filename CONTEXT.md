@@ -466,6 +466,25 @@ may use only within the collaboration's current authority, attribution, and
 commercial conditions.
 _Avoid_: Organization Listing, unrestricted MLS listing
 
+**External Listing Candidate**:
+A source-specific record that may become a Collaborator Listing only after its
+identity, service area, availability, authority, attribution and commercial
+conditions are confirmed. Its presence in an external platform is not Product
+authority.
+_Avoid_: Listing, imported inventory, MLS property, duplicate Property
+
+**Listing Revalidation**:
+The recorded use-time decision that an External Listing Candidate is Eligible,
+Pending or Denied for one specific recommendation, share or appointment based on
+fresh source and authority evidence.
+_Avoid_: sync timestamp, permanent approval, model confidence
+
+**Inventory Source Health**:
+The operational state of one external inventory source, including its last
+complete or partial synchronization and sanitized failure state; it does not say
+that any individual candidate is authorized.
+_Avoid_: Listing Freshness, API key, provider uptime claim
+
 **Listing Freshness**:
 The recency and success of source verification for a Listing's availability,
 price, authority, attribution, and commercial terms.

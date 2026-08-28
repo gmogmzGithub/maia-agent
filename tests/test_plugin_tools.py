@@ -74,6 +74,72 @@ def test_the_inventory_tool_forwards_an_empty_body(forwarded) -> None:
     assert forwarded[0]["path"] == "/internal/plugin/tools/list_properties"
 
 
+def test_stage_six_inventory_tools_forward_only_bounded_product_arguments(
+    forwarded,
+) -> None:
+    decoded(
+        tools.search_inventory(
+            {
+                "municipality": "Zapopan",
+                "operation": "Sale",
+                "min_price": 1_000_000,
+                "ignored": "never forwarded",
+            },
+            session_id="hermes-1",
+        )
+    )
+    decoded(
+        tools.revalidate_external_listing(
+            {"reference": " EB-FAKE-001 ", "intended_action": "Recommend"},
+            session_id="hermes-1",
+        )
+    )
+
+    assert forwarded[0]["json_body"] == {
+        "municipality": "Zapopan",
+        "operation": "Sale",
+        "min_price": 1_000_000,
+    }
+    assert forwarded[1]["json_body"] == {
+        "reference": "EB-FAKE-001",
+        "intended_action": "Recommend",
+    }
+
+
+def test_stage_six_inventory_tools_fail_closed_locally(forwarded) -> None:
+    assert decoded(tools.search_inventory({"municipality": "Monterrey"}))[
+        "result"
+    ] == "ambiguous"
+    assert decoded(tools.revalidate_external_listing({"intended_action": "Share"}))[
+        "result"
+    ] == "not_found"
+    assert decoded(
+        tools.revalidate_external_listing(
+            {"reference": "EB-1", "intended_action": "Publish"}
+        )
+    )["result"] == "invalid_action"
+    assert forwarded == []
+
+
+def test_reschedule_and_handoff_forward_only_present_optional_values(forwarded) -> None:
+    decoded(
+        tools.reschedule_appointment(
+            {"reference": " APT-1 ", "start": " 2026-08-10T16:00:00-06:00 "}
+        )
+    )
+    decoded(tools.reschedule_appointment({"start": "2026-08-11T16:00:00-06:00"}))
+    decoded(tools.request_human_handoff({"reason": " Quiero asesor "}))
+    decoded(tools.request_human_handoff({}))
+
+    assert forwarded[0]["json_body"] == {
+        "reference": "APT-1",
+        "start": "2026-08-10T16:00:00-06:00",
+    }
+    assert forwarded[1]["json_body"] == {"start": "2026-08-11T16:00:00-06:00"}
+    assert forwarded[2]["json_body"] == {"reason": "Quiero asesor"}
+    assert forwarded[3]["json_body"] == {}
+
+
 def test_a_status_change_forwards_the_reference_status_and_reason(forwarded) -> None:
     decoded(
         tools.set_property_status(
@@ -488,8 +554,9 @@ def test_no_tool_outside_the_frozen_stage_0_surface_can_be_registered() -> None:
     """An accidental extra product tool is a load-time failure, not a silent
     scope expansion (P-069)."""
     assert set(plugin.REGISTERED_TOOLS) <= set(plugin.FROZEN_TOOL_SURFACE)
-    # Eight Stage 0 contracts plus the two the human-operation stage owns.
-    assert len(plugin.FROZEN_TOOL_SURFACE) == 10
+    # Eight Stage 0 contracts, two human-operation tools, and two Stage 6
+    # Product-owned inventory tools.
+    assert len(plugin.FROZEN_TOOL_SURFACE) == 12
 
 
 def test_each_registered_schema_names_the_tool_it_belongs_to() -> None:

@@ -35,6 +35,9 @@ authorization, persistence, delivery, retries, and business authority.
 - A separate server-rendered public site for authorized inventory, explicit
   search, responsive galleries, saved collections, anonymous Maia conversations,
   and opaque continuity into the official WhatsApp channel.
+- A read-only external-inventory port with an EasyBroker adapter, strict local
+  service-area filtering, provenance-bearing candidates, and use-time
+  revalidation that never replaces the authoritative Product catalog.
 - A standalone Hermes plugin that exposes typed product operations without
   giving the agent direct database or Calendar credentials.
 - Recovery-oriented tests around persistence, sessions, tools, workers,
@@ -101,6 +104,9 @@ test-covered locally:
 - a Mexican Spanish public experience with indexable authorized listings,
   shareable search URLs, gallery and technical-sheet views, server-backed saved
   collections, anonymous Maia conversation, and single-use channel handoffs;
+- fixture-backed EasyBroker candidate indexing and Product/Hermes search within
+  Guadalajara, Zapopan, and Tlaquepaque, with Admin evidence controls and
+  fail-closed recommendation/share/appointment revalidation;
 - Docker Compose packaging for a single-host local topology.
 
 Not claimed yet:
@@ -111,6 +117,8 @@ Not claimed yet:
 - proactive follow-up delivery, which stays refused until real consent capture
   and approved WhatsApp templates exist;
 - legal/privacy readiness for real customer data;
+- a real EasyBroker account, API MLS entitlement, collaborator authority, or
+  provider-approved cache/redistribution rights;
 - horizontal scaling or managed cloud operations.
 
 ## Run Maia
@@ -201,4 +209,6 @@ for the exact coverage, commands, and optional live-provider layer. See the
 local acceptance and recovery rehearsal, and [repository governance](docs/repository-governance.md)
 for the branch and protection strategy. The [Stage 5 public-site guide](docs/public-site.md)
 documents its routes, authority contracts, privacy boundary, visual system, and
-manual acceptance path.
+manual acceptance path. The [Stage 6 external-inventory guide](docs/external-inventory.md)
+documents the EasyBroker adapter boundary, mapping, revalidation, cleanup, test
+levels, and activation gates.

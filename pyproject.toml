@@ -68,6 +68,7 @@ asyncio_mode = "auto"
 filterwarnings = ["error::DeprecationWarning:realestate.*"]
 markers = [
     "live_provider: calls a real model provider and is excluded from token-free CI",
+    "live_external_inventory: opt-in read-only call to EasyBroker staging",
 ]
 
 [tool.coverage.run]

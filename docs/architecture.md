@@ -23,6 +23,7 @@ sequenceDiagram
     participant Plugin as Maia Plugin
     participant Calendar as Google Calendar
     participant Telegram as Broker on Telegram
+    participant EasyBroker as EasyBroker read API
 
     Lead->>Meta: Message
     Meta->>Backend: Signed webhook
@@ -34,6 +35,7 @@ sequenceDiagram
     Backend->>Calendar: Read or write appointment state
     Backend->>Meta: Enqueue/send reply
     Backend->>Telegram: Send appointment notice when owed
+    Backend->>EasyBroker: GET authorized source candidate at sync/use time
 ```
 
 The customer channel is WhatsApp. Telegram is not the customer entry point: it
@@ -92,6 +94,9 @@ routers, workers and templates above them hold none of those rules.
 | `AdvisorScheduling.find_slots` | ask what times an Advisor could actually receive a visit |
 | `Appointments.book` / `.reschedule` / `.cancel` / `.record_outcome` | change a visit and record what happened at it |
 | `InternalAlerts.raise_alert` | tell somebody in the operation, durably |
+| `ExternalInventory.search` / `.refresh` | index and read source candidates without creating authoritative Listings |
+| `ListingRevalidation.evaluate` | decide whether one fresh external candidate may be recommended, shared, or scheduled |
+| `InventorySourceHealth.read` | expose sanitized source health without credentials |
 
 Four separations are structural rather than conventional, each enforced by the
 schema:
@@ -231,13 +236,14 @@ That keeps the agent interface clear:
 
 ## Current Local Topology
 
-Docker Compose runs the topology as three containers:
+Docker Compose runs the topology as four containers:
 
 - `db`: PostgreSQL and the durable Product state;
 - `product`: FastAPI and the in-process background workers;
+- `site`: the public server-rendered experience with no database or provider credential;
 - `hermes`: the pinned Hermes runtime with the standalone Maia plugin.
 
-Product and Hermes share a private network namespace so their authenticated
+Product, Site, and Hermes share a private network namespace so their authenticated
 JSON-RPC WebSocket remains loopback-only. They are still separate processes and
 containers. Product reaches PostgreSQL through the private Compose network.
 Only Product port 8080 is published to the host.
@@ -249,7 +255,9 @@ operator workflow.
 
 Optional integrations require their normal provider credentials:
 
-- optional Meta, Telegram, Google Calendar, and model-provider credentials.
+- optional Meta, Telegram, Google Calendar, model-provider, and EasyBroker
+  credentials. EasyBroker API MLS remains disabled until its separate plan and
+  collaboration permissions are explicitly confirmed.
 
 This is enough to prove product behavior and recovery paths before adding cloud
 deployment, managed secrets, production WhatsApp assets, and real lead data.

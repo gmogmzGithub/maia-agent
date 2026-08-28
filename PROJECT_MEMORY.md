@@ -765,12 +765,13 @@ WhatsApp handoffs are diagnostic funnel measures, not the final success metric.
 
 ## Current Stage
 
-Local Stage 5 public experience on top of the closed Stage 4 authoritative
-catalog: a separate server-rendered Larevia Site consumes Product-owned contracts
-for authorized discovery, Saved Collections, Website Conversation, and verified
-channel continuity. The implementation has canonical Docker Compose and automated
-contract verification; production deployment and real-customer acceptance remain
-explicitly unclaimed.
+Local Stage 6 read-only external inventory on top of the closed Stage 5 public
+experience and Stage 4 authoritative catalog. EasyBroker is a replaceable Product
+adapter whose records remain External Listing Candidates until authority and
+commercial evidence are confirmed; Organization Listings remain first. The
+implementation has fixture-backed contract verification, while staging,
+production, real account access and real-customer acceptance remain explicitly
+unclaimed.
 
 Implemented locally:
 
@@ -907,6 +908,18 @@ Implemented locally:
 - automated public-site domain, boundary, SSR, migration, recovery, accessibility,
   security-header, and frontend-budget checks, plus desktop and narrow-mobile
   browser acceptance.
+- a stable external-inventory module, read-only EasyBroker HTTP adapter, strict
+  Guadalajara/Zapopan/Tlaquepaque filter, lossless candidate Listing/Offer
+  mapping, page/cursor translation, bounded retry/rate-limit handling, and
+  sanitized source health;
+- Organization-first authorized search, with external candidates only as a
+  fallback and exact versus approximate results made explicit;
+- use-time refresh and recorded `Eligible`/`Pending`/`Denied` decisions for each
+  recommendation, share, or appointment, serialized against concurrent refresh;
+- immediate external withdrawal invalidation and 24-hour due-cache cleanup, with
+  an Administrator surface that never exposes the provider credential;
+- two thin Stage 6 Hermes tools that route inventory discovery and revalidation
+  through Product rather than exposing EasyBroker or PostgreSQL to Hermes.
 
 Not yet proven or claimed:
 
@@ -919,7 +932,7 @@ Not yet proven or claimed:
 - multi-tenant operation;
 - horizontal scaling;
 - self-managed multi-brokerage onboarding, billing, round-robin assignment, load
-  scoring, automatic commissions, EasyBroker, campaigns, and
+  scoring, automatic commissions, live EasyBroker activation, campaigns, and
   the data warehouse — all deliberately later stages.
 
 ## Core Boundary

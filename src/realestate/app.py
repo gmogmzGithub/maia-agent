@@ -20,6 +20,7 @@ from realestate.api import health as health_api
 from realestate.api import admin as admin_api
 from realestate.api import crm as crm_api
 from realestate.api import catalog as catalog_api
+from realestate.api import external_inventory as external_inventory_api
 from realestate.api import operations as operations_api
 from realestate.api import plugin as plugin_api
 from realestate.api import public_site as public_site_api
@@ -36,10 +37,12 @@ from realestate.domain.admin_work import AdminWorkService
 from realestate.domain.availability import WeeklySchedule
 from realestate.domain.commercial.organization import OrganizationDirectory
 from realestate.domain.catalog.storage import LocalMediaStorage
+from realestate.domain.external_inventory.easybroker import EasyBrokerAdapter
 from realestate.domain.scheduling.calendars import GoogleCalendarDirectory
 from realestate.domain.properties import ArtifactStore, CatalogStore
 from realestate.hermes import HermesClient
 from realestate.worker.broker import BrokerNotifier
+from realestate.worker.external_inventory import ExternalInventoryCleanupWorker
 from realestate.worker.followups import LeadFollowUpWorker
 from realestate.worker.loop import BackgroundLoop, idle_tick
 from realestate.worker.operations import OperationsWorker
@@ -149,6 +152,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.media_storage = LocalMediaStorage(
         Path(settings.listing_media_root), Path(settings.listing_media_cache_root)
     )
+    app.state.easybroker = EasyBrokerAdapter(
+        api_key=settings.easybroker_api_key,
+        base_url=settings.easybroker_base_url,
+        mls_access_confirmed=settings.easybroker_mls_access_confirmed,
+        retention_permission_confirmed=(
+            settings.easybroker_retention_permission_confirmed
+        ),
+    )
     app.state.hermes = HermesClient.from_settings(settings)
     app.state.public_site_proxy = httpx.AsyncClient(
         base_url=settings.public_site_base_url,
@@ -218,6 +229,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Paces itself: these rules have 28- and 90-day horizons and the loop ticks
     # once a second.
     app.state.upkeep_worker = CommercialUpkeepWorker(database=app.state.database)
+    app.state.external_inventory_cleanup_worker = ExternalInventoryCleanupWorker(
+        database=app.state.database,
+        source=app.state.easybroker,
+    )
 
     async def tick() -> None:
         # Lead work, follow-ups, Administrative work, and the Broker's
@@ -244,6 +259,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ("lead", app.state.worker.tick),
             ("lead follow-ups", app.state.followup_worker.tick),
             ("commercial upkeep", app.state.upkeep_worker.tick),
+            (
+                "external inventory cleanup",
+                app.state.external_inventory_cleanup_worker.tick,
+            ),
             ("human operations", app.state.operations_worker.tick),
             ("administrative", app.state.admin_worker.tick),
             ("broker notifications", app.state.broker_notifier.tick),
@@ -282,6 +301,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ("background loop", app.state.background_loop.stop),
             ("Hermes client", app.state.hermes.aclose),
             ("public site proxy", app.state.public_site_proxy.aclose),
+            ("EasyBroker adapter", app.state.easybroker.aclose),
             ("WhatsApp client", app.state.whatsapp.aclose),
             ("Telegram client", app.state.telegram.aclose),
             ("database engine", app.state.database.dispose),
@@ -317,6 +337,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(admin_api.router)
     app.include_router(crm_api.router)
     app.include_router(catalog_api.router)
+    app.include_router(external_inventory_api.router)
     app.include_router(operations_api.router)
     app.include_router(plugin_api.router)
     app.include_router(public_site_api.router)
