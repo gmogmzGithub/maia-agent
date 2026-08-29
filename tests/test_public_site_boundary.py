@@ -8,12 +8,11 @@ from decimal import Decimal
 import httpx
 import pytest
 from httpx import ASGITransport
-from sqlalchemy import text
 
 from realestate.app import create_app
 from realestate.config import Settings
 from realestate.db.engine import Database
-from tests.conftest import DATABASE_URL, requires_postgres
+from tests.conftest import DATABASE_URL, requires_postgres, reset_property_inventory
 from tests.fixtures.commercial import ADMIN_LOGIN, actor_for, provision, reset
 from tests.fixtures.media import InMemoryMediaStorage
 from tests.fixtures.public_site import publish_listing
@@ -36,15 +35,7 @@ async def wired():
     storage = InMemoryMediaStorage()
     async with database.session_scope() as session:
         await reset(session)
-        for table in (
-            "listing_media",
-            "listing_offers",
-            "catalog_listings",
-            "properties",
-            "unit_models",
-            "developments",
-        ):
-            await session.execute(text(f"DELETE FROM {table}"))
+        await reset_property_inventory(session)
         await session.commit()
         await reset(session, members=True)
         await provision(session)

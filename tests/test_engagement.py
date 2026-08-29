@@ -66,7 +66,7 @@ from realestate.domain.outbound import (
     OutboundMessaging,
 )
 from realestate.worker.engagement import EngagementWorker, outside_send_hours
-from tests.conftest import DATABASE_URL, requires_postgres
+from tests.conftest import DATABASE_URL, requires_postgres, reset_property_inventory
 from tests.fixtures.commercial import (
     ADMIN_LOGIN,
     actor_for,
@@ -117,15 +117,7 @@ async def database():
         ):
             await session.execute(text(f"DELETE FROM {table_name}"))
         await reset(session)
-        for table_name in (
-            "listing_media",
-            "listing_offers",
-            "catalog_listings",
-            "properties",
-            "unit_models",
-            "developments",
-        ):
-            await session.execute(text(f"DELETE FROM {table_name}"))
+        await reset_property_inventory(session)
         await reset(session, members=True)
         await provision(session)
     yield database

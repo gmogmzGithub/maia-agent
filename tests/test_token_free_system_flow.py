@@ -71,15 +71,23 @@ DURABLE_SESSION = "offline-sales-session"
 # not by this scenario. Truncating them would leave every later test in the
 # session without the Organization that all commercial data belongs to
 # (ADR-0019), so they are named as preserved rather than discovered by accident.
-PRESERVED_TABLES = frozenset({"organizations", "organization_members"})
+# ``measurement_definitions`` joins them for the same reason: migration 0025
+# seeds the versioned counting rules, and a scenario that truncated them would
+# leave every later analytics test unable to resolve its own definition version.
+PRESERVED_TABLES = frozenset(
+    {"organizations", "organization_members", "measurement_definitions"}
+)
 
 
 async def _truncate(database: Database) -> None:
     """Reset only the dedicated test database, including future mapped tables."""
     name = make_url(DATABASE_URL).database or ""
     assert name.endswith("_test"), f"refusing to truncate non-test database {name!r}"
+    # Schema-qualified: the pseudonymous analytics tables live in their own
+    # PostgreSQL schema since Stage 8, and a bare name would resolve against
+    # ``public`` and fail rather than truncating them.
     tables = ", ".join(
-        f'"{table.name}"'
+        f'"{table.schema}"."{table.name}"' if table.schema else f'"{table.name}"'
         for table in Base.metadata.tables.values()
         if table.name not in PRESERVED_TABLES
     )

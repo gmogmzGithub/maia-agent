@@ -30,7 +30,7 @@ NOW = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
 STAGE_1_HEAD = "0011_quarantine_legacy_outbound"
 CONTACTS_REVISION = "0012_organization_and_contacts"
 OPPORTUNITIES_REVISION = "0013_opportunities_and_actions"
-HEAD = "0024_reactivation_campaigns"
+HEAD = "0025_analytics_and_sponsorship"
 
 
 @pytest.fixture
@@ -623,6 +623,11 @@ def test_the_orm_metadata_matches_the_migrated_schema(at_stage_one) -> None:
 
     A model added without a migration passes every unit test and fails in
     Compose, so the comparison is worth making explicitly.
+
+    Keyed on ``(schema, table)`` since Stage 8: the pseudonymous analytics
+    tables live in their own PostgreSQL schema, and a comparison that read only
+    ``public`` would report a mapped analytics table as missing while silently
+    ignoring a real one that was.
     """
     from alembic import command
 
@@ -631,16 +636,17 @@ def test_the_orm_metadata_matches_the_migrated_schema(at_stage_one) -> None:
     config, engine = at_stage_one
     command.upgrade(config, HEAD)
 
-    actual: dict[str, set[str]] = {}
+    actual: dict[tuple[str, str], set[str]] = {}
     for row in _rows(
         engine,
-        "SELECT table_name, column_name FROM information_schema.columns"
-        " WHERE table_schema = 'public'",
+        "SELECT table_schema, table_name, column_name FROM"
+        " information_schema.columns WHERE table_schema IN ('public', 'analytics')",
     ):
-        actual.setdefault(row[0], set()).add(row[1])
+        actual.setdefault((row[0], row[1]), set()).add(row[2])
 
     for table in Base.metadata.tables.values():
-        assert table.name in actual, table.name
+        key = (table.schema or "public", table.name)
+        assert key in actual, key
         expected = {column.name for column in table.columns}
-        missing = expected - actual[table.name]
-        assert not missing, (table.name, missing)
+        missing = expected - actual[key]
+        assert not missing, (key, missing)

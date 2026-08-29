@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import select
 
 from realestate.channels.whatsapp.templates import MetaTemplateSource
 from realestate.db.engine import Database
@@ -22,7 +22,7 @@ from realestate.domain.engagement.templates import (
     TemplateRegistry,
     TemplateSourceUnavailable,
 )
-from tests.conftest import DATABASE_URL, requires_postgres
+from tests.conftest import DATABASE_URL, requires_postgres, reset_property_inventory
 from tests.fixtures.commercial import (
     ADMIN_LOGIN,
     actor_for,
@@ -75,15 +75,7 @@ async def database():
     database = Database(DATABASE_URL)
     async with database.session_scope() as session:
         await reset(session)
-        for table_name in (
-            "listing_media",
-            "listing_offers",
-            "catalog_listings",
-            "properties",
-            "unit_models",
-            "developments",
-        ):
-            await session.execute(text(f"DELETE FROM {table_name}"))
+        await reset_property_inventory(session)
         await reset(session, members=True)
         await provision(session)
     yield database

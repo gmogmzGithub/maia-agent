@@ -64,6 +64,19 @@ Advisor without an authoritative calendar -> no times offered, honestly
 
 — and no provider token is involved in any of them.
 
+Stage 8 adds two adversarial suites rather than more happy paths.
+`tests/test_sponsored_surfaces.py` asserts that the organic result order is
+byte-identical with and without an Active campaign over one of the results, under
+every sort, and then asserts it *structurally*: the module that ranks public
+results contains no reference to sponsorship at all, so no future change can make
+payment influence relevance by accident.
+
+`tests/test_sponsorship_privacy.py` goes looking for leaks instead of confirming
+one. It puts a real phone number, a Contact id, a lead id, a criterion in the
+Contact's own words and a Saved Collection token into the database, then searches
+the buyer report object, the rendered page lines and the PDF bytes for every one
+of them.
+
 ## Run the required gate locally
 
 With the Compose runtime running:
@@ -124,10 +137,13 @@ entitlement, collaborator authority, retention permission, or production access.
 | Unit and domain tests | Yes | Policy, parsing, retries, ambiguity, copy, and authorization |
 | Database/API/worker integration tests | Yes | PostgreSQL contracts, Inbox/Outbox, plugin calls, sessions, and recovery |
 | Commercial domain tests | Yes | Contact resolution, stages, qualification, assignment races, Next Actions, retention |
-| Migration tests | Yes | The commercial and catalog revisions on an empty and a legacy database, upgrade and downgrade |
+| Migration tests | Yes | The commercial, catalog and analytics revisions on an empty and a legacy database, upgrade and downgrade, including the separate `analytics` schema and its seeded measurement definitions |
 | Operator surface tests | Yes | Mexican Spanish, accessibility, empty states, refusals, and that a CRM reply goes out only through the outbound eligibility gate |
 | Vertical system scenario | Yes | WhatsApp inquiry through booking and Broker notification, and Inbox to Next Action |
 | Live model evaluation | No | Hermes/model tool choice, grounding, and conversational quality |
 | EasyBroker staging smoke test | No | Opt-in read-only provider transport compatibility only |
 | Stage 7 engagement tests | Yes | Explainable matches, explicit audiences, consent/template lifecycle, caps, stops and PII-safe results |
+| Stage 8 measurement tests | Yes | Event idempotency, emission order, replay from zero, restart mid-batch, schema and definition versions, exact visibility and exploration borders, invalid-traffic classification and reporting, late events, materialized-view refresh, and `Sin registrar` kept distinct from zero |
+| Stage 8 sponsorship tests | Yes | Identical organic ordering with and without payment, the visible and accessible `Patrocinada` label, session caps, equitable rotation, capacity that cannot be oversold, quote expiry and preserved catalog version, discounts requiring a reason, comparables and sample size, 7/90-day attribution, non-causal language, and no PII in any buyer view, link or PDF |
 | Manual channel rehearsal | No | Real Meta, Google Calendar, and Telegram configuration and delivery |
+| Manual browser rehearsal | No | The visibility observer, gallery-depth reporting, and the rendered contrast of the paid label |

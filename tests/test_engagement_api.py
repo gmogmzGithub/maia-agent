@@ -7,13 +7,13 @@ import uuid
 import httpx
 import pytest
 from httpx import ASGITransport, BasicAuth
-from sqlalchemy import select, text
+from sqlalchemy import select
 
 from realestate.app import create_app
 from realestate.config import get_settings
 from realestate.db.engine import Database
 from realestate.db.models import DevelopmentCampaign, ReactivationCandidate
-from tests.conftest import DATABASE_URL, requires_postgres
+from tests.conftest import DATABASE_URL, requires_postgres, reset_property_inventory
 from tests.fixtures import commercial
 from tests.test_engagement import FakeTemplates, foundation
 
@@ -33,15 +33,7 @@ async def wired(monkeypatch: pytest.MonkeyPatch):
     database = Database(DATABASE_URL)
     async with database.session_scope() as session:
         await commercial.reset(session)
-        for table_name in (
-            "listing_media",
-            "listing_offers",
-            "catalog_listings",
-            "properties",
-            "unit_models",
-            "developments",
-        ):
-            await session.execute(text(f"DELETE FROM {table_name}"))
+        await reset_property_inventory(session)
         await commercial.reset(session, members=True)
         await commercial.provision(session)
     app = create_app(get_settings())

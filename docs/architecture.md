@@ -148,6 +148,60 @@ administrative pause/cancel establishes a causal no-new-delivery boundary.
 Real execution remains disabled by configuration until the legal, consent,
 provider and operational gates are explicitly accepted.
 
+## Measurement and Paid Visibility
+
+Stage 8 adds two things that had to arrive together, and one boundary that keeps
+them apart.
+
+Measurement is its own pipeline. `AnalyticsEvents.record` validates against a
+closed, versioned taxonomy, replaces raw session and subject identifiers with
+salted digests, and writes to `analytics.analytics_outbox` — a durable queue that
+is deliberately *not* `outbox_messages`. A stuck measurement row must never share
+a queue, a retry budget or a failure mode with a message a customer is waiting
+for. `AnalyticsProjection.refresh` then consumes in sequence order, inserts
+idempotently, and **recomputes** each period it touched rather than incrementing
+it. That last choice is what makes the pass safe to re-run, safe to replay from
+zero, and correct for a late event: an event arriving today for last Tuesday
+rebuilds last Tuesday instead of landing on today or being dropped for being old.
+
+Every threshold a reported number depends on is stored under a version in
+`analytics.measurement_definitions`, not compiled in. Serving is Product's own
+fact, recorded server-side as the response is built. Visibility is a browser
+observation whose *threshold* Product applies, so a modified client cannot
+manufacture a Visible Impression. Invalid traffic — bots, internal use, synthetic
+fixtures, implausible rates — is stored, classified and reported as excluded
+volume rather than deleted, because a metric that silently drops rows and one that
+never had them look identical to the reader.
+
+The analytics schema has no foreign key to a Contact and no attribute anywhere in
+the taxonomy that free text would fit in. Session and subject references use
+separate salts per purpose, so holding both tables does not let anybody confirm
+that an anonymous session belongs to a known Contact.
+
+Paid visibility sits on top of that measurement and touches nothing else.
+`SponsoredEligibility` re-uses the same `PublicShare` decision the unpaid site
+gets and adds only what money introduces: a written commercial clearance standing
+in for the still-Pending SAN-065, one sponsored position per confirmed Property,
+and the campaign's own state and remaining paid days. `SponsoredDelivery` returns
+paid slots as their own list; the organic list arrives already ordered by
+`PublicCatalog`, which imports nothing from sponsorship at all. That absence is
+asserted by a test, because "payment does not influence relevance" is only
+credible if the ranking code cannot reach the money code even by accident.
+
+Two capacity ceilings are kept apart. The delivery ratio bounds what one page
+shows; the sales ceiling bounds how many campaigns may hold a surface over the
+same days. Respecting only the first is how a product sells twenty concurrent
+campaigns and delivers each buyer a twentieth of what they expected. Reservations
+are taken under a per-surface lock, and a paid day is consumed by being
+*delivered* rather than by passing on a calendar — so a Listing withdrawn for a
+week returns that week instead of producing an apology.
+
+Reporting is one computation exposed at two audiences. Two implementations would
+eventually disagree, and a buyer noticing that their report and the
+Administrator's do not add up is not recoverable. The buyer's half travels by an
+expiring, revocable, read-only link stored only as a digest, with a PDF built from
+the same line list as the page.
+
 ## Human Operation, Team and Visits
 
 Stage 3 adds the part of the operation that has people in it. Three separations
@@ -236,6 +290,15 @@ than a free-text field, and a refusal renders as its named reason.
 Denied outbound decisions and an active Do Not Contact are shown to the operator
 with the reason. Showing them is the point — an operator who cannot see why a
 message did not go out concludes the system is broken.
+
+Stage 8 adds `/crm/bi` and `/crm/patrocinios`, both Administrator-only. The
+data-quality panel is on the same page as the results deliberately: a coverage
+number next to "42 percent of outcomes are unrecorded" is a number somebody will
+question, and on a separate tab it is a number somebody will quote. The
+sponsorship surface shows capacity next to the sale, so an Administrator selling a
+fourth concurrent campaign sees the refusal coming rather than discovering it at
+reservation — and while no price catalog is published it says the first price
+requires pilot data instead of offering an empty field somebody would fill in.
 
 The CRM does now send, and only through the same gate. An Advisor who holds a
 Conversation may reply on the Brokerage Organization's own channel (ADR-0029),

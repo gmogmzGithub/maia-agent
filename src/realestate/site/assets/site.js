@@ -118,17 +118,42 @@
     }
   }
 
+  // A paid placement reports the measured fraction and the measured duration.
+  // It never reports "this was visible": the versioned threshold lives in
+  // Product, so a modified client cannot manufacture a Visible Impression.
+  function reportVisible(card, ratio, milliseconds) {
+    const campaign = card.dataset.sponsoredCampaign;
+    if (!campaign) return;
+    const body = JSON.stringify({
+      campaign_id: campaign,
+      listing_id: card.dataset.listingId,
+      surface: card.dataset.surface || "Search",
+      visible_fraction: Math.min(1, Math.max(0, ratio)),
+      continuous_milliseconds: milliseconds,
+      occurred_at: new Date().toISOString()
+    });
+    if (navigator.sendBeacon) {
+      navigator.sendBeacon("/patrocinadas/visible", new Blob([body], { type: "application/json" }));
+    } else {
+      fetch("/patrocinadas/visible", { method: "POST", headers: { "Content-Type": "application/json" }, body, keepalive: true });
+    }
+  }
+
   if ("IntersectionObserver" in window) {
     const timers = new WeakMap();
+    const ratios = new WeakMap();
     const seen = new WeakSet();
+    const VISIBLE_MS = 1000;
     const observer = new IntersectionObserver((entries) => {
       entries.forEach((entry) => {
+        ratios.set(entry.target, entry.intersectionRatio);
         if (entry.intersectionRatio >= 0.5 && !seen.has(entry.target)) {
           timers.set(entry.target, window.setTimeout(() => {
             seen.add(entry.target);
             observer.unobserve(entry.target);
             track("ListingImpression", entry.target.dataset.surface || "Search", entry.target.dataset.listingId);
-          }, 1000));
+            reportVisible(entry.target, ratios.get(entry.target) || 0, VISIBLE_MS);
+          }, VISIBLE_MS));
         } else if (timers.has(entry.target)) {
           clearTimeout(timers.get(entry.target));
           timers.delete(entry.target);
@@ -164,12 +189,42 @@
       if (event.key === "ArrowLeft") update(active - 1);
       if (event.key === "ArrowRight") update(active + 1);
     });
+    // Gallery depth, for Significant Gallery Exploration. Only two numbers are
+    // ever sent — how many photographs were reached and what share of the
+    // gallery that is — and Product applies the versioned threshold. The site
+    // does not track dwell time, scroll paths or anything per photograph.
+    const viewed = new Set();
+    const listingId = document.querySelector('[name="listing_id"]')?.value || null;
+    let depthReported = false;
+    const reportDepth = () => {
+      if (depthReported || !slides.length) return;
+      const fraction = viewed.size / slides.length;
+      const body = JSON.stringify({
+        event_key: commandKey("gallery"),
+        listing_id: listingId,
+        photographs: viewed.size,
+        gallery_fraction: fraction,
+        occurred_at: new Date().toISOString()
+      });
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon("/medicion/galeria", new Blob([body], { type: "application/json" }));
+      } else {
+        fetch("/medicion/galeria", { method: "POST", headers: { "Content-Type": "application/json" }, body, keepalive: true });
+      }
+      depthReported = true;
+    };
+    const noteViewed = (index) => {
+      viewed.add(index);
+      if (viewed.size >= 5 || viewed.size / slides.length >= 0.3) reportDepth();
+    };
+    noteViewed(0);
     stage?.addEventListener("scrollend", () => {
       if (!stage.clientWidth) return;
       active = Math.round(stage.scrollLeft / stage.clientWidth);
+      noteViewed(active);
       if (output) output.textContent = `${active + 1} de ${slides.length}`;
     });
-    const listingId = document.querySelector('[name="listing_id"]')?.value || null;
+    gallery.addEventListener("click", () => noteViewed(active));
     track("GalleryOpen", "Gallery", listingId, { count: slides.length });
   }
 })();

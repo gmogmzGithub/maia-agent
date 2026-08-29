@@ -150,6 +150,26 @@ async def provision_bookable_team(
 #: ``organizations`` is never cleared: migration 0012 creates the row and every
 #: scoped table points at it.
 _RESET_ORDER = (
+    # Stage 8 first: the analytics event store and the sponsorship agreements
+    # reference Listings and members that later entries remove. The seeded
+    # ``analytics.measurement_definitions`` row is deliberately absent — it is
+    # migration data, not fixture data.
+    "analytics.domain_events",
+    "analytics.analytics_outbox",
+    "analytics.funnel_aggregates",
+    "analytics.projection_runs",
+    "analytics.pseudonym_salts",
+    "harm_signals",
+    "sponsorship_report_links",
+    "sponsored_exposure_counters",
+    "sponsorship_delivery_days",
+    "sponsored_eligibility_records",
+    "sponsorship_capacity_reservations",
+    "sponsorship_quotes",
+    "sponsorship_campaigns",
+    "sponsorship_surface_capacity",
+    "sponsorship_price_items",
+    "sponsorship_price_catalogs",
     "marketing_touches",
     "campaign_audience_members",
     "development_campaigns",

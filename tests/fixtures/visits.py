@@ -49,6 +49,20 @@ CASA_ROBLE = (FIXTURES / "casa-roble.md").read_bytes()
 #: ``leads``; the rest reference ``organization_members`` with RESTRICT and have
 #: to go explicitly, before any suite replaces the directory.
 RESET_ORDER = (
+    # Stage 8 first: a Sponsorship Campaign references its source Listing with
+    # RESTRICT, and a report link or a harm signal references the member rows
+    # this list clears last.
+    "harm_signals",
+    "sponsorship_report_links",
+    "sponsored_exposure_counters",
+    "sponsorship_delivery_days",
+    "sponsored_eligibility_records",
+    "sponsorship_capacity_reservations",
+    "sponsorship_quotes",
+    "sponsorship_campaigns",
+    "sponsorship_surface_capacity",
+    "sponsorship_price_items",
+    "sponsorship_price_catalogs",
     "internal_alerts",
     "appointment_reminders",
     "human_handoff_requests",

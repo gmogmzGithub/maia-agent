@@ -656,3 +656,83 @@ _Avoid_: Private garden, Property Characteristic
 The manual follow-up required when an Inactive Property still has a future confirmed
 visit; it is not an automatic cancellation.
 _Avoid_: Cancelled appointment, status-change side effect
+
+### Measurement and paid visibility
+
+**Analytics Event**:
+One immutable, idempotent, pseudonymous record of something that happened, named
+by the versioned domain-event taxonomy and carrying only numeric, boolean or
+enumerated attributes.
+_Avoid_: Log line, free-text payload, behavioural profile, Contact record
+
+**Analytics Outbox**:
+The durable queue Product writes an emitted Analytics Event to, separate from the
+customer-facing Outbox and from every operational side effect.
+_Avoid_: Outbox Message, conversation delivery queue, in-memory buffer
+
+**Analytics Projection**:
+The re-runnable pass that drains the Analytics Outbox into the event store,
+classifies traffic, and recomputes the versioned aggregates and materialized
+views for every period it touched.
+_Avoid_: Incrementing counter, one-way ETL, live query over raw events
+
+**Measurement Definition Version**:
+One stored, frozen set of counting rules — visibility thresholds, exploration
+thresholds, funnel order, attribution windows, delivery ratios and caps — that a
+historic report resolves so it stays reproducible.
+_Avoid_: Constant in code, current threshold, undated rule change
+
+**Served Impression**:
+A Sponsored Placement that Product actually delivered in a surface's response;
+it is Product's own fact and says nothing about what anybody saw.
+_Avoid_: Visible Impression, page request, guaranteed attention
+
+**Pseudonymous Reference**:
+A salted digest standing in for a session or a subject inside the analytics
+schema, stable enough to follow a funnel and not reversible into an identity.
+_Avoid_: Contact id, phone number, advertising identifier, browser fingerprint
+
+**Invalid Traffic**:
+Measured activity excluded from a reported metric because it is a bot, internal
+or administrative use, synthetic test data, or an implausible event rate; it is
+always stored, always classified, and always reported as excluded volume.
+_Avoid_: Deleted event, silent filter, unexplained gap between raw and reported
+
+**Sponsorship Price Catalog Version**:
+An Administrator-managed set of package prices that may only be published with a
+written reference to the pilot traffic that justifies it, and of which exactly one
+version is published at a time.
+_Avoid_: Invented first price, live price edit, rate card without evidence
+
+**Sponsorship Quote**:
+A seven-day priced offer that preserves its catalog version and amounts, may
+carry a manual discount only with a written reason, and reserves no capacity
+while it lives.
+_Avoid_: Reservation, invoice, auction bid, price that moves after issue
+
+**Sponsorship Capacity Reservation**:
+One accepted campaign's hold on one sponsored surface for a date range, taken
+under a lock so concurrent acceptances cannot oversell the surface.
+_Avoid_: Quote, delivery ratio, exclusivity by zone or property type
+
+**Sponsorship Delivery Day**:
+One service date recorded against a campaign, marked as consuming a paid day only
+when delivery actually happened; a paused day is preserved, not spent.
+_Avoid_: Calendar day, elapsed day, refund
+
+**External Collection State**:
+The Administrator's record of what happened with payment outside Product, which
+issues no invoice, charges nothing and moves no money.
+_Avoid_: Payment, invoice, billing status, auto-renewal
+
+**Buyer Report Link**:
+An expiring, revocable, read-only token that opens one campaign's aggregate
+report and nothing else; it is stored only as a digest and is never a CRM
+account.
+_Avoid_: CRM login, permanent URL, shared password, account invitation
+
+**Harm Signal**:
+An Administrator-recorded pilot stop-condition event — wrong information, a
+complaint, an untimely message, an assignment failure, an incorrect appointment
+or operational overload — with written evidence and a moment.
+_Avoid_: Advisor performance score, complaint ticket, automatic pause trigger

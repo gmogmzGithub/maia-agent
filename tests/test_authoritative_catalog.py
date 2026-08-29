@@ -78,7 +78,7 @@ from realestate.domain.commercial.actors import (
     NotAuthorized,
     NotFound,
 )
-from tests.conftest import DATABASE_URL, requires_postgres
+from tests.conftest import DATABASE_URL, requires_postgres, reset_property_inventory
 from tests.fixtures.commercial import (
     ADMIN_LOGIN,
     ADVISOR_LOGIN,
@@ -98,15 +98,7 @@ async def database():
     db = Database(DATABASE_URL)
     async with db.session_scope() as session:
         await reset(session)
-        for table in (
-            "listing_media",
-            "listing_offers",
-            "catalog_listings",
-            "properties",
-            "unit_models",
-            "developments",
-        ):
-            await session.execute(text(f"DELETE FROM {table}"))
+        await reset_property_inventory(session)
         await session.commit()
         await reset(session, members=True)
         await session.execute(text("DELETE FROM organizations WHERE slug <> 'larevia'"))

@@ -23,7 +23,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from realestate.domain.clock import utc_now
-from realestate.db.models import ChannelHandoffPurpose, PublicAnalyticsEventName
+from realestate.db.models import (
+    ChannelHandoffPurpose,
+    PublicAnalyticsEventName,
+    SponsoredSurface,
+)
 from realestate.domain.catalog.storage import MediaStorageError
 from realestate.domain.commercial.actors import Actor, CommercialError, NotFound
 from realestate.domain.commercial.organization import OrganizationDirectory
@@ -36,7 +40,19 @@ from realestate.domain.public.handoff import (
 )
 from realestate.domain.public.listing import PublicListing
 from realestate.domain.public.responders import HermesWebsiteResponder
+from realestate.domain.public.measurement import (
+    GalleryDepth,
+    ListingOpen,
+    PublicMeasurement,
+)
 from realestate.domain.public.saved import SavedAction, SavedCommand, SavedCollections
+from realestate.domain.public.sponsored import PublicSponsored
+from realestate.domain.sponsorship.sharing import (
+    ShareUnavailable,
+    SponsorshipSharing,
+    report_lines,
+    report_pdf,
+)
 from realestate.domain.public.website_conversation import (
     WebsiteCommand,
     WebsiteConversation,
@@ -89,6 +105,39 @@ class EventBody(BaseModel):
     surface: str = Field(min_length=1, max_length=40)
     listing_id: uuid.UUID | None = None
     properties: dict[str, str | int | bool] = Field(default_factory=dict)
+    occurred_at: datetime
+
+
+class ListingOpenBody(BaseModel):
+    event_key: str = Field(min_length=8, max_length=200)
+    listing_id: uuid.UUID
+    surface: str = Field(min_length=1, max_length=20)
+    occurred_at: datetime
+
+
+class GalleryDepthBody(BaseModel):
+    """Raw gallery depth. The milestone is Product's decision, not the page's."""
+
+    event_key: str = Field(min_length=8, max_length=200)
+    listing_id: uuid.UUID
+    photographs: int = Field(ge=0, le=500)
+    gallery_fraction: float = Field(ge=0, le=1)
+    occurred_at: datetime
+
+
+class VisibleImpressionBody(BaseModel):
+    """One browser-reported visibility observation for a paid placement.
+
+    The fraction and the duration are reported, never the verdict: Product
+    applies the versioned threshold itself, so a page cannot claim a Visible
+    Impression it did not earn.
+    """
+
+    campaign_id: uuid.UUID
+    listing_id: uuid.UUID
+    surface: str = Field(min_length=1, max_length=20)
+    visible_fraction: float = Field(ge=0, le=1)
+    continuous_milliseconds: int = Field(ge=0, le=600_000)
     occurred_at: datetime
 
 
@@ -290,13 +339,193 @@ async def handoff(request: Request, body: HandoffBody) -> JSONResponse:
 async def event(request: Request, body: EventBody) -> JSONResponse:
     try:
         async with request.app.state.database.session_scope() as session:
+            session_value, bot, internal = _measurement_context(request)
             recorded = await PublicAnalytics(session, await _actor(session)).record(
-                PublicEventCommand(**body.model_dump())
+                PublicEventCommand(
+                    **body.model_dump(),
+                    session_value=session_value,
+                    bot=bot,
+                    internal=internal,
+                )
             )
             await session.commit()
             return _json({"recorded": recorded}, status_code=202)
     except (ValueError, CommercialError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _measurement_context(request: Request) -> tuple[str, bool, bool]:
+    """The session reference and the two exclusion flags, from headers only.
+
+    The site inspects the user agent and sends a boolean; the raw string never
+    reaches Product, so no analytics row can hold one. ``X-Internal-Preview`` is
+    how an operator looks at a surface without consuming a buyer's cap.
+    """
+    session_value = request.headers.get("X-Session-Reference", "").strip()[:120]
+    bot = request.headers.get("X-Crawler", "").strip().casefold() == "true"
+    internal = (
+        request.headers.get("X-Internal-Preview", "").strip().casefold() == "true"
+    )
+    return session_value, bot, internal
+
+
+@router.get("/sponsored")
+async def sponsored(
+    request: Request,
+    surface: str = Query(min_length=1, max_length=20),
+    visible_results: int = Query(default=0, ge=0, le=200),
+    organic: str = "",
+) -> JSONResponse:
+    """The labelled paid section for one surface.
+
+    Returned as its own list, never merged into the organic results. The caller
+    receives the slots and renders them in their dedicated positions; the
+    organic ordering it already has is not touched by this call.
+    """
+    if surface not in {item.value for item in SponsoredSurface}:
+        raise HTTPException(status_code=422, detail="La superficie no es válida.")
+    try:
+        organic_ids = tuple(
+            uuid.UUID(value) for value in organic.split(",") if value.strip()
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422, detail="La lista de resultados orgánicos no es válida."
+        ) from exc
+    session_value, bot, internal = _measurement_context(request)
+    async with request.app.state.database.session_scope() as session:
+        result = await PublicSponsored(session, await _actor(session)).for_surface(
+            surface=surface,
+            at=utc_now(),
+            visible_results=visible_results,
+            organic_listing_ids=organic_ids,
+            session_value=session_value,
+            bot=bot,
+            internal=internal,
+        )
+        await session.commit()
+        return _json(result)
+
+
+@router.post("/sponsored/visible", status_code=202)
+async def visible_impression(
+    request: Request, body: VisibleImpressionBody
+) -> JSONResponse:
+    session_value, bot, internal = _measurement_context(request)
+    try:
+        async with request.app.state.database.session_scope() as session:
+            counted = await PublicSponsored(
+                session, await _actor(session)
+            ).count_visible(
+                campaign_id=body.campaign_id,
+                listing_id=body.listing_id,
+                surface=body.surface,
+                visible_fraction=body.visible_fraction,
+                continuous_milliseconds=body.continuous_milliseconds,
+                session_value=session_value,
+                at=body.occurred_at,
+                bot=bot,
+                internal=internal,
+            )
+            await session.commit()
+            return _json({"counted": counted}, status_code=202)
+    except (ValueError, CommercialError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/measurement/listing-open", status_code=202)
+async def listing_open(request: Request, body: ListingOpenBody) -> JSONResponse:
+    session_value, bot, internal = _measurement_context(request)
+    try:
+        async with request.app.state.database.session_scope() as session:
+            recorded = await PublicMeasurement(
+                session, await _actor(session)
+            ).listing_open(
+                ListingOpen(
+                    **body.model_dump(),
+                    session_value=session_value,
+                    bot=bot,
+                    internal=internal,
+                )
+            )
+            await session.commit()
+            return _json({"recorded": recorded}, status_code=202)
+    except (ValueError, CommercialError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/measurement/gallery-depth", status_code=202)
+async def gallery_depth(request: Request, body: GalleryDepthBody) -> JSONResponse:
+    session_value, bot, internal = _measurement_context(request)
+    try:
+        async with request.app.state.database.session_scope() as session:
+            outcome = await PublicMeasurement(
+                session, await _actor(session)
+            ).gallery_depth(
+                GalleryDepth(
+                    **body.model_dump(),
+                    session_value=session_value,
+                    bot=bot,
+                    internal=internal,
+                )
+            )
+            await session.commit()
+            return _json(outcome, status_code=202)
+    except (ValueError, CommercialError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/sponsorship-report/{token}")
+async def sponsorship_report(request: Request, token: str) -> JSONResponse:
+    """The buyer report behind one expiring link, as aggregate lines.
+
+    Rendered to the same lines the PDF uses rather than to the report object:
+    the buyer surface must not be able to grow a field by somebody adding one to
+    the dataclass.
+    """
+    try:
+        async with request.app.state.database.session_scope() as session:
+            report = await SponsorshipSharing(session, await _actor(session)).resolve(
+                token, at=utc_now()
+            )
+            await session.commit()
+            return _json(
+                {
+                    "label": report.label,
+                    "listing_title": report.listing_title,
+                    "period_start": report.period_start,
+                    "period_end": report.period_end,
+                    "definition_version": report.definition_version,
+                    "lines": [
+                        {"text": line.text, "style": str(line.style)}
+                        for line in report_lines(report)
+                    ],
+                }
+            )
+    except ShareUnavailable as exc:
+        raise HTTPException(status_code=410, detail=exc.message) from exc
+
+
+@router.get("/sponsorship-report/{token}/pdf")
+async def sponsorship_report_pdf(request: Request, token: str) -> Response:
+    try:
+        async with request.app.state.database.session_scope() as session:
+            report = await SponsorshipSharing(session, await _actor(session)).resolve(
+                token, at=utc_now()
+            )
+            content = report_pdf(report)
+            await session.commit()
+    except ShareUnavailable as exc:
+        raise HTTPException(status_code=410, detail=exc.message) from exc
+    return Response(
+        content,
+        media_type="application/pdf",
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": 'attachment; filename="reporte-patrocinada.pdf"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.get("/discovery/{listing_id}")

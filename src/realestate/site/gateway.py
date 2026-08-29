@@ -26,6 +26,7 @@ class ProductSiteGateway(Protocol):
         params: dict[str, Any] | None = None,
         body: dict[str, Any] | None = None,
         token_header: tuple[str, str] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> GatewayResponse: ...
 
     async def aclose(self) -> None: ...
@@ -48,12 +49,17 @@ class HttpProductSiteGateway:
         params: dict[str, Any] | None = None,
         body: dict[str, Any] | None = None,
         token_header: tuple[str, str] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> GatewayResponse:
-        headers = {"Authorization": f"Bearer {self._token}"}
+        # ``headers`` carries non-secret measurement context — the opaque
+        # session reference and the crawler flag. It is a separate argument from
+        # ``token_header`` so a caller adding measurement context cannot
+        # accidentally displace the Authorization header.
+        sent = {"Authorization": f"Bearer {self._token}", **(headers or {})}
         if token_header is not None:
-            headers[token_header[0]] = token_header[1]
+            sent[token_header[0]] = token_header[1]
         response = await self._client.request(
-            method, path, params=params, json=body, headers=headers
+            method, path, params=params, json=body, headers=sent
         )
         content_type = response.headers.get("content-type", "application/octet-stream")
         data: Any | None = None

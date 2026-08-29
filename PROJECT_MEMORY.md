@@ -765,12 +765,24 @@ WhatsApp handoffs are diagnostic funnel measures, not the final success metric.
 
 ## Current Stage
 
-Local Stage 7 reviewed reactivation and Development-campaign planning on top of
-the Stage 6 external-inventory boundary and Stage 4 authoritative catalog.
-Product proposes explainable work from confirmed demand, keeps every audience
-explicit and bounded, and routes accepted attempts through the existing outbound
-eligibility gate. Real Marketing dispatch remains `Denied`; legal, consent,
-provider, operational and real-customer acceptance remain explicitly unclaimed.
+Local Stage 8 adds measurement and one sellable paid-visibility offer on top of
+the Stage 7 engagement boundary. Product emits a versioned, idempotent domain-event
+taxonomy through a durable analytics Outbox, projects it into a separate
+pseudonymous PostgreSQL schema, and reports its own operation with "nobody
+recorded it" as a first-class answer. On that basis it sells a manually
+administered `Patrocinada` campaign whose placements are labelled, capped,
+equitably rotated and provably unable to influence organic relevance. The first
+price is deliberately unset: publishing one requires a written reference to
+measured pilot traffic. No money moves, no warehouse exists, and analytics
+retention remains an unresolved privacy and legal decision.
+
+Stage 7 remains as it was: reviewed reactivation and Development-campaign planning
+on top of the Stage 6 external-inventory boundary and Stage 4 authoritative
+catalog. Product proposes explainable work from confirmed demand, keeps every
+audience explicit and bounded, and routes accepted attempts through the existing
+outbound eligibility gate. Real Marketing dispatch remains `Denied`; legal,
+consent, provider, operational and real-customer acceptance remain explicitly
+unclaimed.
 
 Implemented locally:
 
@@ -939,6 +951,93 @@ Implemented locally:
   explicit Development audiences, limits and PII-safe results;
 - `MARKETING_OUTBOUND_ACTIVATED=false` as the default and current real-activation
   gate; fixture approvals and consent records verify contracts only.
+- a closed, additive `analytics-events-v1` domain-event taxonomy where every
+  event declares its schema version and its allowed attributes, and an attribute
+  that is not numeric, boolean or enumerated is refused rather than stored — so
+  no phone number, message or search phrase has a column it would fit in;
+- a durable `analytics.analytics_outbox`, deliberately separate from
+  `outbox_messages`, so a stuck measurement row never shares a queue, a retry
+  budget or a failure mode with a message somebody is waiting for;
+- `AnalyticsProjection.refresh`, which consumes in sequence order, leaves rows
+  `Pending` until the transaction that stores their event commits, inserts
+  idempotently, and *recomputes* each touched period rather than incrementing it
+  — so a restart repeats a batch, a replay from zero rebuilds the identical
+  store, and a late event corrects its own period instead of landing on today;
+- `analytics.measurement_definitions` seeded with `measurement-v1`: 50 percent
+  for 1000 continuous milliseconds for a Visible Impression, five photographs or
+  30 percent of a gallery for Significant Gallery Exploration, the eleven-step
+  funnel, 7- and 90-day attribution windows, one sponsored result per six visible
+  ones, two on the homepage, and three paid Visible Impressions per session per
+  day — all inclusive at the border and all read back so a historic report stays
+  reproducible;
+- Served Impression separated from Visible Impression: serving is Product's own
+  fact recorded server-side as the response is built, while visibility is a
+  browser measurement whose *threshold* Product applies, so a modified client
+  cannot manufacture one;
+- invalid traffic stored, classified and reported rather than deleted — bot, then
+  test, then internal, then implausible rate, in that fixed precedence — with
+  duplicate emissions counted on the Outbox row rather than silently dropped;
+- pseudonymisation with a separate salt per purpose, generated once per
+  Organization into the analytics schema rather than read from configuration, so
+  a session reference and a subject reference cannot be joined to link an
+  anonymous session to a known Contact;
+- an operational scorecard where `Sin registrar` is never zero and never a loss,
+  a ratio with no denominator reads `No calculable`, and Follow-up Coverage is
+  read from the one existing implementation rather than recomputed;
+- Administrator-recorded Harm Signals for the SAN-079 stop conditions, with
+  written evidence, idempotent on their command key;
+- `SponsoredEligibility.evaluate`, which reuses the same `PublicShare` decision
+  the unpaid site gets and adds only what money introduces: a written commercial
+  clearance standing in for the still-Pending SAN-065, one sponsored position per
+  confirmed physical Property, and the campaign's own state and remaining days —
+  with daily and per-exposure refusals recorded so a buyer's question has an
+  answer months later;
+- `SponsoredDelivery.select`, which returns paid slots as their own list and
+  leaves the organic ordering untouched: `PublicCatalog` imports nothing from
+  sponsorship and a test asserts that absence, so payment cannot buy relevance
+  even by accident;
+- deficit-based rotation (`delivered_days / paid_days` ascending), a durable
+  per-session daily cap, a skip for a Listing already visible organically on the
+  page, and an empty slot rather than a substitution when a Listing is withdrawn
+  mid-render;
+- `Patrocinada` rendered as a visible chip, an `aria-label` on the article and a
+  non-colour border on every paid exposure, with `Destacada` reserved for unpaid
+  editorial selection and absent from every sponsorship module;
+- an Administrator-managed versioned price catalog that cannot be published
+  without a written reference to pilot traffic — enforced by the module and by a
+  check constraint — with exactly one published version at a time;
+- `SponsorshipQuoting.quote`: seven-day validity, the catalog version and amounts
+  preserved on the row, a discount refused without a recorded reason, and no
+  capacity held until the quote is accepted;
+- two independent ceilings kept apart — the delivery ratio bounds what a page
+  shows, the sales ceiling bounds how many campaigns may hold a surface over the
+  same days — with reservations taken under a per-surface lock and peak overlap
+  deciding, so consecutive campaigns do not compete and concurrent acceptances
+  cannot oversell;
+- a campaign lifecycle where a paid day is consumed by being *delivered*, so a
+  Listing withdrawn for a week returns that week; automatic pause with recorded
+  reasons, automatic resume, completion with no successor, and no auto-renewal;
+- external collection state recorded as an observation: Product issues no
+  invoice, charges nothing and moves no money;
+- `SponsorshipReporting.generate`, one computation at two audiences, so the buyer
+  report and the Administrator report cannot disagree about the same month;
+- comparables grouped by operation, municipality, property type, Commercial Price
+  Band, Presentation Tier and surface, with the subject campaign excluded, period
+  and sample size disclosed, and `Estimación inicial sin historial suficiente`
+  below three comparable campaigns;
+- attribution reported inside the declared 7- and 90-day windows, never
+  overwriting first Opportunity Origin and never described as lift, with the
+  non-causal statement on every buyer surface;
+- expiring, revocable, read-only buyer links stored only as a `sha256` digest,
+  where expiry, revocation and an unknown token give the same refusal, and an
+  exportable PDF written by a small in-repository module rather than a new
+  dependency;
+- one opaque, HttpOnly, one-day site cookie used for exactly one thing — the
+  per-session cap — pseudonymised before anything derived from it is stored, and
+  explicitly not an advertising identifier;
+- Mexican-Spanish `/crm/bi` and `/crm/patrocinios` surfaces, both
+  Administrator-only, with the data-quality panel on the same page as the results
+  so a coverage number always appears next to how much of it is unrecorded.
 
 Not yet proven or claimed:
 
@@ -951,9 +1050,40 @@ Not yet proven or claimed:
   delivery;
 - multi-tenant operation;
 - horizontal scaling;
+- a real sponsorship sale, a measured pilot, or any published price;
 - self-managed multi-brokerage onboarding, billing, round-robin assignment, load
   scoring, automatic commissions, live EasyBroker activation, paid acquisition,
   and the data warehouse — all deliberately later stages.
+
+## Known Stage 8 Limitations
+
+- The first sponsorship price is not set and no catalog ships published. SAN-062
+  needs pilot clients, a defensible introductory price and conditions that allow
+  learning without giving the service away indefinitely. Until then quoting is
+  refused with that reason rather than offering an empty field.
+- SAN-065 is Pending: which defects of file, price, availability, photography or
+  owner relationship block accepting money is Santiago's to enumerate. Product
+  requires a written Administrator clearance in the meantime. That records
+  authority; it does not substitute for the rule.
+- SAN-059, SAN-061, SAN-063, SAN-064, SAN-066 and SAN-067 also remain Pending —
+  the likely buyer, the package shape, what a quote needs to close, whether
+  buyers will demand zone or period exclusivity, which figures convince, and when
+  renewal should be recommended.
+- Capacity defaults to two concurrent campaigns per surface, and the
+  measured-exposure forecast reports insufficient history below seven measured
+  days. Both are conservative Product choices, not measurements.
+- Analytics retention is unresolved. Event-level and aggregate retention is an
+  explicit privacy and legal decision (ADR-0044) and nothing in Stage 8 expires
+  an analytics row.
+- Browser acceptance remains manual. There is no browser automation in this
+  repository, so the visibility observer, the gallery-depth reporting and the
+  rendered contrast of the label are asserted at the contract and template level
+  only.
+- The reported numbers are all from synthetic fixtures. No real traffic, no real
+  buyer and no real campaign has been measured.
+- Auctions, pay-per-click billing, auto-renewal, payments, invoicing, tax
+  accounting, advertising profiles, session replay, cross-organization benchmarks
+  and a data warehouse are all deliberately absent.
 
 ## Known Stage 7 Limitations
 

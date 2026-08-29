@@ -29,6 +29,7 @@ from sqlalchemy import (
     Index,
     Integer,
     Numeric,
+    Sequence as SqlSequence,
     String,
     Text,
     UniqueConstraint,
@@ -4345,4 +4346,881 @@ class MarketingTouch(Base):
             "contact_id",
             "recorded_at",
         ),
+    )
+
+
+# --- Stage 8: analytics taxonomy and sponsorship ---------------------------
+#
+# Two families of tables arrive together because they answer one question from
+# opposite ends. The ``analytics`` PostgreSQL schema holds pseudonymous
+# measurement; the sponsorship tables in the product schema hold the commercial
+# agreement that measurement is sold against. They are deliberately separate
+# schemas: an analytics query must not be able to reach a Contact, and a
+# commercial query must not be able to reach raw behaviour (ADR-0044).
+ANALYTICS_SCHEMA = "analytics"
+
+#: The PostgreSQL sequence that orders analytics emission. Declared once, at
+#: module level, because ``AnalyticsEvents.record`` reads the next value
+#: explicitly: a sequence default on a non-primary-key column is inlined into
+#: the INSERT without RETURNING, so the row would come back with the attribute
+#: unloaded and reading it inside the async worker raises ``MissingGreenlet``
+#: instead of returning a number.
+ANALYTICS_OUTBOX_SEQUENCE = SqlSequence(
+    "analytics_outbox_sequence", schema=ANALYTICS_SCHEMA
+)
+
+
+class AnalyticsEventName(str, enum.Enum):
+    """The versioned domain-event taxonomy.
+
+    Additive only. A name is never repurposed and never deleted, because a
+    historic report reproduced from stored definitions has to keep meaning what
+    it meant when it was generated.
+    """
+
+    SPONSORED_SERVED_IMPRESSION = "SponsoredServedImpression"
+    SPONSORED_VISIBLE_IMPRESSION = "SponsoredVisibleImpression"
+    LISTING_OPENED = "ListingOpened"
+    GALLERY_OPENED = "GalleryOpened"
+    GALLERY_DEPTH_REACHED = "GalleryDepthReached"
+    SIGNIFICANT_GALLERY_EXPLORATION = "SignificantGalleryExploration"
+    LISTING_SAVED = "ListingSaved"
+    SELECTION_SHARED = "SelectionShared"
+    MAIA_STARTED = "MaiaStarted"
+    WHATSAPP_HANDOFF = "WhatsAppHandoff"
+    APPOINTMENT_REQUESTED = "AppointmentRequested"
+    APPOINTMENT_VERIFIED = "AppointmentVerified"
+    APPOINTMENT_ATTENDED = "AppointmentAttended"
+    OPPORTUNITY_OUTCOME_KNOWN = "OpportunityOutcomeKnown"
+    FIRST_RESPONSE_RECORDED = "FirstResponseRecorded"
+    OPPORTUNITY_QUALIFIED = "OpportunityQualified"
+    HARM_SIGNAL_RECORDED = "HarmSignalRecorded"
+
+
+class AnalyticsOutboxStatus(str, enum.Enum):
+    """Where one enqueued analytics event is in its durable hand-off."""
+
+    PENDING = "Pending"
+    PROJECTED = "Projected"
+    REJECTED = "Rejected"
+
+
+class TrafficClass(str, enum.Enum):
+    """Why an event does or does not count toward a reported metric.
+
+    Everything is stored. Only ``Valid`` is aggregated, and the remainder is
+    reported as excluded volume rather than quietly discarded: an unexplained
+    gap between raw and reported numbers is how measurement loses its
+    credibility.
+    """
+
+    VALID = "Valid"
+    BOT = "Bot"
+    INTERNAL = "Internal"
+    TEST = "Test"
+    IMPLAUSIBLE = "Implausible"
+
+
+class SponsoredSurface(str, enum.Enum):
+    """A defined public discovery surface a Sponsored Placement may occupy."""
+
+    SEARCH = "Search"
+    HOMEPAGE = "Homepage"
+
+
+class SponsorshipCampaignStatus(str, enum.Enum):
+    """The accepted campaign states (ADR-0043)."""
+
+    DRAFT = "Draft"
+    QUOTED = "Quoted"
+    RESERVED = "Reserved"
+    SCHEDULED = "Scheduled"
+    ACTIVE = "Active"
+    PAUSED = "Paused"
+    COMPLETED = "Completed"
+    CANCELLED = "Cancelled"
+
+
+class SponsorshipQuoteStatus(str, enum.Enum):
+    """A quote's own lifecycle. Issuing one never reserves capacity."""
+
+    ISSUED = "Issued"
+    EXPIRED = "Expired"
+    RESERVED = "Reserved"
+    CANCELLED = "Cancelled"
+
+
+class PriceCatalogStatus(str, enum.Enum):
+    """An Administrator-managed price catalog version."""
+
+    DRAFT = "Draft"
+    PUBLISHED = "Published"
+    RETIRED = "Retired"
+
+
+class CollectionState(str, enum.Enum):
+    """Externally recorded collection state. Product moves no money."""
+
+    NOT_INVOICED = "NotInvoiced"
+    AWAITING_PAYMENT = "AwaitingPayment"
+    COLLECTED = "Collected"
+    WAIVED = "Waived"
+    UNCOLLECTIBLE = "Uncollectible"
+
+
+class ReportAudience(str, enum.Enum):
+    """Who a generated sponsorship report is for."""
+
+    BUYER = "Buyer"
+    ADMINISTRATOR = "Administrator"
+
+
+class HarmSignalKind(str, enum.Enum):
+    """The pilot's stop-condition signals (SAN-079)."""
+
+    WRONG_INFORMATION = "WrongInformation"
+    COMPLAINT = "Complaint"
+    UNTIMELY_MESSAGE = "UntimelyMessage"
+    ASSIGNMENT_FAILURE = "AssignmentFailure"
+    INCORRECT_APPOINTMENT = "IncorrectAppointment"
+    OPERATIONAL_OVERLOAD = "OperationalOverload"
+
+
+class PseudonymSalt(Base):
+    """A per-Organization, per-purpose salt. Never leaves the database.
+
+    Pseudonymisation needs a stable key so the same anonymous session maps to
+    the same reference twice, and a secret one so the mapping cannot be
+    reversed by anybody holding the analytics rows. Generating it here rather
+    than reading it from configuration means no deployment can accidentally run
+    with an empty or shared salt.
+    """
+
+    __tablename__ = "pseudonym_salts"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    purpose: Mapped[str] = mapped_column(String(30), nullable=False)
+    salt: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("organization_id", "purpose", name="uq_pseudonym_salt_purpose"),
+        {"schema": ANALYTICS_SCHEMA},
+    )
+
+
+class MeasurementDefinition(Base):
+    """One frozen version of every counting rule a report may depend on.
+
+    Stored rather than compiled in, because ADR-0044 requires a report issued in
+    March to still reproduce in September after the visibility threshold moved.
+    """
+
+    __tablename__ = "measurement_definitions"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    version: Mapped[str] = mapped_column(String(40), nullable=False, unique=True)
+    definition: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    effective_from: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    retired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = ({"schema": ANALYTICS_SCHEMA},)
+
+
+class AnalyticsOutboxEntry(Base):
+    """The durable analytics Outbox: emission separated from projection.
+
+    Deliberately not ``outbox_messages``. That table is the customer-facing
+    delivery contract and a stuck analytics row must never share a queue, a
+    retry budget or a failure mode with a message somebody is waiting for.
+    """
+
+    __tablename__ = "analytics_outbox"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    # A PostgreSQL sequence, not the primary key. Emission order is what
+    # ``AnalyticsProjection`` replays and resumes from, and a UUID cannot be
+    # ordered; sharing the key with the identity would also mean a gap-free
+    # counter nobody needs.
+    sequence: Mapped[int] = mapped_column(
+        BigInteger, ANALYTICS_OUTBOX_SEQUENCE, nullable=False, unique=True
+    )
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    event_key: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
+    event_name: Mapped[str] = mapped_column(String(60), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    taxonomy_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=AnalyticsOutboxStatus.PENDING.value
+    )
+    duplicate_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    enqueued_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    projected_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('Pending', 'Projected', 'Rejected')",
+            name="ck_analytics_outbox_status",
+        ),
+        Index("ix_analytics_outbox_drain", "status", "sequence"),
+        {"schema": ANALYTICS_SCHEMA},
+    )
+
+
+class AnalyticsDomainEvent(Base):
+    """One immutable pseudonymous event record.
+
+    No Contact id, no phone number, no message text, no free-text attribute.
+    ``subject_reference`` and ``session_reference`` are salted digests, so a
+    funnel can be followed without anybody being identified from these rows.
+    """
+
+    __tablename__ = "domain_events"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    event_key: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
+    event_name: Mapped[str] = mapped_column(String(60), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    taxonomy_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    definition_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    traffic_class: Mapped[str] = mapped_column(String(20), nullable=False)
+    exclusion_reason: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    subject_reference: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    session_reference: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    listing_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    campaign_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    surface: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    placement_position: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    sponsored: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    attributes: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    projected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "traffic_class IN ('Valid', 'Bot', 'Internal', 'Test', 'Implausible')",
+            name="ck_domain_events_traffic_class",
+        ),
+        Index("ix_domain_events_funnel", "organization_id", "occurred_at", "event_name"),
+        Index("ix_domain_events_campaign", "campaign_id", "event_name", "occurred_at"),
+        Index("ix_domain_events_sequence", "sequence"),
+        {"schema": ANALYTICS_SCHEMA},
+    )
+
+
+class AnalyticsProjectionRun(Base):
+    """What one projection pass consumed, and what it had to fold back in."""
+
+    __tablename__ = "projection_runs"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    definition_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    from_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    last_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    projected_events: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    late_events: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    excluded_events: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rebuilt_periods: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    ran_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        Index("ix_projection_runs_version", "definition_version", "ran_at"),
+        {"schema": ANALYTICS_SCHEMA},
+    )
+
+
+class AnalyticsFunnelAggregate(Base):
+    """One versioned daily aggregate cell. Recomputed, never incremented.
+
+    Recomputation is what makes a late event correct instead of lost: the pass
+    rebuilds every period an arriving event belongs to rather than adding to a
+    counter that has already been reported.
+    """
+
+    __tablename__ = "funnel_aggregates"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    definition_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    period_start: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    grain: Mapped[str] = mapped_column(String(10), nullable=False, default="day")
+    campaign_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    listing_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    surface: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    sponsored: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    counts: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    excluded_counts: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    refreshed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "definition_version",
+            "organization_id",
+            "grain",
+            "period_start",
+            "campaign_id",
+            "listing_id",
+            "surface",
+            "sponsored",
+            name="uq_funnel_aggregate_cell",
+        ),
+        Index(
+            "ix_funnel_aggregates_read",
+            "definition_version",
+            "organization_id",
+            "period_start",
+        ),
+        {"schema": ANALYTICS_SCHEMA},
+    )
+
+
+class SponsorshipPriceCatalog(Base):
+    """An Administrator-managed, versioned price catalog.
+
+    ``pilot_evidence`` is required to publish. ADR-0043 says the first price
+    follows measured pilot traffic, and a nullable note nobody has to fill in
+    would let an invented number become the published price on the first day.
+    """
+
+    __tablename__ = "sponsorship_price_catalogs"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    version: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=PriceCatalogStatus.DRAFT.value
+    )
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="MXN")
+    pilot_evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    retired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('Draft', 'Published', 'Retired')",
+            name="ck_price_catalog_status",
+        ),
+        CheckConstraint(
+            "status <> 'Published' OR (pilot_evidence IS NOT NULL "
+            "AND length(btrim(pilot_evidence)) > 0)",
+            name="ck_price_catalog_pilot_evidence",
+        ),
+        UniqueConstraint("organization_id", "version", name="uq_price_catalog_version"),
+    )
+
+
+class SponsorshipPriceItem(Base):
+    """One priced package inside one catalog version."""
+
+    __tablename__ = "sponsorship_price_items"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    catalog_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sponsorship_price_catalogs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    package: Mapped[str] = mapped_column(String(20), nullable=False)
+    duration_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "package IN ('Search', 'Homepage', 'Both')",
+            name="ck_price_item_package",
+        ),
+        CheckConstraint(
+            "duration_days > 0 AND amount >= 0", name="ck_price_item_amounts"
+        ),
+        UniqueConstraint(
+            "catalog_id", "package", "duration_days", name="uq_price_item_package"
+        ),
+    )
+
+
+class SponsorshipSurfaceCapacity(Base):
+    """How many sponsored slots per day one surface may sell.
+
+    An explicit Administrator number rather than a derived one. The delivery
+    ratios in ADR-0043 bound what a *page* shows; what may be *sold* also
+    depends on measured traffic, and until the pilot supplies it the honest
+    answer is a small number somebody chose on purpose.
+    """
+
+    __tablename__ = "sponsorship_surface_capacity"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    surface: Mapped[str] = mapped_column(String(20), nullable=False)
+    concurrent_campaigns: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "surface IN ('Search', 'Homepage')", name="ck_surface_capacity_surface"
+        ),
+        CheckConstraint(
+            "concurrent_campaigns >= 0", name="ck_surface_capacity_positive"
+        ),
+        UniqueConstraint(
+            "organization_id", "surface", name="uq_surface_capacity_surface"
+        ),
+    )
+
+
+class SponsorshipCampaign(Base):
+    """One bounded commercial agreement over one eligible source Listing."""
+
+    __tablename__ = "sponsorship_campaigns"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    listing_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("catalog_listings.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    buyer_kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    buyer_label: Mapped[str] = mapped_column(String(160), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=SponsorshipCampaignStatus.DRAFT.value
+    )
+    package: Mapped[str] = mapped_column(String(20), nullable=False)
+    paid_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    delivered_days: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    starts_on: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    price_amount: Mapped[Decimal | None] = mapped_column(
+        Numeric(12, 2), nullable=True
+    )
+    price_currency: Mapped[str] = mapped_column(String(3), nullable=False, default="MXN")
+    catalog_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sponsorship_price_catalogs.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    collection_state: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=CollectionState.NOT_INVOICED.value
+    )
+    collection_reference: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    commercial_clearance: Mapped[str | None] = mapped_column(Text, nullable=True)
+    paused_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    paused_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    activated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    cancelled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('Draft', 'Quoted', 'Reserved', 'Scheduled', 'Active', "
+            "'Paused', 'Completed', 'Cancelled')",
+            name="ck_sponsorship_campaign_status",
+        ),
+        CheckConstraint(
+            "package IN ('Search', 'Homepage', 'Both')",
+            name="ck_sponsorship_campaign_package",
+        ),
+        CheckConstraint(
+            "buyer_kind IN ('Owner', 'Developer', 'Collaborator')",
+            name="ck_sponsorship_campaign_buyer_kind",
+        ),
+        CheckConstraint(
+            "collection_state IN ('NotInvoiced', 'AwaitingPayment', 'Collected', "
+            "'Waived', 'Uncollectible')",
+            name="ck_sponsorship_campaign_collection",
+        ),
+        CheckConstraint(
+            "paid_days > 0 AND delivered_days >= 0 AND delivered_days <= paid_days",
+            name="ck_sponsorship_campaign_days",
+        ),
+        Index(
+            "ix_sponsorship_campaigns_work", "organization_id", "status", "created_at"
+        ),
+    )
+
+
+class SponsorshipQuote(Base):
+    """A seven-day priced offer that preserves its catalog version."""
+
+    __tablename__ = "sponsorship_quotes"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    campaign_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sponsorship_campaigns.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    catalog_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sponsorship_price_catalogs.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    catalog_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    package: Mapped[str] = mapped_column(String(20), nullable=False)
+    duration_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    list_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    discount_amount: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), nullable=False, default=Decimal("0")
+    )
+    discount_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    total_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="MXN")
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=SponsorshipQuoteStatus.ISSUED.value
+    )
+    issued_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    issued_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    reserved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    command_key: Mapped[str] = mapped_column(String(200), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('Issued', 'Expired', 'Reserved', 'Cancelled')",
+            name="ck_sponsorship_quote_status",
+        ),
+        CheckConstraint(
+            "discount_amount >= 0 AND list_amount >= 0 AND total_amount >= 0 "
+            "AND total_amount = list_amount - discount_amount",
+            name="ck_sponsorship_quote_amounts",
+        ),
+        CheckConstraint(
+            "discount_amount = 0 OR (discount_reason IS NOT NULL "
+            "AND length(btrim(discount_reason)) > 0)",
+            name="ck_sponsorship_quote_discount_reason",
+        ),
+        UniqueConstraint(
+            "organization_id", "command_key", name="uq_sponsorship_quote_command"
+        ),
+        Index("ix_sponsorship_quotes_campaign", "campaign_id", "issued_at"),
+    )
+
+
+class SponsorshipCapacityReservation(Base):
+    """One campaign's hold on one surface for a date range.
+
+    Created when a quote is accepted, never when it is issued: ADR-0043 says a
+    quote expires without reserving capacity, and the whole point of a separate
+    row is that an unaccepted offer cannot make the surface look sold out.
+    """
+
+    __tablename__ = "sponsorship_capacity_reservations"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    campaign_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sponsorship_campaigns.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    surface: Mapped[str] = mapped_column(String(20), nullable=False)
+    starts_on: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ends_on: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    released_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "surface IN ('Search', 'Homepage')", name="ck_capacity_reservation_surface"
+        ),
+        CheckConstraint("ends_on > starts_on", name="ck_capacity_reservation_range"),
+        UniqueConstraint(
+            "campaign_id", "surface", name="uq_capacity_reservation_campaign_surface"
+        ),
+        Index(
+            "ix_capacity_reservation_window",
+            "organization_id",
+            "surface",
+            "starts_on",
+            "ends_on",
+        ),
+    )
+
+
+class SponsoredEligibilityRecord(Base):
+    """Every recorded daily or per-exposure eligibility decision.
+
+    Kept because a paused campaign has to be explainable months later: the buyer
+    asks why five days were not delivered, and "the Listing lost its authority
+    evidence on the 12th" is an answer only a stored decision can give.
+    """
+
+    __tablename__ = "sponsored_eligibility_records"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    campaign_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sponsorship_campaigns.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    scope: Mapped[str] = mapped_column(String(20), nullable=False)
+    surface: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    eligible: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    reasons: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    service_date: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    decided_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint("scope IN ('Daily', 'Exposure')", name="ck_eligibility_scope"),
+        UniqueConstraint(
+            "campaign_id", "scope", "service_date", name="uq_eligibility_daily"
+        ),
+        Index("ix_eligibility_records_campaign", "campaign_id", "decided_at"),
+    )
+
+
+class SponsorshipDeliveryDay(Base):
+    """One service date, and whether it consumed a paid day."""
+
+    __tablename__ = "sponsorship_delivery_days"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    campaign_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sponsorship_campaigns.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    service_date: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    counted: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    reason: Mapped[str] = mapped_column(String(60), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "service_date", name="uq_delivery_day"),
+    )
+
+
+class SponsoredExposureCounter(Base):
+    """The per-session daily Visible Impression cap, counted durably.
+
+    A counter rather than a scan over the analytics events: the cap is a
+    delivery decision made before the page renders, and delivery must not
+    depend on the projection having already run.
+    """
+
+    __tablename__ = "sponsored_exposure_counters"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    listing_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("catalog_listings.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    session_reference: Mapped[str] = mapped_column(String(64), nullable=False)
+    service_date: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    visible_impressions: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "listing_id",
+            "session_reference",
+            "service_date",
+            name="uq_sponsored_exposure_counter",
+        ),
+    )
+
+
+class SponsorshipReportLink(Base):
+    """A revocable expiring read-only buyer link. Never a CRM account.
+
+    Only the digest is stored, for the same reason a password is not: an
+    operator reading the table must not be able to reconstruct a live link into
+    somebody's campaign report.
+    """
+
+    __tablename__ = "sponsorship_report_links"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    campaign_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sponsorship_campaigns.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    token_digest: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    definition_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_viewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    views: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        CheckConstraint("expires_at > created_at", name="ck_report_link_expiry"),
+        Index("ix_report_links_campaign", "campaign_id", "created_at"),
+    )
+
+
+class HarmSignal(Base):
+    """One recorded pilot harm signal (SAN-079).
+
+    A separate table rather than a column on the Opportunity: several of these
+    have no Opportunity at all — an untimely message, an operational overload —
+    and the pilot's stop condition needs to count them anyway.
+    """
+
+    __tablename__ = "harm_signals"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(30), nullable=False)
+    opportunity_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("opportunities.id", ondelete="SET NULL"), nullable=True
+    )
+    recorded_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    evidence: Mapped[str] = mapped_column(Text, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    command_key: Mapped[str] = mapped_column(String(200), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('WrongInformation', 'Complaint', 'UntimelyMessage', "
+            "'AssignmentFailure', 'IncorrectAppointment', 'OperationalOverload')",
+            name="ck_harm_signal_kind",
+        ),
+        UniqueConstraint(
+            "organization_id", "command_key", name="uq_harm_signal_command"
+        ),
+        Index("ix_harm_signals_period", "organization_id", "occurred_at", "kind"),
     )

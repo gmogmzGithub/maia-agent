@@ -33,6 +33,7 @@ from realestate.site.templates import (
     gallery,
     handoff_page,
     home,
+    report_page,
     saved_page,
     search_page,
     shared_page,
@@ -42,6 +43,18 @@ from realestate.site.templates import (
 
 SAVED_COOKIE = "larevia_saved"
 CONVERSATION_COOKIE = "larevia_conversation"
+
+#: An opaque per-browser reference used for one thing only: the per-session
+#: daily cap on paid Visible Impressions (ADR-0043). It is random, carries no
+#: identity, is never joined to a Contact, and Product pseudonymises it before
+#: storing anything derived from it. It is not an advertising identifier and
+#: there is no profile behind it.
+SESSION_COOKIE = "larevia_sesion"
+
+#: Shorter than the saved-collection cookie on purpose. A frequency cap needs a
+#: session, not a year-long identity.
+SESSION_COOKIE_MAX_AGE = 24 * 60 * 60
+
 COOKIE_MAX_AGE = 365 * 24 * 60 * 60
 LOCAL_PAGES = {
     "guadalajara": "Guadalajara",
@@ -96,6 +109,56 @@ def _token_header(name: str, token: str | None) -> tuple[str, str] | None:
     return (name, token) if token else None
 
 
+def _crawler(user_agent: str) -> bool:
+    """Whether the caller names itself a crawler.
+
+    Decided here and sent to Product as a boolean. The user-agent string itself
+    never crosses the boundary, so no analytics row can hold one: excluding bot
+    traffic must not become a reason to store a device fingerprint.
+    """
+    folded = user_agent.casefold()
+    return any(
+        token in folded
+        for token in (
+            "bot",
+            "crawler",
+            "spider",
+            "slurp",
+            "headlesschrome",
+            "python-requests",
+            "curl/",
+            "wget/",
+        )
+    )
+
+
+def _measurement_headers(request: Request) -> dict[str, str]:
+    """The session reference and crawler flag Product needs for capping."""
+    headers = {"X-Crawler": "true" if _crawler(request.headers.get("user-agent", "")) else "false"}
+    reference = request.cookies.get(SESSION_COOKIE)
+    if reference:
+        headers["X-Session-Reference"] = reference
+    return headers
+
+
+def _set_session_cookie(response: Response, request: Request) -> str:
+    """Ensure the browser has a capping reference, minting one if needed."""
+    existing = request.cookies.get(SESSION_COOKIE)
+    if existing:
+        return existing
+    minted = uuid.uuid4().hex
+    response.set_cookie(
+        SESSION_COOKIE,
+        minted,
+        max_age=SESSION_COOKIE_MAX_AGE,
+        secure=True,
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+    return minted
+
+
 def _set_cookie(response: Response, name: str, token: str | None) -> None:
     if token:
         response.set_cookie(
@@ -147,7 +210,10 @@ def create_site_app(
         )
         listings = list(_data(result).get("listings") or []) if result.status_code == 200 else []
         await _annotate_saved(listings, request, product)
-        body = home(listings)
+        sponsored = await _sponsored(
+            request, product, surface="Homepage", listings=listings
+        )
+        body = home(listings, sponsored)
         structured = {
             "@context": "https://schema.org",
             "@type": "WebSite",
@@ -155,7 +221,7 @@ def create_site_app(
             "url": configuration.site_public_origin,
             "inLanguage": "es-MX",
         }
-        return _html(
+        response = _html(
             document(
                 title="Larevia · Acompañamiento inmobiliario que sí continúa",
                 description=(
@@ -168,6 +234,8 @@ def create_site_app(
                 structured_data=structured,
             )
         )
+        _set_session_cookie(response, request)
+        return response
 
     @site.get("/propiedades", response_class=HTMLResponse)
     async def properties(request: Request) -> HTMLResponse:
@@ -194,13 +262,19 @@ def create_site_app(
             "total": 0,
             "query": params,
         }
-        await _annotate_saved(list(data.get("listings") or []), request, product)
+        listings = list(data.get("listings") or [])
+        await _annotate_saved(listings, request, product)
+        sponsored = await _sponsored(
+            request, product, surface="Search", listings=listings
+        )
         if result.status_code != 200:
-            body = search_page(data, query_string="")
+            body = search_page(data, query_string="", sponsored=sponsored)
         else:
-            body = search_page(data, query_string=str(request.url.query))
+            body = search_page(
+                data, query_string=str(request.url.query), sponsored=sponsored
+            )
         dynamic = bool(params)
-        return _html(
+        response = _html(
             document(
                 title="Propiedades autorizadas · Larevia",
                 description="Inventario autorizado y disponible de Larevia.",
@@ -211,6 +285,8 @@ def create_site_app(
             ),
             noindex=dynamic,
         )
+        _set_session_cookie(response, request)
+        return response
 
     @site.get("/zonas/{zone_slug}", response_class=HTMLResponse)
     async def local_page(request: Request, zone_slug: str) -> HTMLResponse:
@@ -276,7 +352,11 @@ def create_site_app(
             (item for item in listing.get("media", []) if item.get("is_cover")), None
         )
         primary = cover.get("url") if isinstance(cover, dict) else None
-        return _html(
+        # Recorded here, on the server, rather than from a beacon: serving the
+        # Technical Sheet is Product's own fact, and a script-dependent count
+        # would systematically under-report the slowest devices.
+        await _record_listing_open(request, product, str(listing["listing_id"]))
+        response = _html(
             document(
                 title=str(projection.get("title") or f"{listing['title']} · Larevia"),
                 description=str(
@@ -292,6 +372,8 @@ def create_site_app(
                 preload_image=f"{primary}?w=960" if primary else None,
             )
         )
+        _set_session_cookie(response, request)
+        return response
 
     @site.get("/propiedades/{slug}/galeria", response_class=HTMLResponse)
     async def property_gallery(request: Request, slug: str) -> HTMLResponse:
@@ -626,9 +708,119 @@ def create_site_app(
         except ValueError:
             return Response(status_code=400)
         result = await product.request(
-            "POST", "/internal/public-site/events", body=body
+            "POST",
+            "/internal/public-site/events",
+            body=body,
+            headers=_measurement_headers(request),
         )
         return Response(status_code=202 if result.status_code < 400 else 422)
+
+    @site.post("/medicion/galeria", status_code=202)
+    async def gallery_depth(request: Request) -> Response:
+        """Forward one gallery-depth observation. Product applies the threshold.
+
+        Two numbers only: how many photographs were reached and what share of
+        the gallery that is. No per-photograph timing, no scroll path, nothing
+        that would amount to a behavioural profile.
+        """
+        try:
+            body = await request.json()
+        except ValueError:
+            return Response(status_code=400)
+        result = await product.request(
+            "POST",
+            "/internal/public-site/measurement/gallery-depth",
+            body=body,
+            headers=_measurement_headers(request),
+        )
+        return Response(status_code=202 if result.status_code < 400 else 422)
+
+    @site.post("/patrocinadas/visible", status_code=202)
+    async def sponsored_visible(request: Request) -> Response:
+        """Forward one browser visibility observation. Product decides.
+
+        The page reports the measured fraction and duration; it never reports a
+        verdict. Product applies the versioned threshold, so a modified client
+        cannot manufacture Visible Impressions for a campaign.
+        """
+        try:
+            body = await request.json()
+        except ValueError:
+            return Response(status_code=400)
+        result = await product.request(
+            "POST",
+            "/internal/public-site/sponsored/visible",
+            body=body,
+            headers=_measurement_headers(request),
+        )
+        return Response(status_code=202 if result.status_code < 400 else 422)
+
+    @site.get("/reportes/{token}", response_class=HTMLResponse)
+    async def buyer_report(request: Request, token: str) -> HTMLResponse:
+        """One buyer's campaign report, reached by an expiring link only.
+
+        No account, no navigation into the rest of the site, and no cookie: the
+        link is the whole authorization and the page is the whole surface. A
+        withdrawn or expired link renders the same page as an unknown one.
+        """
+        result = await product.request(
+            "GET", f"/internal/public-site/sponsorship-report/{quote(token, safe='')}"
+        )
+        if result.status_code != 200:
+            return _html(
+                document(
+                    title="Reporte no disponible · Larevia",
+                    description="Este enlace de reporte ya no está disponible.",
+                    body=(
+                        '<section class="report-shell"><h1>Reporte no disponible</h1>'
+                        "<p>Este enlace expiró o fue revocado. Pide uno nuevo a "
+                        "Larevia.</p></section>"
+                    ),
+                    origin=configuration.site_public_origin,
+                    canonical_path="/",
+                    indexable=False,
+                ),
+                status_code=410,
+                private=True,
+                noindex=True,
+            )
+        data = _data(result)
+        return _html(
+            document(
+                title=f"Reporte de campaña {data.get('label')} · Larevia",
+                description="Reporte agregado de una campaña patrocinada.",
+                body=report_page(data, token=token),
+                origin=configuration.site_public_origin,
+                canonical_path="/",
+                indexable=False,
+            ),
+            private=True,
+            noindex=True,
+        )
+
+    @site.get("/reportes/{token}/patrocinio.pdf")
+    async def buyer_report_pdf(request: Request, token: str) -> Response:
+        result = await product.request(
+            "GET",
+            f"/internal/public-site/sponsorship-report/{quote(token, safe='')}/pdf",
+        )
+        if result.status_code != 200:
+            return PlainTextResponse(
+                "Este enlace de reporte ya no está disponible.",
+                status_code=410,
+                headers={"Cache-Control": "private, no-store"},
+            )
+        return Response(
+            result.content,
+            media_type="application/pdf",
+            headers={
+                "Cache-Control": "private, no-store",
+                "Content-Disposition": (
+                    'attachment; filename="reporte-patrocinada.pdf"'
+                ),
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     @site.get("/robots.txt", response_class=PlainTextResponse)
     async def robots(request: Request) -> PlainTextResponse:
@@ -783,6 +975,62 @@ async def _record_handoff_event(
             "occurred_at": datetime.now(tz=UTC).isoformat(),
         },
     )
+
+
+async def _record_listing_open(
+    request: Request, product: ProductSiteGateway, listing_id: str
+) -> None:
+    """Record one served Technical Sheet, keyed per session, listing and day.
+
+    A page reload inside the same session and day is the same open, which is
+    what keeps a refreshed tab from inflating a buyer's funnel. Failures are
+    ignored on purpose: measurement must never be able to break the page it is
+    measuring.
+    """
+    reference = request.cookies.get(SESSION_COOKIE) or "anon"
+    day = datetime.now(tz=UTC).date().isoformat()
+    await product.request(
+        "POST",
+        "/internal/public-site/measurement/listing-open",
+        body={
+            "event_key": f"open:{listing_id}:{reference}:{day}",
+            "listing_id": listing_id,
+            "surface": "TechnicalSheet",
+            "occurred_at": datetime.now(tz=UTC).isoformat(),
+        },
+        headers=_measurement_headers(request),
+    )
+
+
+async def _sponsored(
+    request: Request,
+    product: ProductSiteGateway,
+    *,
+    surface: str,
+    listings: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Ask Product for this surface's paid section.
+
+    A separate call from the catalog on purpose. The organic list the site
+    already holds is passed in only so Product can skip a card that is already
+    visible on the page; nothing about the paid answer can reorder it, and a
+    failed or empty answer simply means no sponsored section renders.
+    """
+    result = await product.request(
+        "GET",
+        "/internal/public-site/sponsored",
+        params={
+            "surface": surface,
+            "visible_results": len(listings),
+            "organic": ",".join(
+                str(item.get("listing_id")) for item in listings if item.get("listing_id")
+            ),
+        },
+        headers=_measurement_headers(request),
+    )
+    if result.status_code != 200:
+        return {}
+    return _data(result)
 
 
 async def _annotate_saved(

@@ -520,3 +520,29 @@ html[data-tier="SuperPremium"] .site-footer { background: #071612; }
   :root { --muted: #343d3a; --line: #665f55; }
   .button { border-width: 3px; }
 }
+
+/* --- Sponsored placement (ADR-0043) ------------------------------------- */
+/* The label is never decorative. It has its own contrast, it is not the only
+   signal (the card also carries an aria-label and a left border), and it stays
+   legible in forced-colours mode where a background alone would disappear. */
+.sponsored-section { border-top: 1px solid var(--rule, #ded7cc); padding-top: 28px }
+.sponsored-disclosure { max-width: 62ch; margin: 0 0 18px }
+.listing-card.sponsored { border-left: 4px solid #6b4f1d }
+.sponsored-mark { margin: 0 0 6px }
+.tag-sponsored {
+  display: inline-block; padding: 3px 10px; border-radius: 999px;
+  font-size: .74rem; font-weight: 700; letter-spacing: .04em;
+  text-transform: uppercase; color: #4a370f; background: #f6ecd2;
+  border: 1px solid #c8ab6a;
+}
+@media (forced-colors: active) {
+  .tag-sponsored { border: 1px solid CanvasText; color: CanvasText }
+  .listing-card.sponsored { border-left-color: CanvasText }
+}
+
+/* --- Buyer report page --------------------------------------------------- */
+.report-shell { max-width: 74ch; margin: auto; padding: 32px 20px }
+.report-shell h1 { margin-bottom: .2rem }
+.report-shell .report-line { margin: 0; padding: 3px 0 }
+.report-shell .report-heading { margin: 22px 0 4px; font-size: 1.05rem }
+.report-shell .report-actions { margin-top: 28px }

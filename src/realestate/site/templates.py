@@ -16,6 +16,13 @@ TYPE_LABELS = {
     "Land": "Terreno",
     "Development": "Desarrollo",
 }
+#: Paid visibility is always labelled, in every medium (ADR-0043). The strings
+#: mirror ``realestate.domain.sponsorship.labels``; the site process has no
+#: access to Product's domain modules, so the constants are restated with the
+#: contract test in ``tests/test_sponsored_surfaces.py`` keeping them identical.
+SPONSORED_LABEL = "Patrocinada"
+SPONSORED_ARIA_LABEL = "Publicación patrocinada, visibilidad pagada"
+
 FACT_LABELS = {
     "bedrooms": "Recámaras",
     "bathrooms": "Baños",
@@ -114,7 +121,51 @@ def document(
 </html>"""
 
 
-def home(listings: list[dict[str, Any]]) -> str:
+def sponsored_section(result: dict[str, Any]) -> str:
+    """The homepage's dedicated paid section, or nothing at all.
+
+    Its own section with its own heading rather than cards mixed into the
+    editorial selection: ADR-0043 gives the homepage a dedicated sponsored
+    section, and a visitor who has to compare chips to tell paid from unpaid has
+    not really been told.
+    """
+    cards = list(result.get("cards") or [])
+    if not cards:
+        return ""
+    rendered = "".join(
+        sponsored_card(card, surface="Homepage", position=index + 1)
+        for index, card in enumerate(cards)
+    )
+    return f"""
+<section class="section-shell sponsored-section" aria-labelledby="patrocinadas">
+  <div class="section-heading">
+    <div><p class="eyebrow">{escape(SPONSORED_LABEL)}</p>
+    <h2 id="patrocinadas">Propiedades con visibilidad patrocinada</h2></div>
+  </div>
+  <p class="muted sponsored-disclosure">{escape(result.get("disclosure"))}</p>
+  <div class="listing-grid">{rendered}</div>
+</section>"""
+
+
+def sponsored_card(
+    card: dict[str, Any], *, surface: str, position: int
+) -> str:
+    """One paid card: the organic card plus a label that cannot be turned off.
+
+    The label is rendered by this function and not passed in, so a caller cannot
+    render a sponsored card without it. It is a visible chip *and* an
+    ``aria-label`` on the article, because a screen-reader user who only hears
+    the title has not been told the placement was bought.
+    """
+    return listing_card(
+        dict(card.get("listing") or {}),
+        surface=surface,
+        sponsored_campaign_id=str(card.get("campaign_id") or ""),
+        sponsored_position=position,
+    )
+
+
+def home(listings: list[dict[str, Any]], sponsored: dict[str, Any] | None = None) -> str:
     featured = listings[0] if listings else None
     featured_cover = (
         next(
@@ -168,16 +219,21 @@ def home(listings: list[dict[str, Any]]) -> str:
 <section class="section-shell inventory-section" aria-labelledby="seleccion">
   <div class="section-heading"><div><p class="eyebrow">Selección actual</p><h2 id="seleccion">Propiedades para explorar</h2></div><a href="/propiedades">Ver todas</a></div>
   {inventory}
-</section>"""
+</section>
+{sponsored_section(sponsored or {})}"""
 
 
 def search_page(
-    result: dict[str, Any], *, query_string: str, heading: str = "Explorar propiedades"
+    result: dict[str, Any],
+    *,
+    query_string: str,
+    heading: str = "Explorar propiedades",
+    sponsored: dict[str, Any] | None = None,
 ) -> str:
     listings = list(result.get("listings") or [])
     total = int(result.get("total") or 0)
     query = result.get("query") or {}
-    results = cards_grid(listings, surface="Search")
+    results = search_results_grid(listings, sponsored or {})
     if not results:
         results = empty_state(
             "No encontramos propiedades con esos criterios",
@@ -225,8 +281,50 @@ def cards_grid(listings: list[dict[str, Any]], *, surface: str) -> str:
     return "".join(listing_card(item, surface=surface) for item in listings)
 
 
+def search_results_grid(
+    listings: list[dict[str, Any]], sponsored: dict[str, Any]
+) -> str:
+    """Organic results in their given order, with paid slots interleaved.
+
+    The organic list is rendered in exactly the order Product returned it. A
+    sponsored card is *inserted* at the head of each group of six — it never
+    displaces, reorders or replaces an organic result, which is the whole
+    separation ADR-0043 requires. Insert positions are computed from the group
+    size so a page with fewer results simply gets fewer paid slots.
+    """
+    cards = list(sponsored.get("cards") or [])
+    if not cards:
+        return cards_grid(listings, surface="Search")
+    out: list[str] = []
+    per_group = 6
+    for index, listing in enumerate(listings):
+        if index % per_group == 0 and cards:
+            card = cards.pop(0)
+            out.append(
+                sponsored_card(
+                    card, surface="Search", position=index // per_group + 1
+                )
+            )
+        out.append(listing_card(listing, surface="Search"))
+    # Anything the groups did not consume still belongs on the page: the slot
+    # count came from Product, so dropping one here would silently under-deliver
+    # a campaign somebody paid for.
+    for offset, card in enumerate(cards):
+        out.append(
+            sponsored_card(
+                card, surface="Search", position=len(listings) // per_group + offset + 1
+            )
+        )
+    return "".join(out)
+
+
 def listing_card(
-    listing: dict[str, Any], *, surface: str, already_saved: bool = False
+    listing: dict[str, Any],
+    *,
+    surface: str,
+    already_saved: bool = False,
+    sponsored_campaign_id: str = "",
+    sponsored_position: int = 0,
 ) -> str:
     already_saved = already_saved or bool(listing.get("_saved"))
     cover = next((item for item in listing.get("media", []) if item.get("is_cover")), None)
@@ -235,9 +333,24 @@ def listing_card(
     facts = characteristics(listing.get("physical_facts") or {}, limit=4)
     listing_id = escape(listing.get("listing_id"))
     slug = escape(listing.get("slug"))
-    return f"""<article class="listing-card" data-analytics="ListingImpression" data-listing-id="{listing_id}" data-surface="{escape(surface)}">
+    sponsored = bool(sponsored_campaign_id)
+    article_attributes = (
+        f' data-sponsored-campaign="{escape(sponsored_campaign_id)}"'
+        f' data-sponsored-position="{sponsored_position}"'
+        f' aria-label="{escape(SPONSORED_ARIA_LABEL)}"'
+        if sponsored
+        else ""
+    )
+    label = (
+        f'<p class="sponsored-mark"><span class="tag-sponsored">'
+        f"{escape(SPONSORED_LABEL)}</span></p>"
+        if sponsored
+        else ""
+    )
+    classes = "listing-card sponsored" if sponsored else "listing-card"
+    return f"""<article class="{classes}" data-analytics="ListingImpression" data-listing-id="{listing_id}" data-surface="{escape(surface)}"{article_attributes}>
 <a class="card-media" href="/propiedades/{slug}">{media}<span class="tier-mark">{escape(_tier_label(listing.get('presentation_tier')))}</span></a>
-<div class="card-body"><p class="location">{escape(listing.get('public_location') or 'Área Metropolitana de Guadalajara')}</p>
+<div class="card-body">{label}<p class="location">{escape(listing.get('public_location') or 'Área Metropolitana de Guadalajara')}</p>
 <h3><a href="/propiedades/{slug}">{escape(listing.get('title'))}</a></h3>
 <div class="offers">{offers}</div>{facts}
 {save_form(listing_id, return_to=f'/propiedades/{slug}', already_saved=already_saved)}
@@ -366,6 +479,37 @@ def unavailable_page() -> str:
 
 def handoff_page(reference: str, *, expires_at: str) -> str:
     return f"""<section class="section-shell handoff"><p class="eyebrow">Continuidad protegida</p><h1>Sigue en el WhatsApp oficial</h1><p>Envía esta referencia desde WhatsApp. No contiene tu nombre, teléfono ni conversación.</p><code>{escape(reference)}</code><p class="fine-print">La referencia vence {escape(expires_at)} y sólo puede usarse una vez.</p></section>"""
+
+
+def report_page(data: dict[str, Any], *, token: str) -> str:
+    """A buyer's campaign report as ordered lines, plus the PDF download.
+
+    Rendered from the line list Product produced rather than from a report
+    object, so this template cannot display a field the buyer view does not
+    already contain. It is the same list the PDF is built from, which is what
+    keeps the page and the file from ever disagreeing.
+    """
+    rendered: list[str] = []
+    for line in data.get("lines") or []:
+        text = str(line.get("text") or "")
+        style = str(line.get("style") or "body")
+        if not text:
+            continue
+        if style == "title":
+            rendered.append(f"<h1>{escape(text)}</h1>")
+        elif style == "heading":
+            rendered.append(f'<h2 class="report-heading">{escape(text)}</h2>')
+        else:
+            rendered.append(f'<p class="report-line">{escape(text)}</p>')
+    download = (
+        f'<a class="button button-secondary" '
+        f'href="/reportes/{escape(token)}/patrocinio.pdf">Descargar PDF</a>'
+    )
+    return f"""<section class="report-shell">
+<p class="eyebrow">{escape(data.get("label"))}</p>
+{"".join(rendered)}
+<div class="report-actions">{download}</div>
+</section>"""
 
 
 def empty_state(title: str, message: str, action: str = "") -> str:
