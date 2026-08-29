@@ -106,6 +106,17 @@ A person known to the real-estate operation across time, independently of how
 many searches, conversations, or transactions they pursue.
 _Avoid_: Lead, customer record, phone number
 
+**Customer Experience**:
+The quality of service a Contact receives from the Brokerage Organization across
+the real-estate journey, regardless of whether that Contact is buying, renting,
+selling, or offering a Property for rent.
+_Avoid_: Buyer experience, lead conversion, Maia conversation quality
+
+**Transaction Participant Role**:
+The capacity in which a Contact participates in one real-estate transaction,
+such as buyer, renter, seller, or landlord; it does not redefine the person.
+_Avoid_: Contact type, permanent customer segment, separate Customer record
+
 **Channel Identity**:
 One addressable identifier through which a Contact reaches the operation, with
 how well Product knows it is theirs. The same trusted identifier presented again
@@ -354,6 +365,99 @@ the Contact, Listing or Property, participants, dates, known price, attribution,
 and known commission facts.
 _Avoid_: Opportunity, appointment, conversation, commission payment
 
+**Transaction Journey**:
+The Product-authoritative course of a real-estate deal after an authorized member
+explicitly starts its formal processing, tracking the confirmed work owed through
+completion, cancellation, and aftercare.
+_Avoid_: Won Opportunity, chat workflow, inferred sale, legal advice
+
+**Transaction Journey Template Version**:
+One frozen, approved arrangement of milestones, dependencies, responsibilities,
+and customer communications from which a Transaction Journey is created.
+_Avoid_: Mutable checklist, universal legal process, Hermes prompt
+
+**Transaction Milestone**:
+One evidence-bearing step in a Transaction Journey, with an explicit responsible
+party, state, due time when applicable, and human-confirmed outcome.
+_Avoid_: Opportunity stage, message, model inference, generic task
+
+**Purchase Profile**:
+One purpose-bound, dated set of buyer facts recorded for a Demand Opportunity,
+separate from the Contact's durable identity and from profiles for other roles.
+_Avoid_: Contact type, permanent demographic truth, behavioural profile
+
+### Market intelligence
+
+**Market Intelligence**:
+The Product context that accumulates manually recorded facts from completed and
+in-progress real-estate deals so the business can compare Properties, prices,
+buyers, and areas across time.
+_Avoid_: Product analytics, external-data warehouse, advertising profile
+
+**Market Sale Record**:
+The dated analytical record of one sale pursued through the Platform, preserving
+the Property facts relevant to comparison and the known Paid Price, Published
+Price, and Appraisal Value without requiring all three.
+_Avoid_: Commercial Transaction, Listing, automated valuation, imported comparable
+
+**Market Sale Record in Preparation**:
+A Market Sale Record opened with a Transaction Journey and completed manually as
+the Brokerage Organization learns the appraisal, agreement, and closing facts.
+_Avoid_: Completed Sale, comparable sale, published Listing
+
+**Completed Market Sale Record**:
+A Market Sale Record an Organization Administrator has confirmed with a Paid
+Price, currency, completion date, and the minimum Property facts required for
+comparison.
+_Avoid_: Won Opportunity alone, sale in progress, asking-price observation
+
+**Paid Price**:
+The final amount the parties paid for a completed sale, recorded from the
+Brokerage Organization's own transaction evidence.
+_Avoid_: Published Price, Appraisal Value, estimated market price
+
+**Published Price**:
+The asking price at which the Property was publicly offered for the sale whose
+Market Sale Record is being described.
+_Avoid_: Paid Price, Appraisal Value, current Listing price after the sale
+
+**Appraisal Value**:
+The value stated by the appraisal used for the sale when the Brokerage
+Organization knows it.
+_Avoid_: Paid Price, Published Price, automated valuation
+
+**Shared Market Dataset**:
+The Platform-wide analytical collection produced from Market Sale Records and
+Purchase Profiles contributed by Brokerage Organizations, separate from their
+operational records and customer conversations.
+_Avoid_: Cross-Organization CRM access, shared Contact directory, external feed
+
+**Market Contribution**:
+The durable, replayable transfer of analytical fields from one Organization's
+Market Sale Record and Purchase Profile into the Shared Market Dataset, carrying
+no Contact identity, documents, or conversation content.
+_Avoid_: Cross-Organization query, customer export, external data import
+
+**Resolved Market Sale**:
+The single shared sale represented by one or more Market Contributions that a
+Market Intelligence Analyst has confirmed describe the same completed deal.
+_Avoid_: Deleted duplicate, automatic address match, individual contribution
+
+**Market Record Correction**:
+A database-attributed replacement of an incorrect current Market Sale Record or
+Purchase Profile value that preserves the prior value and republishes the fact.
+_Avoid_: Silent overwrite, correction UI, editing the shared copy directly
+
+**Market Intelligence Analyst**:
+An internal Platform role allowed to analyze the Shared Market Dataset but
+refused access to each Brokerage Organization's operational CRM records.
+_Avoid_: Organization Administrator, superadmin, support grant
+
+**Comparable Sale**:
+A Completed Market Sale Record selected by explicit report criteria as relevant
+to a subject Property; an unfinished deal is never a Comparable Sale.
+_Avoid_: Property for sale, appraisal, automatic valuation, sale in preparation
+
 **Commission Record**:
 The manually recorded expected, earned, and collected gross commission facts for
 a Transaction, without calculating participant payouts, taxes, or invoices.
@@ -371,6 +475,11 @@ _Avoid_: Model authority, arbitrary command, ambiguous request
 The physical real-estate asset or unit that may be represented by one or more
 commercial Listings.
 _Avoid_: Listing, advertisement, source record
+
+**Property Submission**:
+A property owner's private request for the Brokerage Organization to evaluate a
+Property for sale or rent; it is not a Listing and grants no publication authority.
+_Avoid_: Published Listing, automatic valuation, public property upload
 
 **Listing**:
 One source-specific commercial offering of a Property, with its own authority,

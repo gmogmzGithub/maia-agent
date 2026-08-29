@@ -90,6 +90,12 @@ class Settings(BaseSettings):
     # (ADR-0054). Unset means the platform surfaces refuse every request, which
     # is the right default for a local installation.
     platform_operator_token: str = Field(default="", alias="PLATFORM_OPERATOR_TOKEN")
+    # Separate from both Organization membership and Platform operations. An
+    # analyst may inspect only the contributed Shared Market Dataset; these
+    # credentials cannot resolve an Actor and therefore cannot read CRM data.
+    market_intelligence_basic_credentials_json: str = Field(
+        default="", alias="MARKET_INTELLIGENCE_BASIC_CREDENTIALS_JSON"
+    )
     # Where per-Organization export artifacts are written. A storage location,
     # not a credential.
     organization_export_root: str = Field(

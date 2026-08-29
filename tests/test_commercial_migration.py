@@ -30,7 +30,7 @@ NOW = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
 STAGE_1_HEAD = "0011_quarantine_legacy_outbound"
 CONTACTS_REVISION = "0012_organization_and_contacts"
 OPPORTUNITIES_REVISION = "0013_opportunities_and_actions"
-HEAD = "0027_stage8_measurement_repairs"
+HEAD = "0028_customer_market_intel"
 
 
 @pytest.fixture
@@ -640,7 +640,8 @@ def test_the_orm_metadata_matches_the_migrated_schema(at_stage_one) -> None:
     for row in _rows(
         engine,
         "SELECT table_schema, table_name, column_name FROM"
-        " information_schema.columns WHERE table_schema IN ('public', 'analytics')",
+        " information_schema.columns WHERE table_schema IN "
+        "('public', 'analytics', 'market_intelligence')",
     ):
         actual.setdefault((row[0], row[1]), set()).add(row[2])
 

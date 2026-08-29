@@ -25,6 +25,7 @@ from realestate.api import catalog as catalog_api
 from realestate.api import external_inventory as external_inventory_api
 from realestate.api import engagement as engagement_api
 from realestate.api import operations as operations_api
+from realestate.api import market_intelligence as market_intelligence_api
 from realestate.api import platform as platform_api
 from realestate.api import plugin as plugin_api
 from realestate.api import public_site as public_site_api
@@ -69,6 +70,7 @@ from realestate.worker.analytics import AnalyticsWorker
 from realestate.worker.engagement import EngagementWorker
 from realestate.worker.followups import LeadFollowUpWorker
 from realestate.worker.loop import BackgroundLoop, idle_tick
+from realestate.worker.market_intelligence import MarketIntelligenceWorker
 from realestate.worker.operations import OrganizationOperationsWorkers
 from realestate.worker.platform import PlatformWorker
 from realestate.worker.telegram import OrganizationTelegramAdminWorkers
@@ -365,6 +367,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # quote expiry. Paced by its own interval: a measurement pass has no
     # business running once a second.
     app.state.analytics_worker = AnalyticsWorker(database=app.state.database)
+    app.state.market_intelligence_worker = MarketIntelligenceWorker(
+        database=app.state.database
+    )
     # Support-grant expiry and the per-Organization usage projection. Its own
     # object because both rules outlive one tick and neither belongs to a
     # Brokerage Organization's own work.
@@ -401,6 +406,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ),
             ("reactivation and campaigns", app.state.engagement_worker.tick),
             ("analytics and sponsorship", app.state.analytics_worker.tick),
+            ("market intelligence projection", app.state.market_intelligence_worker.tick),
             ("platform upkeep", app.state.platform_worker.tick),
             ("human operations", app.state.operations_worker.tick),
             ("administrative", app.state.admin_worker.tick),
@@ -492,6 +498,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(analytics_api.router)
     app.include_router(sponsorship_api.router)
     app.include_router(operations_api.router)
+    app.include_router(market_intelligence_api.router)
     # Two routers from one module and deliberately so: the platform's own
     # surface authenticates with the platform credential, while the panel an
     # Organization Administrator reads authenticates as they always did.

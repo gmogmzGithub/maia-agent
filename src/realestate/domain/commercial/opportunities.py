@@ -740,6 +740,19 @@ class OpportunityManagement:
                 raise MissingEvidence(
                     "Describe la evidencia que respalda la operación concluida."
                 )
+            # ADR-0058 is a domain invariant, not a CRM-form validation. The
+            # buyer sale and the Won transition share this transaction, so a
+            # future API or script cannot close the Opportunity while bypassing
+            # the minimum analytical facts.
+            if (
+                opportunity.kind == OpportunityKind.DEMAND.value
+                and command.evidence is WonEvidence.COMPLETED_SALE
+            ):
+                from realestate.domain.market_intelligence import MarketRecords
+
+                await MarketRecords(self._session).complete_for_won(
+                    actor, opportunity.id
+                )
             opportunity.won_evidence = command.evidence.value
             opportunity.won_evidence_detail = command.evidence_detail.strip()
             opportunity.won_recorded_by = actor.member_id

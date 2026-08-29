@@ -916,8 +916,8 @@ async def test_a_won_outcome_counts_toward_completeness(database) -> None:
             admin,
             RecordWon(
                 opportunity_id=state.opportunity_id,
-                evidence=WonEvidence.COMPLETED_SALE,
-                evidence_detail="Escritura sintética de prueba",
+                evidence=WonEvidence.SIGNED_RENTAL_AGREEMENT,
+                evidence_detail="Contrato de renta sintético de prueba",
                 command_key="edges:won",
                 at=MOMENT,
             ),

@@ -308,8 +308,8 @@ async def test_a_won_opportunity_cannot_move_again(wired) -> None:
             admin,
             RecordWon(
                 opportunity_id=opportunity_id,
-                evidence=WonEvidence.COMPLETED_SALE,
-                evidence_detail="Escritura firmada ante notario 12.",
+                evidence=WonEvidence.SIGNED_RENTAL_AGREEMENT,
+                evidence_detail="Contrato de arrendamiento firmado.",
                 command_key="won:1",
             ),
         )

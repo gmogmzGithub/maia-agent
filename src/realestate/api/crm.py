@@ -20,10 +20,12 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, RedirectResponse
+from starlette.datastructures import FormData
 
 from realestate.api.operator import (
     redirect_back,
@@ -71,10 +73,17 @@ from realestate.db.models import (
     OpportunityStageTransition,
     OrganizationMember,
     PropertyNeedCriterion,
+    Property,
+    TransactionJourneyTemplateVersion,
     QUALIFIED_OR_BEYOND,
 )
 from realestate.api.operations import handling_panel, reply_form
-from realestate.domain.commercial.actors import Actor, CommercialError
+from realestate.domain.commercial.actors import (
+    Actor,
+    CommercialError,
+    InvalidTransition,
+    MissingEvidence,
+)
 from realestate.domain.commercial.handling import ConversationHandling
 from realestate.domain.commercial.handoff import HumanHandoff
 from realestate.domain.commercial.assignment import (
@@ -133,6 +142,19 @@ from realestate.domain.commercial.views import (
     CommercialInbox,
     InboxFilters,
     RestrictionView,
+)
+from realestate.domain.journeys import (
+    JourneyState,
+    JourneyTemplates,
+    JourneyWorkspace,
+    MILESTONE_STATE_LABELS,
+    MilestoneState,
+    TransactionJourneys,
+)
+from realestate.domain.market_intelligence import (
+    PROFILE_FIELDS,
+    SALE_FIELDS,
+    MarketRecords,
 )
 
 router = APIRouter(prefix="/crm", tags=["crm"])
@@ -956,6 +978,17 @@ async def opportunity_detail(
             if opportunity.responsible_advisor_id
             else None
         )
+        journey_workspace = await TransactionJourneys(session).for_opportunity(
+            actor, opportunity.id
+        )
+        journey_template = await JourneyTemplates(session).latest(actor)
+        journey_properties = list(
+            await session.scalars(
+                select(Property)
+                .where(Property.organization_id == actor.organization_id)
+                .order_by(Property.name)
+            )
+        )
 
     overdue = pending is not None and pending.due_at <= moment
     header = f"""<div><h2>Resumen</h2><dl class="pairs">
@@ -1052,6 +1085,13 @@ async def opportunity_detail(
             opportunity, pending, overdue, action_history, advisors, actor, moment
         )
         + _exception_card(opportunity, exception)
+        + _journey_card(
+            opportunity,
+            actor,
+            journey_workspace,
+            journey_template,
+            journey_properties,
+        )
         + _history_card(transitions)
         + "</div>"
     )
@@ -1097,6 +1137,13 @@ SAVED_MESSAGES = {
     "necesidad": "Se registró la necesidad del contacto.",
     "oportunidad": "Se abrió la oportunidad.",
     "asignada": "Se asignó la oportunidad.",
+    "template-borrador": "Se preparó el template de compra para revisión.",
+    "template-aprobado": "Se aprobó el template de compra.",
+    "tramite-iniciado": "Se inició el trámite de compra sin cambiar la etapa comercial.",
+    "hito": "Se guardó el estado confirmado del hito.",
+    "perfil-compra": "Se guardó el perfil de compra confirmado.",
+    "datos-venta": "Se guardaron los datos de venta confirmados.",
+    "tramite-concluido": "Se registró el resultado de la Jornada.",
 }
 
 
@@ -1600,6 +1647,160 @@ acción. Queda registrado con tu nombre.</p>
 Registrar excepción</button></div></form></div>"""
 
 
+def _form_value(value: object | None) -> str:
+    return "" if value is None else str(value)
+
+
+def _not_provided(name: str, states: dict[str, str]) -> str:
+    checked = " checked" if states.get(name) == "NotProvided" else ""
+    return (
+        f'<label class="checkbox"><input type="checkbox" name="np_{escape(name)}" '
+        f'value="1"{checked}> No proporcionado</label>'
+    )
+
+
+def _journey_card(
+    opportunity: Opportunity,
+    actor: Actor,
+    workspace: JourneyWorkspace | None,
+    template: TransactionJourneyTemplateVersion | None,
+    properties: list[Property],
+) -> str:
+    heading = '<div class="card"><h2>Trámite y datos de venta</h2>'
+    if opportunity.kind != OpportunityKind.DEMAND.value:
+        return heading + empty(
+            "La primera Jornada está disponible sólo para procesos de compra."
+        ) + "</div>"
+    if workspace is None:
+        if template is None:
+            controls = (
+                f'<form method="post" action="/crm/oportunidades/{opportunity.id}/tramite/template">'
+                f"{command_field()}<div class='actions'><button type='submit'>"
+                "Preparar template de compra para revisión</button></div></form>"
+                if actor.is_administrator
+                else flash(
+                    "Un administrador debe preparar y aprobar el template de compra.",
+                    "warn",
+                )
+            )
+            return heading + empty(
+                "Todavía no hay un template de compra.",
+                "Prepararlo no inicia ningún trámite ni envía mensajes.",
+            ) + controls + "</div>"
+        plan = "".join(
+            f"<li>{escape(item['name'])} · {escape(item['responsibility'])}</li>"
+            for item in template.plan
+        )
+        review = (
+            f"<p><strong>Template v{template.version}: {escape(template.name)}</strong> "
+            f"{tag('Aprobado' if template.state == 'Approved' else 'Borrador', 'ok' if template.state == 'Approved' else 'warn')}</p>"
+            f"<ol>{plan}</ol>"
+        )
+        if template.state == "Draft":
+            controls = (
+                f'<form method="post" action="/crm/oportunidades/{opportunity.id}/tramite/template/{template.id}/aprobar">'
+                f"{command_field()}<div class='actions'><button type='submit'>"
+                "Aprobar este template después de revisarlo</button></div></form>"
+                if actor.is_administrator
+                else flash("El template todavía no está aprobado.", "warn")
+            )
+        else:
+            controls = (
+                f'<form method="post" action="/crm/oportunidades/{opportunity.id}/tramite/iniciar">'
+                f"{command_field()}<div class='actions'><button type='submit'>"
+                "Iniciar trámite de compra</button></div></form>"
+            )
+        return (
+            heading
+            + review
+            + controls
+            + '<p class="hint">Iniciar el trámite no marca la oportunidad como Ganada.</p>'
+            + "</div>"
+        )
+
+    journey = workspace.journey
+    milestone_rows = "".join(
+        f"""<li class="card"><strong>{milestone.sequence}. {escape(milestone.name)}</strong>
+<p class="hint">Responsable: {escape(milestone.responsibility)} · Estado actual:
+{escape(MILESTONE_STATE_LABELS[milestone.state])}</p>
+<form method="post" action="/crm/oportunidades/{opportunity.id}/tramite/hitos/{milestone.id}">
+{command_field()}<div class="grid">
+<label>Estado<select name="estado" required>{options(tuple(MILESTONE_STATE_LABELS), milestone.state, MILESTONE_STATE_LABELS)}</select></label>
+<label>Evidencia<input name="evidencia" maxlength="500" value="{escape(milestone.evidence or '')}"></label>
+<label>Motivo<input name="motivo" maxlength="500" value="{escape(milestone.reason or '')}"></label>
+<label>Vence<input type="datetime-local" name="vence" value="{escape(datetime_input_value(milestone.due_at) if milestone.due_at else '')}"></label>
+</div><div class="actions"><button type="submit">Guardar hito</button></div></form></li>"""
+        for milestone in workspace.milestones
+    )
+    profile = workspace.profile
+    profile_form = f"""<details><summary>Perfil de compra</summary>
+<form method="post" action="/crm/oportunidades/{opportunity.id}/tramite/perfil">
+{command_field()}<div class="grid">
+<label>Año de nacimiento<input type="number" name="birth_year" min="1900" max="2100" value="{escape(_form_value(profile.birth_year))}">{_not_provided('birth_year', profile.field_states)}</label>
+<label>Ingreso mensual individual<input type="number" step="0.01" min="0" name="monthly_income" value="{escape(_form_value(profile.monthly_income))}">{_not_provided('monthly_income', profile.field_states)}</label>
+<label>Moneda del ingreso<input name="income_currency" maxlength="3" value="{escape(_form_value(profile.income_currency))}"></label>
+<label>Adultos en el hogar<input type="number" min="1" name="adults" value="{escape(_form_value(profile.adults))}">{_not_provided('adults', profile.field_states)}</label>
+<label>Número de hijos<input type="number" min="0" name="children" value="{escape(_form_value(profile.children))}">{_not_provided('children', profile.field_states)}</label>
+<label>Dependientes financieros<input type="number" min="0" name="financial_dependants" value="{escape(_form_value(profile.financial_dependants))}">{_not_provided('financial_dependants', profile.field_states)}</label>
+<label>Co-compradores<input type="number" min="0" name="co_buyers" value="{escape(_form_value(profile.co_buyers))}">{_not_provided('co_buyers', profile.field_states)}</label>
+<label>Número de compra de vivienda<input type="number" min="1" name="home_purchase_number" value="{escape(_form_value(profile.home_purchase_number))}">{_not_provided('home_purchase_number', profile.field_states)}</label>
+<label>Forma de pago<select name="payment_path"><option value="">Sin capturar</option>{options(('Cash', 'Credit', 'Combined'), profile.payment_path or '', {'Cash':'Contado','Credit':'Crédito','Combined':'Combinado'})}</select>{_not_provided('payment_path', profile.field_states)}</label>
+<label>Institución o modalidad<input name="financing_modality" maxlength="200" value="{escape(_form_value(profile.financing_modality))}">{_not_provided('financing_modality', profile.field_states)}</label>
+<label>Enganche disponible<input type="number" step="0.01" min="0" name="down_payment" value="{escape(_form_value(profile.down_payment))}"></label>
+<label>Moneda del enganche<input name="down_payment_currency" maxlength="3" value="{escape(_form_value(profile.down_payment_currency))}"></label>
+<label>Pago mensual objetivo<input type="number" step="0.01" min="0" name="target_monthly_payment" value="{escape(_form_value(profile.target_monthly_payment))}"></label>
+<label>Moneda del pago objetivo<input name="target_payment_currency" maxlength="3" value="{escape(_form_value(profile.target_payment_currency))}"></label>
+<label>Preaprobación<select name="preapproval_state"><option value="">Sin capturar</option>{options(('NotStarted','InProgress','Preapproved','Denied','NotApplicable'), profile.preapproval_state or '', {'NotStarted':'No iniciada','InProgress':'En trámite','Preapproved':'Preaprobada','Denied':'Negada','NotApplicable':'No aplica'})}</select>{_not_provided('preapproval_state', profile.field_states)}</label>
+</div><div class="actions"><button type="submit">Guardar perfil confirmado</button></div></form></details>"""
+    sale = workspace.sale
+    property_options = '<option value="">Selecciona una propiedad</option>' + "".join(
+        f'<option value="{row.id}"{" selected" if row.id == sale.property_uuid else ""}>{escape(row.name)} · {escape(row.property_key)}</option>'
+        for row in properties
+    )
+    sale_form = f"""<details open><summary>Datos de venta</summary>
+<p class="hint">Al seleccionar la propiedad, Product reutiliza sus datos aprobados del catálogo.</p>
+<form method="post" action="/crm/oportunidades/{opportunity.id}/tramite/venta">
+{command_field()}<div class="grid">
+<label>Propiedad<select name="property_uuid">{property_options}</select></label>
+<label>Tipo de propiedad<input name="property_type" maxlength="80" value="{escape(_form_value(sale.property_type))}"></label>
+<label>Municipio<input name="municipality" maxlength="120" value="{escape(_form_value(sale.municipality))}"></label>
+<label>Colonia<input name="colonia" maxlength="160" value="{escape(_form_value(sale.colonia))}">{_not_provided('colonia', sale.field_states)}</label>
+<label>Fecha de publicación<input type="date" name="publication_date" value="{escape(_form_value(sale.publication_date))}">{_not_provided('publication_date', sale.field_states)}</label>
+<label>Fecha de cierre<input type="date" name="completion_date" value="{escape(_form_value(sale.completion_date))}"></label>
+<label>Precio publicado<input type="number" step="0.01" min="0" name="published_price" value="{escape(_form_value(sale.published_price))}">{_not_provided('published_price', sale.field_states)}</label>
+<label>Moneda publicada<input name="published_currency" maxlength="3" value="{escape(_form_value(sale.published_currency))}"></label>
+<label>Valor de avalúo<input type="number" step="0.01" min="0" name="appraisal_value" value="{escape(_form_value(sale.appraisal_value))}">{_not_provided('appraisal_value', sale.field_states)}</label>
+<label>Moneda del avalúo<input name="appraisal_currency" maxlength="3" value="{escape(_form_value(sale.appraisal_currency))}"></label>
+<label>Precio pagado<input type="number" step="0.01" min="0" name="paid_price" value="{escape(_form_value(sale.paid_price))}"></label>
+<label>Moneda pagada<input name="paid_currency" maxlength="3" value="{escape(_form_value(sale.paid_currency))}"></label>
+<label>Terreno m²<input type="number" step="0.01" min="0" name="land_area_sqm" value="{escape(_form_value(sale.land_area_sqm))}">{_not_provided('land_area_sqm', sale.field_states)}</label>
+<label>Construcción m²<input type="number" step="0.01" min="0" name="construction_area_sqm" value="{escape(_form_value(sale.construction_area_sqm))}">{_not_provided('construction_area_sqm', sale.field_states)}</label>
+<label>Recámaras<input type="number" min="0" name="bedrooms" value="{escape(_form_value(sale.bedrooms))}">{_not_provided('bedrooms', sale.field_states)}</label>
+<label>Baños<input type="number" step="0.5" min="0" name="bathrooms" value="{escape(_form_value(sale.bathrooms))}">{_not_provided('bathrooms', sale.field_states)}</label>
+<label>Estacionamientos<input type="number" min="0" name="parking_spaces" value="{escape(_form_value(sale.parking_spaces))}">{_not_provided('parking_spaces', sale.field_states)}</label>
+<label>Año de construcción<input type="number" min="1800" max="2100" name="construction_year" value="{escape(_form_value(sale.construction_year))}">{_not_provided('construction_year', sale.field_states)}</label>
+<label>Condición<select name="property_condition"><option value="">Sin capturar</option>{options(('New','Excellent','Good','NeedsImprovement'), sale.property_condition or '', {'New':'Nueva','Excellent':'Excelente','Good':'Buena','NeedsImprovement':'Requiere mejoras'})}</select>{_not_provided('property_condition', sale.field_states)}</label>
+</div><div class="actions"><button type="submit">Guardar datos confirmados</button></div></form></details>"""
+    conclude = ""
+    if actor.is_administrator and journey.state == JourneyState.ACTIVE.value:
+        conclude = f"""<details><summary>Concluir Jornada</summary>
+<form method="post" action="/crm/oportunidades/{opportunity.id}/tramite/concluir">{command_field()}
+<div class="grid"><label>Resultado<select name="estado"><option value="Completed">Completada</option><option value="Cancelled">Cancelada</option></select></label>
+<label>Motivo de cancelación<input name="motivo" maxlength="500"></label></div>
+<div class="actions"><button type="submit">Confirmar resultado</button></div></form></details>"""
+    return (
+        heading
+        + f"<p>{tag('Activa' if journey.state == 'Active' else journey.state, 'ok')}</p>"
+        + profile_form
+        + sale_form
+        + "<h3>Hitos confirmados por personas</h3><ol class='plain'>"
+        + milestone_rows
+        + "</ol>"
+        + conclude
+        + "</div>"
+    )
+
+
 def _history_card(transitions: list[OpportunityStageTransition]) -> str:
     if not transitions:
         return ""
@@ -1631,6 +1832,299 @@ def _redirect(opportunity_id: uuid.UUID, saved: str) -> RedirectResponse:
 
 def _redirect_error(opportunity_id: uuid.UUID, message: str) -> RedirectResponse:
     return redirect_back(f"/crm/oportunidades/{opportunity_id}", error=message)
+
+
+def _form_text(form: FormData, name: str) -> str | None:
+    value = form.get(name, "")
+    clean = str(value).strip()
+    return clean or None
+
+
+def _form_int(form: FormData, name: str) -> int | None:
+    value = _form_text(form, name)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise InvalidTransition(f"«{name}» debe ser un número entero.") from exc
+
+
+def _form_decimal(form: FormData, name: str) -> Decimal | None:
+    value = _form_text(form, name)
+    if value is None:
+        return None
+    try:
+        return Decimal(value)
+    except InvalidOperation as exc:
+        raise InvalidTransition(f"«{name}» debe ser un importe válido.") from exc
+
+
+def _form_date(form: FormData, name: str) -> date | None:
+    value = _form_text(form, name)
+    if value is None:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise InvalidTransition(f"«{name}» debe ser una fecha válida.") from exc
+
+
+def _currency(form: FormData, name: str) -> str | None:
+    value = _form_text(form, name)
+    if value is None:
+        return None
+    clean = value.upper()
+    if len(clean) != 3 or not clean.isalpha():
+        raise InvalidTransition("La moneda debe usar tres letras, por ejemplo MXN.")
+    return clean
+
+
+def _field_states(
+    form: FormData, fields: frozenset[str], values: dict[str, object]
+) -> dict[str, str]:
+    states: dict[str, str] = {}
+    for name in fields:
+        if form.get(f"np_{name}") == "1":
+            states[name] = "NotProvided"
+            if name in values:
+                values[name] = None
+        elif values.get(name) is not None:
+            states[name] = "Provided"
+        else:
+            states[name] = "NotCaptured"
+    return states
+
+
+@router.post("/oportunidades/{opportunity_id}/tramite/template")
+async def create_journey_template(
+    request: Request,
+    opportunity_id: uuid.UUID,
+    actor: Actor = Depends(require_actor),
+) -> RedirectResponse:
+    async with request.app.state.database.session_scope() as session:
+        try:
+            await JourneyTemplates(session).create_draft(actor)
+            await session.commit()
+        except CommercialError as exc:
+            await session.rollback()
+            return _redirect_error(opportunity_id, exc.message)
+    return _redirect(opportunity_id, "template-borrador")
+
+
+@router.post("/oportunidades/{opportunity_id}/tramite/template/{template_id}/aprobar")
+async def approve_journey_template(
+    request: Request,
+    opportunity_id: uuid.UUID,
+    template_id: uuid.UUID,
+    actor: Actor = Depends(require_actor),
+) -> RedirectResponse:
+    async with request.app.state.database.session_scope() as session:
+        try:
+            await JourneyTemplates(session).approve(actor, template_id)
+            await session.commit()
+        except CommercialError as exc:
+            await session.rollback()
+            return _redirect_error(opportunity_id, exc.message)
+    return _redirect(opportunity_id, "template-aprobado")
+
+
+@router.post("/oportunidades/{opportunity_id}/tramite/iniciar")
+async def start_journey(
+    request: Request,
+    opportunity_id: uuid.UUID,
+    actor: Actor = Depends(require_actor),
+) -> RedirectResponse:
+    async with request.app.state.database.session_scope() as session:
+        try:
+            await TransactionJourneys(session).start(actor, opportunity_id)
+            await session.commit()
+        except CommercialError as exc:
+            await session.rollback()
+            return _redirect_error(opportunity_id, exc.message)
+    return _redirect(opportunity_id, "tramite-iniciado")
+
+
+@router.post("/oportunidades/{opportunity_id}/tramite/hitos/{milestone_id}")
+async def update_journey_milestone(
+    request: Request,
+    opportunity_id: uuid.UUID,
+    milestone_id: uuid.UUID,
+    actor: Actor = Depends(require_actor),
+) -> RedirectResponse:
+    form = await request.form()
+    state = str(form.get("estado", ""))
+    if state not in MILESTONE_STATE_LABELS:
+        return _redirect_error(opportunity_id, "Estado de hito desconocido.")
+    due_at = parse_datetime_input(str(form.get("vence", "")))
+    async with request.app.state.database.session_scope() as session:
+        try:
+            await TransactionJourneys(session).update_milestone(
+                actor,
+                milestone_id,
+                state=MilestoneState(state),
+                evidence=_form_text(form, "evidencia"),
+                reason=_form_text(form, "motivo"),
+                due_at=due_at,
+            )
+            await session.commit()
+        except CommercialError as exc:
+            await session.rollback()
+            return _redirect_error(opportunity_id, exc.message)
+    return _redirect(opportunity_id, "hito")
+
+
+@router.post("/oportunidades/{opportunity_id}/tramite/perfil")
+async def update_purchase_profile(
+    request: Request,
+    opportunity_id: uuid.UUID,
+    actor: Actor = Depends(require_actor),
+) -> RedirectResponse:
+    form = await request.form()
+    try:
+        values: dict[str, object] = {
+            "birth_year": _form_int(form, "birth_year"),
+            "monthly_income": _form_decimal(form, "monthly_income"),
+            "income_currency": _currency(form, "income_currency"),
+            "adults": _form_int(form, "adults"),
+            "children": _form_int(form, "children"),
+            "financial_dependants": _form_int(form, "financial_dependants"),
+            "co_buyers": _form_int(form, "co_buyers"),
+            "home_purchase_number": _form_int(form, "home_purchase_number"),
+            "payment_path": _form_text(form, "payment_path"),
+            "financing_modality": _form_text(form, "financing_modality"),
+            "down_payment": _form_decimal(form, "down_payment"),
+            "down_payment_currency": _currency(form, "down_payment_currency"),
+            "target_monthly_payment": _form_decimal(
+                form, "target_monthly_payment"
+            ),
+            "target_payment_currency": _currency(
+                form, "target_payment_currency"
+            ),
+            "preapproval_state": _form_text(form, "preapproval_state"),
+        }
+        states = _field_states(form, PROFILE_FIELDS, values)
+    except CommercialError as exc:
+        return _redirect_error(opportunity_id, exc.message)
+    async with request.app.state.database.session_scope() as session:
+        try:
+            await MarketRecords(session).update_profile(
+                actor,
+                opportunity_id,
+                values=values,
+                field_states=states,
+            )
+            await session.commit()
+        except CommercialError as exc:
+            await session.rollback()
+            return _redirect_error(opportunity_id, exc.message)
+    return _redirect(opportunity_id, "perfil-compra")
+
+
+@router.post("/oportunidades/{opportunity_id}/tramite/venta")
+async def update_market_sale(
+    request: Request,
+    opportunity_id: uuid.UUID,
+    actor: Actor = Depends(require_actor),
+) -> RedirectResponse:
+    form = await request.form()
+    try:
+        property_raw = _form_text(form, "property_uuid")
+        values: dict[str, object] = {
+            "property_uuid": uuid.UUID(property_raw) if property_raw else None,
+            "property_type": _form_text(form, "property_type"),
+            "municipality": _form_text(form, "municipality"),
+            "colonia": _form_text(form, "colonia"),
+            "land_area_sqm": _form_decimal(form, "land_area_sqm"),
+            "construction_area_sqm": _form_decimal(
+                form, "construction_area_sqm"
+            ),
+            "bedrooms": _form_int(form, "bedrooms"),
+            "bathrooms": _form_decimal(form, "bathrooms"),
+            "parking_spaces": _form_int(form, "parking_spaces"),
+            "construction_year": _form_int(form, "construction_year"),
+            "property_condition": _form_text(form, "property_condition"),
+            "publication_date": _form_date(form, "publication_date"),
+            "completion_date": _form_date(form, "completion_date"),
+            "published_price": _form_decimal(form, "published_price"),
+            "published_currency": _currency(form, "published_currency"),
+            "appraisal_value": _form_decimal(form, "appraisal_value"),
+            "appraisal_currency": _currency(form, "appraisal_currency"),
+            "paid_price": _form_decimal(form, "paid_price"),
+            "paid_currency": _currency(form, "paid_currency"),
+        }
+        for amount, currency in (
+            ("published_price", "published_currency"),
+            ("appraisal_value", "appraisal_currency"),
+            ("paid_price", "paid_currency"),
+        ):
+            if (values[amount] is None) != (values[currency] is None):
+                raise InvalidTransition(
+                    "Cada importe debe incluir su moneda y cada moneda su importe."
+                )
+        states = _field_states(form, SALE_FIELDS, values)
+        # Blank catalog facts do not overwrite Product truth; selecting the
+        # Property lets the domain reuse them automatically.
+        if values["property_uuid"] is not None:
+            for name in (
+                "property_type",
+                "municipality",
+                "colonia",
+                "land_area_sqm",
+                "construction_area_sqm",
+                "bedrooms",
+                "bathrooms",
+                "parking_spaces",
+                "construction_year",
+            ):
+                if values[name] is None and states[name] == "NotCaptured":
+                    values.pop(name)
+    except (CommercialError, ValueError) as exc:
+        message = exc.message if isinstance(exc, CommercialError) else "Propiedad desconocida."
+        return _redirect_error(opportunity_id, message)
+    async with request.app.state.database.session_scope() as session:
+        try:
+            await MarketRecords(session).update_sale(
+                actor,
+                opportunity_id,
+                values=values,
+                field_states=states,
+            )
+            await session.commit()
+        except CommercialError as exc:
+            await session.rollback()
+            return _redirect_error(opportunity_id, exc.message)
+    return _redirect(opportunity_id, "datos-venta")
+
+
+@router.post("/oportunidades/{opportunity_id}/tramite/concluir")
+async def conclude_journey(
+    request: Request,
+    opportunity_id: uuid.UUID,
+    actor: Actor = Depends(require_actor),
+) -> RedirectResponse:
+    form = await request.form()
+    requested = str(form.get("estado", ""))
+    if requested not in {JourneyState.COMPLETED.value, JourneyState.CANCELLED.value}:
+        return _redirect_error(opportunity_id, "Resultado de Jornada desconocido.")
+    async with request.app.state.database.session_scope() as session:
+        try:
+            workspace = await TransactionJourneys(session).for_opportunity(
+                actor, opportunity_id
+            )
+            if workspace is None:
+                raise MissingEvidence("No hay un trámite iniciado.")
+            await TransactionJourneys(session).conclude(
+                actor,
+                workspace.journey.id,
+                state=JourneyState(requested),
+                reason=_form_text(form, "motivo"),
+            )
+            await session.commit()
+        except CommercialError as exc:
+            await session.rollback()
+            return _redirect_error(opportunity_id, exc.message)
+    return _redirect(opportunity_id, "tramite-concluido")
 
 
 @router.post("/oportunidades/{opportunity_id}/etapa")

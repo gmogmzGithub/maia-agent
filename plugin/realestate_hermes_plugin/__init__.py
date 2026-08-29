@@ -50,6 +50,8 @@ FROZEN_TOOL_SURFACE: tuple[str, ...] = (
     # Stage 6: both remain thin Product calls; the plugin owns no inventory.
     "search_inventory",
     "revalidate_external_listing",
+    # ADR-0056: a read-only view of human-confirmed post-agreement state.
+    "get_transaction_journey",
 )
 
 # The tools registered so far, as ``(name, schema, handler)``. Checkpoint 1 adds
@@ -92,6 +94,11 @@ TOOLS: tuple[tuple[str, dict[str, Any], object], ...] = (
         "revalidate_external_listing",
         schemas.REVALIDATE_EXTERNAL_LISTING,
         tools.revalidate_external_listing,
+    ),
+    (
+        "get_transaction_journey",
+        schemas.GET_TRANSACTION_JOURNEY,
+        tools.get_transaction_journey,
     ),
 )
 

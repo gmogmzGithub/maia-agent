@@ -140,6 +140,10 @@ def list_properties(args: dict[str, Any], **kwargs: Any) -> str:
     return _forward("list_properties", {}, kwargs)
 
 
+def get_transaction_journey(args: dict[str, Any], **kwargs: Any) -> str:
+    return _forward("get_transaction_journey", {}, kwargs)
+
+
 def list_pending_admin_work(args: dict[str, Any], **kwargs: Any) -> str:
     return _forward("list_pending_admin_work", {}, kwargs)
 

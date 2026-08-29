@@ -19,6 +19,7 @@ from realestate.db.models import (
     AnalyticsEventName,
     AppointmentStatus,
     HarmSignalKind,
+    Opportunity,
     OpportunityStage,
 )
 from realestate.domain.analytics.definitions import CURRENT_DEFINITION_VERSION
@@ -310,6 +311,9 @@ async def test_qualification_is_counted_from_the_opportunity_itself(database) ->
         admin = await actor_for(session, ADMIN_LOGIN)
         qualified = await opportunity_for(session, "5213300000005", confirm_criteria=True)
         assert qualified.need_id is not None
+        qualified_row = await session.get(Opportunity, qualified.opportunity_id)
+        assert qualified_row is not None
+        qualified_row.created_at = MOMENT
         await confirm_minimum_criteria(session, admin, qualified.need_id, at=MOMENT)
         from realestate.domain.commercial.opportunities import AdvanceStage
 
@@ -322,7 +326,10 @@ async def test_qualification_is_counted_from_the_opportunity_itself(database) ->
                 at=MOMENT,
             ),
         )
-        await opportunity_for(session, "5213300000006")
+        opened = await opportunity_for(session, "5213300000006")
+        opened_row = await session.get(Opportunity, opened.opportunity_id)
+        assert opened_row is not None
+        opened_row.created_at = MOMENT
         await session.commit()
 
         card = await OperationMetrics(session, admin).scorecard(
