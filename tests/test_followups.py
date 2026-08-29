@@ -50,6 +50,7 @@ from tests.conftest import (
     larevia_organization_id,
     requires_postgres,
 )
+from tests.fixtures import commercial
 
 pytestmark = requires_postgres
 
@@ -99,6 +100,7 @@ async def cycle(
         session.add(lead)
         await session.flush()
         row = LeadEngagementCycle(
+            organization_id=lead.organization_id,
             lead_id=lead.id,
             started_at=started_at,
             expires_at=started_at + timedelta(days=30),
@@ -109,13 +111,14 @@ async def cycle(
             organization_id=organization_id,
             lead_id=lead.id,
             cycle_id=row.id,
-            phone_number_id="123456",
+            phone_number_id=commercial.TEST_PHONE_NUMBER_ID,
         )
         session.add(conversation)
         await session.flush()
         if marketing_consent:
             session.add(
                 ConsentRecord(
+                    organization_id=lead.organization_id,
                     lead_id=lead.id,
                     category=ConsentCategory.MARKETING.value,
                     state=ConsentState.GRANTED.value,
@@ -125,6 +128,7 @@ async def cycle(
         if inbound_at is not None:
             session.add(
                 InboxMessage(
+                    organization_id=conversation.organization_id,
                     conversation_id=conversation.id,
                     wamid=f"wamid.{wa_id}.{inbound_at.timestamp()}",
                     from_wa_id=wa_id,
@@ -139,6 +143,7 @@ async def cycle(
         if outbound_at is not None:
             session.add(
                 OutboxMessage(
+                    organization_id=conversation.organization_id,
                     conversation_id=conversation.id,
                     idempotency_key=f"seed:{wa_id}:{outbound_at.timestamp()}",
                     to_wa_id=wa_id,
@@ -237,8 +242,14 @@ def test_the_cadence_is_the_conservative_pilot_hypothesis() -> None:
 def test_day_one_is_the_day_after_the_inquiry_not_its_own_instant() -> None:
     """v1 put day 1 on the cycle start, competing with the immediate answer."""
     started = datetime(2026, 8, 1, 9, 0, tzinfo=UTC)
+    # Detached on purpose: ``due_at`` is arithmetic over a row's own timestamps
+    # and never reaches the database, so neither the Lead nor the Organization
+    # has to exist for it.
     row = LeadEngagementCycle(
-        lead_id=None, started_at=started, expires_at=started + timedelta(days=30)
+        lead_id=None,
+        organization_id=None,
+        started_at=started,
+        expires_at=started + timedelta(days=30),
     )
     assert due_at(row, 1) == started + timedelta(days=1)
     assert due_at(row, 28) == started + timedelta(days=28)
@@ -397,7 +408,10 @@ async def test_an_explicit_opt_out_stops_the_sequence(database, monkeypatch) -> 
         lead = (await session.execute(select(Lead))).scalar_one()
         session.add(
             SuppressionRecord(
-                lead_id=lead.id, reason="ExplicitOptOut", evidence="baja"
+                organization_id=lead.organization_id,
+                lead_id=lead.id,
+                reason="ExplicitOptOut",
+                evidence="baja",
             )
         )
         await session.commit()
@@ -432,6 +446,7 @@ async def test_a_skipped_backfill_row_prevents_catchup_delivery(
         conversation = (await session.execute(select(Conversation))).scalar_one()
         session.add(
             LeadFollowUp(
+                organization_id=conversation.organization_id,
                 cycle_id=conversation.cycle_id,
                 conversation_id=conversation.id,
                 day_number=1,

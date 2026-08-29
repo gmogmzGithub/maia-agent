@@ -29,14 +29,15 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from realestate.db.models import AnalyticsEventName
+from realestate.db.models import AnalyticsEventName, AnalyticsOutboxEntry
 from realestate.domain.analytics.definitions import MeasurementDefinitions
 from realestate.domain.analytics.emission import AnalyticsEmission
 from realestate.domain.analytics.events import AnalyticsEvent, AnalyticsEvents
 from realestate.domain.analytics.pseudonyms import Pseudonyms, Purpose
-from realestate.domain.commercial.actors import Actor
+from realestate.domain.commercial.actors import Actor, CommercialError
 from realestate.domain.public.catalog import PublicListingView
 from realestate.domain.public.listing import PublicListing
 from realestate.domain.sponsorship.delivery import (
@@ -55,6 +56,7 @@ class SponsoredCard:
     """One paid card. The label is not optional and has no "off" value."""
 
     position: int
+    exposure_id: uuid.UUID
     campaign_id: uuid.UUID
     listing: PublicListingView
     label: str = SPONSORED_LABEL
@@ -69,6 +71,21 @@ class SponsoredSurfaceResult:
     cards: tuple[SponsoredCard, ...]
     available_slots: int
     disclosure: str = SPONSORED_DISCLOSURE
+
+
+class ExposureUnavailable(CommercialError):
+    """The browser observation is not tied to a served paid placement."""
+
+    message = "La exposición patrocinada no está disponible."
+
+
+@dataclass(frozen=True)
+class ServedExposure:
+    exposure_id: uuid.UUID
+    campaign_id: uuid.UUID
+    listing_id: uuid.UUID
+    surface: str
+    session_reference: str
 
 
 class PublicSponsored:
@@ -120,7 +137,9 @@ class PublicSponsored:
                 # rotation: an empty paid section is honest, a substituted one
                 # would bill the wrong campaign for this impression.
                 continue
+            exposure_id = uuid.uuid4()
             await emission.emit_sponsored_exposure(
+                exposure_id=exposure_id,
                 campaign_id=slot.campaign_id,
                 listing_id=slot.listing_id,
                 surface=surface,
@@ -134,6 +153,7 @@ class PublicSponsored:
             cards.append(
                 SponsoredCard(
                     position=slot.position,
+                    exposure_id=exposure_id,
                     campaign_id=slot.campaign_id,
                     listing=publication.listing,
                 )
@@ -147,9 +167,7 @@ class PublicSponsored:
     async def count_visible(
         self,
         *,
-        campaign_id: uuid.UUID,
-        listing_id: uuid.UUID,
-        surface: str,
+        exposure_id: uuid.UUID,
         visible_fraction: float,
         continuous_milliseconds: int,
         session_value: str,
@@ -173,20 +191,19 @@ class PublicSponsored:
             continuous_milliseconds=continuous_milliseconds,
         ):
             return False
-        reference = await Pseudonyms(
-            self._session, self._actor.organization_id
-        ).reference(Purpose.SESSION, session_value)
-        day = at.date().isoformat()
+        exposure = await self.resolve_exposure(
+            exposure_id, session_value=session_value
+        )
         recorded = await AnalyticsEvents(self._session, self._actor).record(
             AnalyticsEvent(
-                event_key=f"visible:{campaign_id}:{reference or 'anon'}:{day}",
+                event_key=f"visible:{exposure.exposure_id}",
                 name=AnalyticsEventName.SPONSORED_VISIBLE_IMPRESSION,
                 occurred_at=at,
-                listing_id=listing_id,
-                campaign_id=campaign_id,
+                listing_id=exposure.listing_id,
+                campaign_id=exposure.campaign_id,
                 session_value=session_value,
                 attributes={
-                    "surface": surface,
+                    "surface": exposure.surface,
                     "visible_fraction": visible_fraction,
                     "continuous_milliseconds": continuous_milliseconds,
                 },
@@ -196,6 +213,48 @@ class PublicSponsored:
         )
         if recorded.created and not (bot or internal):
             await SponsoredDelivery(self._session, self._actor).count_visible(
-                listing_id=listing_id, session_reference=reference, at=at
+                listing_id=exposure.listing_id,
+                session_reference=exposure.session_reference,
+                at=at,
             )
         return recorded.created
+
+    async def resolve_exposure(
+        self,
+        exposure_id: uuid.UUID,
+        *,
+        session_value: str,
+        listing_id: uuid.UUID | None = None,
+    ) -> ServedExposure:
+        """Resolve browser context only from a Product-recorded Served fact."""
+        reference = await Pseudonyms(
+            self._session, self._actor.organization_id
+        ).reference(Purpose.SESSION, session_value)
+        row = await self._session.scalar(
+            select(AnalyticsOutboxEntry).where(
+                AnalyticsOutboxEntry.organization_id == self._actor.organization_id,
+                AnalyticsOutboxEntry.event_key == f"served:{exposure_id}",
+                AnalyticsOutboxEntry.event_name
+                == AnalyticsEventName.SPONSORED_SERVED_IMPRESSION.value,
+            )
+        )
+        if row is None:
+            raise ExposureUnavailable()
+        payload = dict(row.payload)
+        stored_reference = str(payload.get("session_reference") or "")
+        stored_listing = uuid.UUID(str(payload["listing_id"]))
+        stored_campaign = uuid.UUID(str(payload["campaign_id"]))
+        attributes = dict(payload.get("attributes") or {})
+        if (
+            not reference
+            or stored_reference != reference
+            or (listing_id is not None and stored_listing != listing_id)
+        ):
+            raise ExposureUnavailable()
+        return ServedExposure(
+            exposure_id=exposure_id,
+            campaign_id=stored_campaign,
+            listing_id=stored_listing,
+            surface=str(attributes["surface"]),
+            session_reference=stored_reference,
+        )

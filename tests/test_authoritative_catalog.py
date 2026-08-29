@@ -26,6 +26,7 @@ from realestate.db.models import (
     OpportunityKind,
     Organization,
     OrganizationMember,
+    OrganizationStatus,
     Property,
     UnitModel,
 )
@@ -903,6 +904,11 @@ async def test_catalog_records_are_isolated_between_organizations(database) -> N
             provisioned_by=MemberProvisioning.ADMINISTRATOR.value,
         )
         session.add(other_member)
+        # Stage 9 refuses a login whose Organization is not operating, and a row
+        # inserted by hand is ``Provisioning`` by server default. This test is
+        # about catalog scoping, so the second Organization is put into service.
+        other_org.status = OrganizationStatus.ACTIVE.value
+        other_org.activated_at = datetime.now(tz=UTC)
         await session.commit()
         other_actor = await actor_for(session, "admin@otra.test")
         with pytest.raises(NotFound):

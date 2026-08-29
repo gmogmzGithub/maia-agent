@@ -103,12 +103,14 @@
   if (navigator.onLine && queued().length) retryQueue();
 
   function track(name, surface, listingId, properties = {}) {
+    const exposure = new URLSearchParams(window.location.search).get("patrocinio");
     const body = JSON.stringify({
       event_key: commandKey("event"),
       name,
       surface,
       listing_id: listingId || null,
       properties,
+      exposure_id: exposure,
       occurred_at: new Date().toISOString()
     });
     if (navigator.sendBeacon) {
@@ -122,12 +124,10 @@
   // It never reports "this was visible": the versioned threshold lives in
   // Product, so a modified client cannot manufacture a Visible Impression.
   function reportVisible(card, ratio, milliseconds) {
-    const campaign = card.dataset.sponsoredCampaign;
-    if (!campaign) return;
+    const exposure = card.dataset.sponsoredExposure;
+    if (!exposure) return;
     const body = JSON.stringify({
-      campaign_id: campaign,
-      listing_id: card.dataset.listingId,
-      surface: card.dataset.surface || "Search",
+      exposure_id: exposure,
       visible_fraction: Math.min(1, Math.max(0, ratio)),
       continuous_milliseconds: milliseconds,
       occurred_at: new Date().toISOString()
@@ -161,12 +161,6 @@
       });
     }, { threshold: [0, 0.5, 1] });
     document.querySelectorAll('[data-analytics="ListingImpression"]').forEach((card) => observer.observe(card));
-  }
-
-  const conversation = document.querySelector(".conversation-shell");
-  if (conversation) {
-    const listingId = conversation.querySelector('[name="listing_ids"]')?.value || null;
-    track("MaiaStarted", "Maia", listingId, { source: "website" });
   }
 
   const gallery = document.querySelector("[data-gallery]");
@@ -204,6 +198,7 @@
         listing_id: listingId,
         photographs: viewed.size,
         gallery_fraction: fraction,
+        exposure_id: new URLSearchParams(window.location.search).get("patrocinio"),
         occurred_at: new Date().toISOString()
       });
       if (navigator.sendBeacon) {

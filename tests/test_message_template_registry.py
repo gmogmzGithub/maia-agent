@@ -258,6 +258,7 @@ async def test_consent_expiry_evidence_scope_and_capture_path_are_explicit(
         consent = MarketingConsent(session)
         session.add(
             ConsentRecord(
+                organization_id=state.lead.organization_id,
                 lead_id=state.lead.id,
                 category=ConsentCategory.MARKETING.value,
                 state=ConsentState.GRANTED.value,
@@ -277,6 +278,7 @@ async def test_consent_expiry_evidence_scope_and_capture_path_are_explicit(
 
         session.add(
             ConsentRecord(
+                organization_id=state.lead.organization_id,
                 lead_id=state.lead.id,
                 category=ConsentCategory.MARKETING.value,
                 state=ConsentState.GRANTED.value,
@@ -292,6 +294,7 @@ async def test_consent_expiry_evidence_scope_and_capture_path_are_explicit(
 
         session.add(
             ConsentRecord(
+                organization_id=state.lead.organization_id,
                 lead_id=state.lead.id,
                 category=ConsentCategory.MARKETING.value,
                 state=ConsentState.GRANTED.value,

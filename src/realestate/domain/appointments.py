@@ -386,6 +386,7 @@ class AppointmentService:
             return existing
 
         row = AvailabilitySnapshot(
+            organization_id=conversation.organization_id,
             conversation_id=conversation.id,
             property_uuid=prop.id,
             horizon_end=end,

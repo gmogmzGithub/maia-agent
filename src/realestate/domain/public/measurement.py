@@ -15,13 +15,14 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from realestate.db.models import AnalyticsEventName
 from realestate.domain.analytics.definitions import MeasurementDefinitions
 from realestate.domain.analytics.events import AnalyticsEvent, AnalyticsEvents
+from realestate.domain.analytics.pseudonyms import Pseudonyms, Purpose
 from realestate.domain.commercial.actors import Actor
 
 
@@ -34,6 +35,7 @@ class GalleryDepth:
     photographs: int
     gallery_fraction: float
     occurred_at: datetime
+    campaign_id: uuid.UUID | None = None
     session_value: str = ""
     bot: bool = False
     internal: bool = False
@@ -47,6 +49,7 @@ class ListingOpen:
     listing_id: uuid.UUID
     surface: str
     occurred_at: datetime
+    campaign_id: uuid.UUID | None = None
     session_value: str = ""
     bot: bool = False
     internal: bool = False
@@ -66,13 +69,21 @@ class PublicMeasurement:
         self._actor = actor
 
     async def listing_open(self, command: ListingOpen) -> bool:
+        event_key = command.event_key
+        if command.session_value:
+            session_reference = await Pseudonyms(
+                self._session, self._actor.organization_id
+            ).reference(Purpose.SESSION, command.session_value)
+            day = command.occurred_at.astimezone(UTC).date().isoformat()
+            event_key = f"open:{command.listing_id}:{session_reference}:{day}"
         return (
             await AnalyticsEvents(self._session, self._actor).record(
                 AnalyticsEvent(
-                    event_key=command.event_key,
+                    event_key=event_key,
                     name=AnalyticsEventName.LISTING_OPENED,
                     occurred_at=command.occurred_at,
                     listing_id=command.listing_id,
+                    campaign_id=command.campaign_id,
                     session_value=command.session_value,
                     attributes={"surface": command.surface},
                     bot=command.bot,
@@ -106,6 +117,7 @@ class PublicMeasurement:
                 name=AnalyticsEventName.GALLERY_DEPTH_REACHED,
                 occurred_at=command.occurred_at,
                 listing_id=command.listing_id,
+                campaign_id=command.campaign_id,
                 session_value=command.session_value,
                 attributes=attributes,
                 bot=command.bot,
@@ -123,6 +135,7 @@ class PublicMeasurement:
                     name=AnalyticsEventName.SIGNIFICANT_GALLERY_EXPLORATION,
                     occurred_at=command.occurred_at,
                     listing_id=command.listing_id,
+                    campaign_id=command.campaign_id,
                     session_value=command.session_value,
                     attributes=attributes,
                     bot=command.bot,

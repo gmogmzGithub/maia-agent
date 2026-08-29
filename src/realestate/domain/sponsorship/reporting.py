@@ -29,6 +29,7 @@ from decimal import Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from realestate.db.models import (
     AnalyticsDomainEvent,
@@ -49,6 +50,7 @@ from realestate.domain.analytics.metrics import (
     OperationMetrics,
     ratio,
 )
+from realestate.domain.analytics.projection import day_of
 from realestate.domain.commercial.actors import Actor, NotAuthorized, NotFound
 from realestate.domain.sponsorship.campaigns import CampaignView, view_of
 from realestate.domain.sponsorship.capacity import SponsorshipCapacity
@@ -65,6 +67,16 @@ from realestate.domain.sponsorship.pricing import PACKAGE_SURFACES
 
 #: The reporting window when the caller does not name one.
 DEFAULT_PERIOD_DAYS = 30
+
+ENGAGEMENT_EVENTS: tuple[str, ...] = (
+    AnalyticsEventName.LISTING_OPENED.value,
+    AnalyticsEventName.GALLERY_OPENED.value,
+    AnalyticsEventName.SIGNIFICANT_GALLERY_EXPLORATION.value,
+    AnalyticsEventName.LISTING_SAVED.value,
+    AnalyticsEventName.MAIA_STARTED.value,
+    AnalyticsEventName.WHATSAPP_HANDOFF.value,
+    AnalyticsEventName.APPOINTMENT_REQUESTED.value,
+)
 
 #: Funnel steps in the order ADR-0044 fixes them, paired with the readable
 #: Mexican Spanish label a report shows. One list, so the buyer report, the
@@ -119,7 +131,7 @@ class FunnelRow:
 
     step: str
     label: str
-    count: int
+    count: int | None
     from_previous: Measure
 
 
@@ -144,9 +156,17 @@ class Attribution:
 
     view_through_days: int
     engaged_days: int
-    view_through_outcomes: int
-    engaged_outcomes: int
+    view_through_outcomes: int | None
+    engaged_outcomes: int | None
     disclaimer: str = NON_CAUSAL_DISCLAIMER
+
+
+@dataclass(frozen=True)
+class TrendPoint:
+    period_start: datetime
+    visible_impressions: int | None
+    listing_opens: int | None
+    interest_actions: int | None
 
 
 @dataclass(frozen=True)
@@ -178,10 +198,12 @@ class SponsorshipReport:
     listing_title: str
     surfaces: tuple[str, ...]
     funnel: tuple[FunnelRow, ...]
-    outcomes: dict[str, int]
+    outcomes: dict[str, int | None]
     unrecorded_outcomes: Measure
     economics: UnitEconomics
     attribution: Attribution
+    trend: tuple[TrendPoint, ...]
+    definitions: tuple[str, ...]
     comparables: tuple[Comparable, ...]
     disclosure: str = SPONSORED_DISCLOSURE
     disclaimer: str = NON_CAUSAL_DISCLAIMER
@@ -235,6 +257,11 @@ class SponsorshipReporting:
         counts = await self._step_counts(campaign, definition, start, at)
         funnel = self._funnel(counts)
         outcomes = await self._outcomes(campaign, definition, start, at)
+        display_outcomes: dict[str, int | None] = dict(outcomes)
+        if audience is ReportAudience.BUYER:
+            display_outcomes = self._protect_counts(
+                outcomes, definition.comparable_minimum_sample
+            )
         surfaces = PACKAGE_SURFACES.get(campaign.package, ())
         report = SponsorshipReport(
             campaign=view_of(campaign),
@@ -245,11 +272,51 @@ class SponsorshipReporting:
             period_end=at,
             listing_title=listing.title,
             surfaces=surfaces,
-            funnel=funnel,
-            outcomes=outcomes,
-            unrecorded_outcomes=self._unrecorded_outcomes(counts, outcomes),
-            economics=self._economics(campaign, counts),
-            attribution=await self._attribution(campaign, definition, at),
+            funnel=(
+                self._protect_funnel(funnel, definition.comparable_minimum_sample)
+                if audience is ReportAudience.BUYER
+                else funnel
+            ),
+            outcomes=display_outcomes,
+            unrecorded_outcomes=self._protect_measure(
+                self._unrecorded_outcomes(counts, outcomes),
+                definition.comparable_minimum_sample,
+                audience,
+            ),
+            economics=self._protected_economics(
+                self._economics(campaign, counts),
+                definition.comparable_minimum_sample,
+                audience,
+            ),
+            attribution=self._protect_attribution(
+                await self._attribution(campaign, definition, at),
+                definition.comparable_minimum_sample,
+                audience,
+            ),
+            trend=self._protect_trend(
+                await self._trend(campaign, definition, start, at),
+                definition.comparable_minimum_sample,
+                audience,
+            ),
+            definitions=(
+                "Entregada: Product incluyó la posición pagada en una superficie.",
+                (
+                    "Visible: al menos "
+                    f"{definition.minimum_visible_fraction * 100:g} % de la tarjeta "
+                    f"durante {definition.minimum_continuous_milliseconds / 1000:g} "
+                    + (
+                        "segundo continuo."
+                        if definition.minimum_continuous_milliseconds == 1000
+                        else "segundos continuos."
+                    )
+                ),
+                (
+                    "Exploración significativa: "
+                    f"{definition.minimum_photographs} fotografías o "
+                    f"{definition.minimum_gallery_fraction * 100:g} % de la galería."
+                ),
+                "Muestra protegida: menos de 3 casos; la cifra no se muestra.",
+            ),
             comparables=await self._comparables(campaign, definition, start, at),
             internal=(
                 await self._internal(campaign, definition, start, at)
@@ -269,12 +336,8 @@ class SponsorshipReporting:
         start: datetime,
         end: datetime,
     ) -> dict[str, int]:
-        rows = await self._session.execute(
-            select(
-                AnalyticsDomainEvent.event_name,
-                func.count(AnalyticsDomainEvent.id),
-            )
-            .where(
+        rows = await self._session.scalars(
+            select(AnalyticsDomainEvent).where(
                 AnalyticsDomainEvent.organization_id == campaign.organization_id,
                 AnalyticsDomainEvent.definition_version == definition.version,
                 AnalyticsDomainEvent.campaign_id == campaign.id,
@@ -282,13 +345,67 @@ class SponsorshipReporting:
                 AnalyticsDomainEvent.occurred_at >= start,
                 AnalyticsDomainEvent.occurred_at < end,
             )
-            .group_by(AnalyticsDomainEvent.event_name)
         )
-        per_event = {name: int(count) for name, count in rows}
+        per_event: dict[str, int] = {}
+        for row in rows:
+            if (
+                row.event_name
+                == AnalyticsEventName.SIGNIFICANT_GALLERY_EXPLORATION.value
+            ):
+                continue
+            per_event[row.event_name] = per_event.get(row.event_name, 0) + 1
+            if (
+                row.event_name == AnalyticsEventName.GALLERY_DEPTH_REACHED.value
+                and definition.significant_exploration(
+                    photographs=int(row.attributes.get("photographs") or 0),
+                    gallery_fraction=float(
+                        row.attributes.get("gallery_fraction") or 0
+                    ),
+                )
+            ):
+                name = AnalyticsEventName.SIGNIFICANT_GALLERY_EXPLORATION.value
+                per_event[name] = per_event.get(name, 0) + 1
         return {
             step: sum(per_event.get(name, 0) for name in names)
             for step, names in _STEP_EVENTS.items()
         }
+
+    async def _trend(
+        self,
+        campaign: SponsorshipCampaign,
+        definition: Definition,
+        start: datetime,
+        end: datetime,
+    ) -> tuple[TrendPoint, ...]:
+        rows = await self._session.scalars(
+            select(AnalyticsDomainEvent).where(
+                AnalyticsDomainEvent.organization_id == campaign.organization_id,
+                AnalyticsDomainEvent.definition_version == definition.version,
+                AnalyticsDomainEvent.campaign_id == campaign.id,
+                AnalyticsDomainEvent.traffic_class == TrafficClass.VALID.value,
+                AnalyticsDomainEvent.occurred_at >= start,
+                AnalyticsDomainEvent.occurred_at < end,
+            )
+        )
+        buckets: dict[datetime, list[int]] = {}
+        interest_names = {
+            AnalyticsEventName.LISTING_SAVED.value,
+            AnalyticsEventName.SELECTION_SHARED.value,
+            AnalyticsEventName.MAIA_STARTED.value,
+            AnalyticsEventName.WHATSAPP_HANDOFF.value,
+        }
+        for row in rows:
+            bucket = buckets.setdefault(day_of(row.occurred_at), [0, 0, 0])
+            if row.event_name == AnalyticsEventName.SPONSORED_VISIBLE_IMPRESSION.value:
+                bucket[0] += 1
+            if row.event_name == AnalyticsEventName.LISTING_OPENED.value:
+                bucket[1] += 1
+            if row.event_name in interest_names:
+                bucket[2] += 1
+        return tuple(
+            TrendPoint(day, values[0], values[1], values[2])
+            for day, values in sorted(buckets.items())
+        )
 
     @staticmethod
     def _funnel(counts: dict[str, int]) -> tuple[FunnelRow, ...]:
@@ -317,6 +434,41 @@ class SponsorshipReporting:
             )
             previous = count
         return tuple(out)
+
+    @staticmethod
+    def _protect_counts(
+        counts: dict[str, int], minimum: int
+    ) -> dict[str, int | None]:
+        return {
+            name: None if 0 < count < minimum else count
+            for name, count in counts.items()
+        }
+
+    @staticmethod
+    def _protect_funnel(
+        rows: tuple[FunnelRow, ...], minimum: int
+    ) -> tuple[FunnelRow, ...]:
+        protected: list[FunnelRow] = []
+        previous_hidden = False
+        for index, row in enumerate(rows):
+            # Delivery volumes describe placements, not people. Interaction and
+            # outcome cells can expose an individual when their sample is tiny.
+            hidden = index >= 2 and row.count is not None and 0 < row.count < minimum
+            conversion = (
+                Measure.protected(sample=row.count or 0, unit="%")
+                if hidden or previous_hidden
+                else row.from_previous
+            )
+            protected.append(
+                FunnelRow(
+                    step=row.step,
+                    label=row.label,
+                    count=None if hidden else row.count,
+                    from_previous=conversion,
+                )
+            )
+            previous_hidden = hidden
+        return tuple(protected)
 
     # -- outcomes ----------------------------------------------------------
 
@@ -388,6 +540,75 @@ class SponsorshipReporting:
             cost_per_appointment_request=per("AppointmentRequested"),
         )
 
+    @staticmethod
+    def _protect_measure(
+        measure: Measure, minimum: int, audience: ReportAudience
+    ) -> Measure:
+        if (
+            audience is ReportAudience.BUYER
+            and 0 < measure.sample < minimum
+        ):
+            return Measure.protected(sample=measure.sample, unit=measure.unit)
+        return measure
+
+    @classmethod
+    def _protected_economics(
+        cls,
+        economics: UnitEconomics,
+        minimum: int,
+        audience: ReportAudience,
+    ) -> UnitEconomics:
+        return UnitEconomics(
+            price=economics.price,
+            currency=economics.currency,
+            cost_per_visible_impression=economics.cost_per_visible_impression,
+            cost_per_listing_open=cls._protect_measure(
+                economics.cost_per_listing_open, minimum, audience
+            ),
+            cost_per_appointment_request=cls._protect_measure(
+                economics.cost_per_appointment_request, minimum, audience
+            ),
+        )
+
+    @staticmethod
+    def _protect_attribution(
+        attribution: Attribution, minimum: int, audience: ReportAudience
+    ) -> Attribution:
+        if audience is not ReportAudience.BUYER:
+            return attribution
+
+        def protect(value: int) -> int | None:
+            return None if 0 < value < minimum else value
+
+        return Attribution(
+            view_through_days=attribution.view_through_days,
+            engaged_days=attribution.engaged_days,
+            view_through_outcomes=protect(attribution.view_through_outcomes or 0),
+            engaged_outcomes=protect(attribution.engaged_outcomes or 0),
+        )
+
+    @staticmethod
+    def _protect_trend(
+        points: tuple[TrendPoint, ...],
+        minimum: int,
+        audience: ReportAudience,
+    ) -> tuple[TrendPoint, ...]:
+        if audience is not ReportAudience.BUYER:
+            return points
+
+        def protect(value: int | None) -> int | None:
+            return None if value is not None and 0 < value < minimum else value
+
+        return tuple(
+            TrendPoint(
+                period_start=point.period_start,
+                visible_impressions=protect(point.visible_impressions),
+                listing_opens=protect(point.listing_opens),
+                interest_actions=protect(point.interest_actions),
+            )
+            for point in points
+        )
+
     # -- attribution -------------------------------------------------------
 
     async def _attribution(
@@ -400,24 +621,20 @@ class SponsorshipReporting:
         engagement event. Neither overwrites the Opportunity's first origin and
         neither is described as lift.
         """
-        exposure_last = await self._session.scalar(
-            select(func.max(AnalyticsDomainEvent.occurred_at)).where(
-                AnalyticsDomainEvent.campaign_id == campaign.id,
-                AnalyticsDomainEvent.definition_version == definition.version,
-                AnalyticsDomainEvent.event_name
-                == AnalyticsEventName.SPONSORED_VISIBLE_IMPRESSION.value,
-                AnalyticsDomainEvent.traffic_class == TrafficClass.VALID.value,
-            )
+        view_through = await self._outcomes_within(
+            campaign,
+            definition,
+            at,
+            (AnalyticsEventName.SPONSORED_VISIBLE_IMPRESSION.value,),
+            definition.attribution.view_through_days,
         )
-        view_through = 0
-        engaged = 0
-        if exposure_last is not None:
-            view_through = await self._outcomes_within(
-                campaign, definition, exposure_last, definition.attribution.view_through_days
-            )
-            engaged = await self._outcomes_within(
-                campaign, definition, exposure_last, definition.attribution.engaged_days
-            )
+        engaged = await self._outcomes_within(
+            campaign,
+            definition,
+            at,
+            ENGAGEMENT_EVENTS,
+            definition.attribution.engaged_days,
+        )
         return Attribution(
             view_through_days=definition.attribution.view_through_days,
             engaged_days=definition.attribution.engaged_days,
@@ -429,17 +646,36 @@ class SponsorshipReporting:
         self,
         campaign: SponsorshipCampaign,
         definition: Definition,
-        anchor: datetime,
+        at: datetime,
+        anchor_names: tuple[str, ...],
         days: int,
     ) -> int:
+        outcome = aliased(AnalyticsDomainEvent)
+        anchor = aliased(AnalyticsDomainEvent)
+        has_anchor = (
+            select(anchor.id)
+            .where(
+                anchor.organization_id == outcome.organization_id,
+                anchor.campaign_id == outcome.campaign_id,
+                anchor.definition_version == outcome.definition_version,
+                anchor.event_name.in_(anchor_names),
+                anchor.traffic_class == TrafficClass.VALID.value,
+                anchor.occurred_at <= outcome.occurred_at,
+                anchor.occurred_at
+                >= outcome.occurred_at - timedelta(days=days),
+            )
+            .exists()
+        )
         total = await self._session.scalar(
-            select(func.count(AnalyticsDomainEvent.id)).where(
-                AnalyticsDomainEvent.campaign_id == campaign.id,
-                AnalyticsDomainEvent.definition_version == definition.version,
-                AnalyticsDomainEvent.event_name
+            select(func.count(outcome.id)).where(
+                outcome.organization_id == campaign.organization_id,
+                outcome.campaign_id == campaign.id,
+                outcome.definition_version == definition.version,
+                outcome.event_name
                 == AnalyticsEventName.OPPORTUNITY_OUTCOME_KNOWN.value,
-                AnalyticsDomainEvent.traffic_class == TrafficClass.VALID.value,
-                AnalyticsDomainEvent.occurred_at <= anchor + timedelta(days=days),
+                outcome.traffic_class == TrafficClass.VALID.value,
+                outcome.occurred_at <= at,
+                has_anchor,
             )
         )
         return total or 0

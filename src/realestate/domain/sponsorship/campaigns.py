@@ -19,12 +19,14 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from realestate.db.models import (
+    AnalyticsEventName,
+    AnalyticsOutboxEntry,
     CatalogListing,
     CollectionState,
     SponsorshipCampaign,
@@ -54,6 +56,7 @@ from realestate.domain.sponsorship.pricing import (
 
 #: Why one service date did or did not consume a paid day.
 DELIVERED = "Delivered"
+NO_MEASURED_DELIVERY = "NoMeasuredDelivery"
 NOT_ELIGIBLE = "NotEligible"
 PAUSED = "Paused"
 
@@ -106,6 +109,19 @@ class CampaignView:
     buyer_label: str
     buyer_kind: str
     paused_reason: str | None
+
+    @property
+    def status_label(self) -> str:
+        return {
+            "Draft": "Borrador",
+            "Quoted": "Cotizada",
+            "Reserved": "Reservada",
+            "Scheduled": "Programada",
+            "Active": "Activa",
+            "Paused": "Pausada",
+            "Completed": "Completada",
+            "Cancelled": "Cancelada",
+        }.get(self.status, self.status)
 
 
 @dataclass(frozen=True)
@@ -416,8 +432,12 @@ class SponsorshipCampaigns:
             row.activated_at = row.activated_at or at
             row.updated_at = at
             await self._audit("ActivateSponsorshipCampaign", row, {"automatic": True})
+        measured = await self._measured_delivery(row, service_date)
         counted, reason = await self._delivery_day(
-            row, service_date, counted=True, reason=DELIVERED
+            row,
+            service_date,
+            counted=measured,
+            reason=DELIVERED if measured else NO_MEASURED_DELIVERY,
         )
         if counted:
             row.delivered_days += 1
@@ -434,6 +454,29 @@ class SponsorshipCampaigns:
             )
         return counted, reason
 
+    async def _measured_delivery(
+        self, row: SponsorshipCampaign, service_date: datetime
+    ) -> bool:
+        """Whether Product recorded an actual paid placement that date."""
+        evidence = await self._session.scalar(
+            select(AnalyticsOutboxEntry.id)
+            .where(
+                AnalyticsOutboxEntry.organization_id == row.organization_id,
+                AnalyticsOutboxEntry.event_name.in_(
+                    (
+                        AnalyticsEventName.SPONSORED_SERVED_IMPRESSION.value,
+                        AnalyticsEventName.SPONSORED_VISIBLE_IMPRESSION.value,
+                    )
+                ),
+                AnalyticsOutboxEntry.payload["campaign_id"].as_string()
+                == str(row.id),
+                AnalyticsOutboxEntry.occurred_at >= service_date,
+                AnalyticsOutboxEntry.occurred_at < service_date + timedelta(days=1),
+            )
+            .limit(1)
+        )
+        return evidence is not None
+
     async def _delivery_day(
         self,
         row: SponsorshipCampaign,
@@ -449,9 +492,19 @@ class SponsorshipCampaigns:
             )
         )
         if existing is not None:
+            if (
+                counted
+                and not existing.counted
+                and existing.reason == NO_MEASURED_DELIVERY
+            ):
+                existing.counted = True
+                existing.reason = reason
+                await self._session.flush()
+                return True, reason
             return False, existing.reason
         self._session.add(
             SponsorshipDeliveryDay(
+                organization_id=row.organization_id,
                 campaign_id=row.id,
                 service_date=service_date,
                 counted=counted,
@@ -507,6 +560,7 @@ class SponsorshipCampaigns:
     ) -> None:
         await record_audit(
             self._session,
+            organization_id=self._actor.organization_id,
             actor_type=self._actor.actor_type,
             actor_id=self._actor.label,
             action=action,

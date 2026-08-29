@@ -59,8 +59,25 @@ authorization, persistence, delivery, retries, and business authority.
 - Buyer reporting delivered by expiring, revocable, read-only link and an
   exportable PDF, carrying aggregate delivery, disclosed comparables and explicitly
   non-causal language — and no contact identity, phone number or conversation.
+- Organizational isolation carried by the schema rather than by discipline: every
+  table holding a Brokerage Organization's data names it with a composite foreign
+  key that makes the column and its parent agree, every business key that was
+  globally unique is unique per Organization, a written scoping table classifies
+  all 91 tables, and a test refuses one nobody classified.
+- A managed platform where a second Brokerage Organization is provisioned by a
+  resumable, reversible run and cannot answer a customer until the last step
+  finishes — with versioned configuration documents that refuse to hold a
+  credential, per-Organization secret *references* that store a name and a
+  fingerprint rather than a value, and an inbound number, bot or hostname that is
+  refused when unbound instead of defaulting to the founding brokerage.
+- Temporary, explained, expiring and counted internal support access in place of a
+  superadmin — an ordinary read-only member row inside one Organization, listed on
+  that customer's own page — plus per-Organization export that names every column
+  it withholds and deletion that refuses a live retention hold outright.
 - A standalone Hermes plugin that exposes typed product operations without
-  giving the agent direct database or Calendar credentials.
+  giving the agent direct database or Calendar credentials — and deliberately no
+  new tool for the platform: provisioning, entitlements, credentials, support
+  access and deletion are not things a conversation should be able to reach.
 - Recovery-oriented tests around persistence, sessions, tools, workers,
   webhooks, and channel clients.
 
@@ -140,12 +157,28 @@ test-covered locally:
   seven-day quotes, capacity that cannot be oversold, labelled placements that
   never influence organic ordering, and expiring read-only buyer reports with an
   exportable PDF;
+- complete organizational isolation: every table holding a Brokerage
+  Organization's data names it, every business key is unique per Organization,
+  and every inbound identifier — WhatsApp number, Telegram bot, public hostname —
+  resolves through an explicit channel binding whose absence is a refusal rather
+  than a default to the founding brokerage;
+- a managed platform for a second Brokerage Organization: resumable and
+  reversible provisioning, versioned configuration documents, per-Organization
+  secret *references* that never store a credential, append-only entitlements
+  with a base package and Advisor-seat tiers, measured monthly usage, dry-run
+  initial import with per-record findings and rollback, and per-Organization
+  export and deletion bounded by recorded retention holds;
+- temporary, explained, expiring and counted internal support access instead of
+  a superadmin, visible to the customer's own Administrator;
 - Docker Compose packaging for a single-host local topology.
 
 Not claimed yet:
 
 - production deployment;
-- multi-tenant operation;
+- a real external brokerage onboarded; the platform is implemented and its entry
+  condition — knowing a candidate inmobiliaria's real needs — is not met;
+- any price, invoice or charging for the packaging structure that exists;
+- measured capacity for any number of Organizations;
 - paid lead acquisition;
 - a first sponsorship price, which stays unset until the pilot supplies the
   traffic data that would justify it;
@@ -257,4 +290,8 @@ template evidence, execution limits, and why real dispatch remains denied. The
 dictionary, the versioned measurement definitions and their exact borders, the
 projection and its invalid-traffic reporting, the privacy boundary, the paid
 delivery rules, pricing and quoting, the two report audiences, and the commercial
-decisions that remain open.
+decisions that remain open. The [Stage 9 managed-platform guide](docs/managed-platform.md)
+documents the isolation threat model, the scoping table, provisioning,
+configuration, entitlements, credentials, support access, the data lifecycle,
+what each provider does and does not allow us to separate, and the operating
+limits — with the five operational runbooks in [docs/runbooks](docs/runbooks).

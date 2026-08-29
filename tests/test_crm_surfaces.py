@@ -430,6 +430,7 @@ async def test_an_opt_out_is_shown_and_no_surface_can_send(wired) -> None:
         assert conversation is not None
         session.add(
             SuppressionRecord(
+                organization_id=conversation.organization_id,
                 lead_id=conversation.lead_id,
                 scope="BusinessInitiated",
                 reason="ExplicitOptOut",
@@ -438,6 +439,7 @@ async def test_an_opt_out_is_shown_and_no_surface_can_send(wired) -> None:
         )
         session.add(
             ConsentRecord(
+                organization_id=conversation.organization_id,
                 lead_id=conversation.lead_id,
                 category=ConsentCategory.MARKETING.value,
                 state=ConsentState.REVOKED.value,
@@ -1291,6 +1293,7 @@ async def test_the_inbox_marks_restrictions_and_exceptions_in_the_list(
         assert conversation is not None
         session.add(
             SuppressionRecord(
+                organization_id=conversation.organization_id,
                 lead_id=conversation.lead_id,
                 scope="BusinessInitiated",
                 reason="LegacyFollowUpOptOut",

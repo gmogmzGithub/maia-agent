@@ -134,7 +134,10 @@ class AppointmentReminders:
             if kind.value in existing:
                 continue
             row = AppointmentReminder(
-                appointment_id=appointment.id, kind=kind.value, due_at=due_at
+                organization_id=appointment.organization_id,
+                appointment_id=appointment.id,
+                kind=kind.value,
+                due_at=due_at,
             )
             self._session.add(row)
             try:
@@ -210,6 +213,7 @@ class AppointmentReminders:
             )
             await record_audit(
                 self._session,
+                organization_id=appointment.organization_id,
                 actor_type="Product",
                 actor_id="AppointmentReminders",
                 action="WithholdAppointmentReminder",

@@ -83,7 +83,7 @@ from realestate.domain.sponsorship.quoting import (
     QuoteView,
     SponsorshipQuoting,
 )
-from realestate.domain.sponsorship.reporting import SponsorshipReporting
+from realestate.domain.sponsorship.reporting import SponsorshipReport, SponsorshipReporting
 from realestate.domain.sponsorship.sharing import (
     ShareStatus,
     SponsorshipSharing,
@@ -828,15 +828,7 @@ async def internal_report(
             )
     except CommercialError as exc:
         raise HTTPException(status_code=404, detail=exc.message) from exc
-    shared = "".join(
-        (
-            f'<h2 class="report-heading">{escape(line.text)}</h2>'
-            if str(line.style) == "heading"
-            else f"<p>{escape(line.text)}</p>"
-        )
-        for line in report_lines(report)
-        if line.text
-    )
+    shared = _internal_campaign_report(report)
     internal = report.internal
     assert internal is not None
     internal_block = f"""
@@ -865,6 +857,101 @@ guardadas.</p>
         shared + internal_block,
         active=ACTIVE,
     )
+
+
+def _internal_campaign_report(report: SponsorshipReport) -> str:
+    """The campaign dashboard in the same order and vocabulary as the buyer view."""
+    steps = {row.step: row for row in report.funnel}
+
+    def count(step: str) -> int:
+        return steps[step].count or 0
+
+    interest = sum(
+        count(step) for step in ("SavedOrShared", "MaiaStarted", "WhatsAppHandoff")
+    )
+    headline = (
+        ("Impresiones visibles", count("SponsoredVisibleImpression")),
+        ("Aperturas de publicación", count("ListingOpened")),
+        ("Acciones de interés", interest),
+        ("Solicitudes de cita", count("AppointmentRequested")),
+    )
+    stats = "".join(
+        '<div class="stat"><div class="muted">'
+        f'{escape(label)}</div><div class="value">{value}</div></div>'
+        for label, value in headline
+    )
+    status = "".join(
+        '<div class="stat"><div class="muted">'
+        f'{escape(label)}</div><div class="value">{escape(value)}</div></div>'
+        for label, value in (
+            ("Estado", report.campaign.status_label),
+            ("Días pagados", report.campaign.paid_days),
+            ("Entregados", report.campaign.delivered_days),
+            ("Restantes", report.campaign.remaining_days),
+        )
+    )
+    trend_rows = "".join(
+        "<tr>"
+        f'<th scope="row">{point.period_start:%d/%m/%Y}</th>'
+        f"<td>{point.visible_impressions}</td>"
+        f"<td>{point.listing_opens}</td>"
+        f"<td>{point.interest_actions}</td>"
+        "</tr>"
+        for point in report.trend
+    )
+    funnel_rows = "".join(
+        "<tr>"
+        f'<th scope="row">{escape(row.label)}</th>'
+        f"<td>{escape(row.count if row.count is not None else 'Sin registrar')}</td>"
+        f"<td>{escape(row.from_previous.text)}</td>"
+        "</tr>"
+        for row in report.funnel
+    )
+    details: list[str] = []
+    in_details = False
+    for line in report_lines(report):
+        if line.text == "Definiciones":
+            break
+        if line.text == "Resultados conocidos":
+            in_details = True
+        if not in_details or not line.text:
+            continue
+        details.append(
+            f'<h2 class="report-heading">{escape(line.text)}</h2>'
+            if str(line.style) == "heading"
+            else f"<p>{escape(line.text)}</p>"
+        )
+    definitions = "".join(
+        f"<li>{escape(definition)}</li>" for definition in report.definitions
+    )
+    return f"""
+<h1>Reporte de campaña {escape(report.label)}</h1>
+<p class="muted">{escape(report.listing_title)} · periodo
+{report.period_start:%d/%m/%Y} a {report.period_end:%d/%m/%Y} · definiciones
+{escape(report.definition_version)}</p>
+<h2>Cuatro cifras para empezar</h2>
+<div class="stats">{stats}</div>
+<h2>Estado de la campaña</h2>
+<div class="stats">{status}</div>
+<h2>Tendencia diaria</h2>
+{table(
+    "Visibilidad, aperturas e interés por día",
+    ("Fecha", "Visibles", "Aperturas", "Interés"),
+    trend_rows,
+    empty_message="Todavía no hay historial medido para este periodo.",
+)}
+<h2>Embudo completo</h2>
+{table(
+    "Del lugar entregado al resultado conocido",
+    ("Paso", "Volumen", "Conversión anterior"),
+    funnel_rows,
+)}
+{"".join(details)}
+<h2>Definiciones de medición</h2>
+<ul>{definitions}</ul>
+<p>{escape(report.disclosure)}</p>
+<p class="hint">{escape(report.disclaimer)}</p>
+"""
 
 
 def _message(exc: Exception) -> str:

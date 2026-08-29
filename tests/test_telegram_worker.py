@@ -19,6 +19,7 @@ from realestate.hermes.sessions import TurnResult
 from realestate.worker import telegram as worker_module
 from realestate.worker.telegram import TelegramAdminWorker
 from tests.conftest import DATABASE_URL, requires_postgres
+from tests.fixtures import commercial
 
 pytestmark = requires_postgres
 
@@ -36,6 +37,10 @@ class StubTelegram:
         self.sent: list[tuple[str, str]] = []
         self.offsets: list[int] = []
         self.configured = True
+        # Stage 9: the worker resolves which Organization's administrative
+        # channel this bot serves from a channel binding on its id, and does
+        # nothing at all when the bot is unbound (ADR-0050).
+        self.bot_id = commercial.TEST_TELEGRAM_BOT_ID
 
     async def get_updates(self, offset: int, limit: int = 20) -> list[TelegramUpdate]:
         self.offsets.append(offset)
@@ -181,7 +186,9 @@ async def test_a_repolled_update_is_not_executed_twice(database, stub_turn) -> N
     await worker.tick()
     # Telegram re-delivers the same update before the cursor took effect.
     telegram.offsets.clear()
-    await worker._handle(update(1, "desactiva Casa Roble"))
+    async with database.session_scope() as session:
+        organization_id = await commercial.organization_id(session)
+    await worker._handle(update(1, "desactiva Casa Roble"), organization_id)
 
     assert len(stub_turn["prompts"]) == 1
     assert len(telegram.sent) == 1
@@ -256,7 +263,12 @@ async def test_a_failing_turn_does_not_wedge_the_channel(database, monkeypatch) 
     assert messages[0].processed_at is None
     assert telegram.sent == []
     async with database.session_scope() as session:
-        cursor = await session.get(ChannelCursor, "telegram")
+        # The cursor is keyed by (Organization, channel) since Stage 9: two
+        # Organizations polling their own bots share a channel *name* and
+        # nothing else (ADR-0050).
+        cursor = await session.get(
+            ChannelCursor, (await commercial.organization_id(session), "telegram")
+        )
     assert cursor.cursor == 2
 
 

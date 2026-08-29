@@ -7,6 +7,12 @@ from typing import Any, Protocol
 
 import httpx
 
+# Re-exported: the site's app module imports them from here, and Product reads
+# the same two names, so the two processes cannot disagree about what a host is
+# or about which header carries it.
+from realestate.hosts import SITE_HOST_HEADER as SITE_HOST_HEADER
+from realestate.hosts import host_of as host_of
+
 
 @dataclass(frozen=True)
 class GatewayResponse:
@@ -35,8 +41,16 @@ class ProductSiteGateway(Protocol):
 class HttpProductSiteGateway:
     """Production adapter; browser traffic never receives Product credentials."""
 
-    def __init__(self, base_url: str, token: str, timeout: float = 30.0) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        token: str,
+        timeout: float = 30.0,
+        *,
+        site_host: str = "",
+    ) -> None:
         self._token = token
+        self._site_host = site_host
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"), timeout=timeout, follow_redirects=False
         )
@@ -56,6 +70,10 @@ class HttpProductSiteGateway:
         # ``token_header`` so a caller adding measurement context cannot
         # accidentally displace the Authorization header.
         sent = {"Authorization": f"Bearer {self._token}", **(headers or {})}
+        if self._site_host:
+            # Set after the caller's headers so a measurement header cannot
+            # displace the value Product resolves the Organization from.
+            sent[SITE_HOST_HEADER] = self._site_host
         if token_header is not None:
             sent[token_header[0]] = token_header[1]
         response = await self._client.request(

@@ -13,7 +13,7 @@ seam that only works when a test constructs its inputs by hand fails here.
 from __future__ import annotations
 
 import uuid
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -248,33 +248,54 @@ async def test_an_opt_out_message_suppresses_and_still_opens_the_record(
         assert opportunity.stage == OpportunityStage.IN_CONVERSATION.value
 
 
-async def test_the_intake_resolves_the_organization_by_slug(wired) -> None:
-    """Meta knows a phone number, not a brokerage. One place resolves it."""
+async def test_the_intake_resolves_the_organization_from_the_channel(wired) -> None:
+    """Meta knows a phone number, and Stage 9 makes that the whole answer.
+
+    This test used to assert that intake resolved the Organization *by slug* —
+    the shortcut ADR-0019 recorded as "the seam a mapping will land on". The
+    mapping has landed: the number the message arrived on is looked up in the
+    channel bindings, and an unbound one is refused (ADR-0050).
+    """
+    from realestate.db.models import ChannelBindingKind
+    from realestate.domain.platform.routing import OrganizationRouting
+
     _client, database = wired
     async with database.session_scope() as session:
         expected = await commercial.organization_id(session)
-        assert await CommercialIntake(session).organization_id() == expected
+        routed = await OrganizationRouting(session).resolve(
+            ChannelBindingKind.WHATSAPP_PHONE_NUMBER,
+            commercial.TEST_PHONE_NUMBER_ID,
+        )
+        assert routed.organization_id == expected
 
 
-async def test_a_missing_organization_stops_intake_loudly(
-    wired, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A database behind the code must fail, not scope work to nothing.
+async def test_an_unbound_number_stops_intake_loudly(wired) -> None:
+    """A message on a number nobody claims is refused, never defaulted.
 
-    The slug is redirected rather than the row deleted: ``properties`` and the
-    other scoped roots reference the Organization with ``ON DELETE RESTRICT``,
-    so deleting it would fail for the wrong reason and take the rest of the
-    session's fixtures with it.
+    The failure this replaces is not an exception — it is a *success*: the
+    message would have been filed under whichever Organization happened to
+    exist, answered from the wrong channel, and attributed to somebody who never
+    spoke to that customer.
     """
-    from realestate.domain.commercial import organization as organization_module
+    from realestate.channels.whatsapp.payload import InboundMessage
+    from realestate.domain.inbox import InboxService
+    from realestate.domain.platform.routing import UnroutableChannel
 
     _client, database = wired
-    # Patched on the directory, which is now the single place that answers
-    # "which Organization is this" for every path.
-    monkeypatch.setattr(organization_module, "LAREVIA_SLUG", "no-existe")
     async with database.session_scope() as session:
-        with pytest.raises(RuntimeError, match="alembic upgrade head"):
-            await CommercialIntake(session).organization_id()
+        with pytest.raises(UnroutableChannel):
+            await InboxService(session).accept(
+                InboundMessage(
+                    wamid="wamid.flow.unbound",
+                    from_wa_id="5213300000000",
+                    phone_number_id="000000000000000",
+                    message_type="text",
+                    sent_at=datetime.now(tz=UTC),
+                    text="Hola",
+                    profile_name=None,
+                    raw={},
+                )
+            )
 
 
 async def test_a_conversation_without_a_resolved_contact_reports_none(wired) -> None:

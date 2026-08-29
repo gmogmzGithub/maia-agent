@@ -53,6 +53,7 @@ from tests.conftest import (
     larevia_organization_id,
     requires_postgres,
 )
+from tests.fixtures import commercial
 
 pytestmark = requires_postgres
 
@@ -94,6 +95,7 @@ async def seed(
         session.add(lead)
         await session.flush()
         cycle = LeadEngagementCycle(
+            organization_id=lead.organization_id,
             lead_id=lead.id,
             started_at=NOW - timedelta(days=2),
             expires_at=NOW + timedelta(days=28),
@@ -104,13 +106,14 @@ async def seed(
             organization_id=organization_id,
             lead_id=lead.id,
             cycle_id=cycle.id,
-            phone_number_id="123456",
+            phone_number_id=commercial.TEST_PHONE_NUMBER_ID,
         )
         session.add(conversation)
         await session.flush()
         if last_inbound is not None:
             session.add(
                 InboxMessage(
+                    organization_id=conversation.organization_id,
                     conversation_id=conversation.id,
                     wamid=f"wamid.{last_inbound.timestamp()}",
                     from_wa_id=WA_ID,
@@ -125,6 +128,7 @@ async def seed(
         if last_outbound is not None:
             session.add(
                 OutboxMessage(
+                    organization_id=conversation.organization_id,
                     conversation_id=conversation.id,
                     idempotency_key=f"seed:{last_outbound.timestamp()}",
                     to_wa_id=WA_ID,
@@ -273,7 +277,10 @@ async def test_trigger_messages_from_another_conversation_are_refused(
         session.add(lead)
         await session.flush()
         cycle = LeadEngagementCycle(
-            lead_id=lead.id, started_at=NOW, expires_at=NOW + timedelta(days=30)
+            organization_id=organization_id,
+            lead_id=lead.id,
+            started_at=NOW,
+            expires_at=NOW + timedelta(days=30),
         )
         session.add(cycle)
         await session.flush()
@@ -281,11 +288,12 @@ async def test_trigger_messages_from_another_conversation_are_refused(
             organization_id=organization_id,
             lead_id=lead.id,
             cycle_id=cycle.id,
-            phone_number_id="123456",
+            phone_number_id=commercial.TEST_PHONE_NUMBER_ID,
         )
         session.add(other)
         await session.flush()
         stranger = InboxMessage(
+            organization_id=other.organization_id,
             conversation_id=other.id,
             wamid="wamid.stranger",
             from_wa_id="5215558880000",
@@ -357,6 +365,7 @@ async def test_a_revoked_consent_does_not_count_as_permission(
     async with database.session_scope() as session:
         session.add(
             ConsentRecord(
+                organization_id=await larevia_organization_id(session),
                 lead_id=lead_id,
                 category=ConsentCategory.MARKETING.value,
                 state=ConsentState.GRANTED.value,
@@ -366,6 +375,7 @@ async def test_a_revoked_consent_does_not_count_as_permission(
         )
         session.add(
             ConsentRecord(
+                organization_id=await larevia_organization_id(session),
                 lead_id=lead_id,
                 category=ConsentCategory.MARKETING.value,
                 state=ConsentState.REVOKED.value,
@@ -391,6 +401,7 @@ async def test_a_suppressed_contact_receives_nothing_proactive(database) -> None
     async with database.session_scope() as session:
         session.add(
             SuppressionRecord(
+                organization_id=await larevia_organization_id(session),
                 lead_id=lead_id, reason="ExplicitOptOut", evidence="baja"
             )
         )
@@ -413,6 +424,7 @@ async def test_a_suppressed_contact_can_still_be_answered(database) -> None:
     async with database.session_scope() as session:
         session.add(
             SuppressionRecord(
+                organization_id=await larevia_organization_id(session),
                 lead_id=lead_id, reason="ExplicitOptOut", evidence="baja"
             )
         )
@@ -435,6 +447,7 @@ async def test_a_reply_from_the_contact_stops_the_generic_follow_up(
     async with database.session_scope() as session:
         session.add(
             ConsentRecord(
+                organization_id=await larevia_organization_id(session),
                 lead_id=lead_id,
                 category=ConsentCategory.MARKETING.value,
                 state=ConsentState.GRANTED.value,
@@ -473,6 +486,7 @@ async def test_a_follow_up_proceeds_once_nothing_is_owed(database, monkeypatch) 
     async with database.session_scope() as session:
         session.add(
             ConsentRecord(
+                organization_id=await larevia_organization_id(session),
                 lead_id=lead_id,
                 category=ConsentCategory.MARKETING.value,
                 state=ConsentState.GRANTED.value,
@@ -693,6 +707,7 @@ async def test_a_legacy_row_without_gate_evidence_is_quarantined(database) -> No
         conversation = await session.get(Conversation, conversation_id)
         assert conversation is not None
         legacy = OutboxMessage(
+            organization_id=conversation.organization_id,
             conversation_id=conversation.id,
             idempotency_key="legacy:pending",
             to_wa_id=WA_ID,
@@ -726,6 +741,7 @@ async def test_a_reply_that_arrives_after_queueing_stops_delivery(
     async with database.session_scope() as session:
         session.add(
             ConsentRecord(
+                organization_id=await larevia_organization_id(session),
                 lead_id=lead_id,
                 category=ConsentCategory.MARKETING.value,
                 state=ConsentState.GRANTED.value,
@@ -748,7 +764,7 @@ async def test_a_reply_that_arrives_after_queueing_stops_delivery(
             InboundMessage(
                 wamid="wamid.after-queue",
                 from_wa_id=WA_ID,
-                phone_number_id="123456",
+                phone_number_id=commercial.TEST_PHONE_NUMBER_ID,
                 message_type="text",
                 text="Sigo interesado",
                 sent_at=NOW + timedelta(minutes=1),
@@ -784,7 +800,7 @@ async def test_an_opt_out_racing_a_request_cannot_leave_deliverable_work(
                 InboundMessage(
                     wamid="wamid.racing-optout",
                     from_wa_id=WA_ID,
-                    phone_number_id="123456",
+                    phone_number_id=commercial.TEST_PHONE_NUMBER_ID,
                     message_type="text",
                     text="baja",
                     sent_at=NOW + timedelta(minutes=1),
@@ -851,7 +867,7 @@ async def test_accepting_an_opt_out_message_suppresses_the_contact(database) -> 
             InboundMessage(
                 wamid="wamid.optout",
                 from_wa_id=WA_ID,
-                phone_number_id="123456",
+                phone_number_id=commercial.TEST_PHONE_NUMBER_ID,
                 message_type="text",
                 text="Ya no me escriban",
                 sent_at=NOW,
@@ -888,7 +904,7 @@ async def test_recording_the_same_opt_out_twice_keeps_one_active_record(
                 InboundMessage(
                     wamid=f"wamid.optout.{index}",
                     from_wa_id=WA_ID,
-                    phone_number_id="123456",
+                    phone_number_id=commercial.TEST_PHONE_NUMBER_ID,
                     message_type="text",
                     text="baja",
                     sent_at=NOW + timedelta(seconds=index),
@@ -920,7 +936,7 @@ async def test_an_opt_out_immediately_blocks_the_next_proactive_message(
             InboundMessage(
                 wamid="wamid.optout.blocking",
                 from_wa_id=WA_ID,
-                phone_number_id="123456",
+                phone_number_id=commercial.TEST_PHONE_NUMBER_ID,
                 message_type="text",
                 text="baja",
                 sent_at=NOW,

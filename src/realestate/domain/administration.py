@@ -35,7 +35,6 @@ from realestate.domain.properties import (
     accepted_version,
     resolve_property,
 )
-from realestate.domain.commercial.organization import OrganizationDirectory
 from realestate.domain.catalog.eligibility import EligibilityPurpose
 from realestate.domain.catalog.administration import (
     CatalogAdministration,
@@ -52,6 +51,11 @@ VALID_INACTIVE_REASONS = tuple(reason.value for reason in PropertyInactiveReason
 class Administrator:
     """Trusted actor identity, derived from the session binding — never a model argument."""
 
+    #: Which Organization this administrator administers. Carried on the
+    #: identity rather than resolved inside the service, so an Administrative
+    #: session bound to one brokerage cannot reach another's inventory even if a
+    #: query below forgot to scope itself (ADR-0050).
+    organization_id: uuid.UUID
     actor_id: str
     origin_message_id: str | None = None
 
@@ -90,11 +94,7 @@ class AdministrationService:
                 "detail": "inactive_reason must be omitted when status is Active",
             }
 
-        prop = await resolve_property(
-            self._session,
-            reference,
-            await OrganizationDirectory(self._session).organization_id(),
-        )
+        prop = await resolve_property(self._session, reference, actor.organization_id)
         if prop is None:
             return {"result": "not_found"}
 
@@ -108,11 +108,10 @@ class AdministrationService:
         if changed:
             prop.status = status
             prop.inactive_reason = target_reason
-            organization_id = await OrganizationDirectory(
-                self._session
-            ).organization_id()
             await CatalogAdministration(self._session).record(
-                Actor.product(organization_id, f"LegacyStatus:{actor.actor_id}"),
+                Actor.product(
+                    actor.organization_id, f"LegacyStatus:{actor.actor_id}"
+                ),
                 SyncLegacyPropertyStatus(
                     property_uuid=prop.id,
                     status=status,
@@ -167,17 +166,25 @@ class AdministrationService:
             "affected_confirmed_appointments": affected,
         }
 
-    async def list_properties(self) -> dict[str, Any]:
-        """Compact inventory for an administrator. No document prose (P-066)."""
+    async def list_properties(self, organization_id: uuid.UUID) -> dict[str, Any]:
+        """Compact inventory for an administrator. No document prose (P-066).
+
+        The Organization is a parameter, not a lookup. This query read the whole
+        ``properties`` table until Stage 9 — the single widest cross-organization
+        leak in the product, reachable from an Administrative Hermes session.
+        """
         rows = (
             await self._session.execute(
-                select(Property).order_by(Property.property_key).limit(MAX_PROPERTIES)
+                select(Property)
+                .where(Property.organization_id == organization_id)
+                .order_by(Property.property_key)
+                .limit(MAX_PROPERTIES)
             )
         ).scalars().all()
 
         # Counted for the whole inventory in one grouped query rather than once
         # per row: this runs on every administrative overview and page load.
-        counts = await self._confirmed_appointment_counts()
+        counts = await self._confirmed_appointment_counts(organization_id)
         properties = []
         for prop in rows:
             record = await accepted_version(self._session, prop)
@@ -199,7 +206,9 @@ class AdministrationService:
             )
         return {"result": "found", "properties": properties}
 
-    async def list_active_properties_for_sales(self) -> dict[str, Any]:
+    async def list_active_properties_for_sales(
+        self, organization_id: uuid.UUID
+    ) -> dict[str, Any]:
         """Active, customer-safe inventory summaries for the Sales Role.
 
         Sales may answer an explicit request for available options, but must not
@@ -207,7 +216,6 @@ class AdministrationService:
         Full facts still require the role-aware ``get_property_information``
         operation for a named Property.
         """
-        organization_id = await OrganizationDirectory(self._session).organization_id()
         rows = await CatalogProjection(
             self._session, Actor.product(organization_id, "PropertyList")
         ).list_authorized(EligibilityPurpose.AGENT_DISCLOSURE, datetime.now(tz=UTC))
@@ -256,12 +264,16 @@ class AdministrationService:
             ).scalar_one()
         )
 
-    async def _confirmed_appointment_counts(self) -> dict[uuid.UUID, int]:
+    async def _confirmed_appointment_counts(
+        self, organization_id: uuid.UUID
+    ) -> dict[uuid.UUID, int]:
         """The same count as ``confirmed_appointments``, for every Property."""
         rows = await self._session.execute(
             self._confirmed_query(
                 select(Appointment.property_uuid, func.count(Appointment.id))
-            ).group_by(Appointment.property_uuid)
+            )
+            .where(Appointment.organization_id == organization_id)
+            .group_by(Appointment.property_uuid)
         )
         return {property_uuid: int(total) for property_uuid, total in rows}
 
@@ -295,6 +307,7 @@ class AdministrationService:
         # P-065: an administrative mutation always carries the message it came from.
         await record_audit(
             self._session,
+            organization_id=actor.organization_id,
             actor_type="Administrative",
             actor_id=actor.actor_id,
             action=action,

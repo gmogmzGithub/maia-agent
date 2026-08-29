@@ -262,6 +262,7 @@ class Assignment:
         opportunity.responsible_advisor_id = None
         await record_audit(
             self._session,
+            organization_id=actor.organization_id,
             actor_type=actor.actor_type,
             actor_id=actor.label,
             action="ReleaseOpportunityAssignment",
@@ -600,6 +601,7 @@ class Assignment:
         await self._resolve_queue_entry(opportunity.id, actor.label)
         await record_audit(
             self._session,
+            organization_id=actor.organization_id,
             actor_type=actor.actor_type,
             actor_id=actor.label,
             action="AssignOpportunity",
@@ -654,6 +656,7 @@ class Assignment:
         self._session.add(entry)
         await record_audit(
             self._session,
+            organization_id=opportunity.organization_id,
             actor_type="Product",
             actor_id="Assignment",
             action="EnqueueForAssignment",

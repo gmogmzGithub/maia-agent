@@ -56,6 +56,40 @@ Maia owns:
 The model may request operations through typed tools. It must not directly own
 database writes, Calendar credentials, WhatsApp delivery, or business truth.
 
+## Organizational Boundary
+
+Since Stage 9 the product serves several Brokerage Organizations. One rule holds
+everywhere and has no exceptions for convenience:
+
+**No operation reaches across Organizations.**
+
+In practice, when you touch this codebase:
+
+- every table holding an Organization's data names it in an `organization_id`
+  column. `src/realestate/domain/platform/scoping.py` says which tables those
+  are, and a test refuses a table missing from it — so a new table needs an entry
+  there, with a reason if it is deliberately platform-wide;
+- a query filters on `organization_id` unless it is keyed on an opaque identifier
+  that already belongs to exactly one Organization — a row's own UUID reached
+  through a composite foreign key. Anything keyed on a *guessable* value (a
+  Property Key, an appointment reference, a `wamid`, an idempotency key, an event
+  key) or on nothing at all must filter, because that is the query that answers
+  with another brokerage's row;
+- an inbound identifier — WhatsApp number, Telegram bot, public hostname —
+  resolves through `OrganizationRouting`. An unbound one is a refusal. Never
+  default to "the only Organization";
+- a credential is never inherited. `IntegrationCredentials.resolve` answers for
+  one Organization or refuses. The process environment belongs to the single
+  founding Organization named by `PLATFORM_BOOTSTRAP_ORGANIZATION_SLUG`;
+- commercial, catalog, conversation and analytics work takes an `Actor`.
+  Provisioning, configuration, entitlements and the data lifecycle take a
+  `PlatformOperator`. Do not add a surface that accepts both;
+- there is no superadmin, and adding one is an ADR rather than a patch. Reading a
+  customer's records means a temporary, explained, expiring support grant;
+- a configuration document never contains a credential. Store a reference.
+
+See `docs/managed-platform.md` for the reasoning and the operating limits.
+
 ## Implementation Style
 
 - Keep the MVP simple and operational.

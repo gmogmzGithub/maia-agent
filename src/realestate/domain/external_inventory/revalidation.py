@@ -150,6 +150,7 @@ class ListingRevalidation:
         self._session.add(record)
         await record_audit(
             self._session,
+            organization_id=self._actor.organization_id,
             actor_type=self._actor.actor_type,
             actor_id=self._actor.label,
             action="ExternalListingRevalidated",

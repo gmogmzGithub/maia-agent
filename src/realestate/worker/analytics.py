@@ -17,6 +17,13 @@ one minute changes nothing.
 
 Nothing in here can reach a Contact. It writes no Outbox row, requests no
 outbound message and takes no commercial decision a human did not already record.
+
+Since Stage 9 the pass runs **once per operating Organization**, with its own
+``Actor`` each time. It used to resolve "the Organization" by slug, which with a
+second one would have emitted the founding brokerage's events for everybody's
+traffic and left the newcomer's dashboard empty. The projection itself is drained
+once, because the emission sequence is one monotonic stream and the events in it
+each carry their own Organization (ADR-0050).
 """
 
 from __future__ import annotations
@@ -30,7 +37,7 @@ from realestate.domain.analytics.emission import AnalyticsEmission
 from realestate.domain.analytics.projection import AnalyticsProjection
 from realestate.domain.clock import utc_now
 from realestate.domain.commercial.actors import Actor
-from realestate.domain.commercial.organization import OrganizationDirectory
+from realestate.domain.platform.registry import operating_organization_ids
 from realestate.domain.sponsorship.campaigns import SponsorshipCampaigns
 from realestate.domain.sponsorship.quoting import SponsorshipQuoting
 
@@ -117,29 +124,41 @@ class AnalyticsWorker:
     async def run(self, *, now: datetime | None = None) -> AnalyticsPassReport:
         """One pass, ignoring the interval. The seam the suites drive."""
         moment = now or utc_now()
+        emitted = 0
+        examined = 0
+        counted = 0
+        paused = 0
+        expired = 0
+        projected = 0
+        late = 0
         async with self._database.session_scope() as session:
-            organization_id = await OrganizationDirectory(session).organization_id()
-            actor = Actor.product(organization_id, "AnalyticsWorker")
+            for organization_id in await operating_organization_ids(session):
+                actor = Actor.product(organization_id, "AnalyticsWorker")
 
-            emitted = (await AnalyticsEmission(session, actor).emit_operational()).total
+                emitted += (
+                    await AnalyticsEmission(session, actor).emit_operational()
+                ).total
 
-            campaigns = SponsorshipCampaigns(session, actor)
-            outcomes = await campaigns.run_daily(at=moment)
-            paused = sum(1 for item in outcomes if item.decision.blocked)
-            counted = sum(1 for item in outcomes if item.counted)
+                outcomes = await SponsorshipCampaigns(session, actor).run_daily(
+                    at=moment
+                )
+                examined += len(outcomes)
+                paused += sum(1 for item in outcomes if item.decision.blocked)
+                counted += sum(1 for item in outcomes if item.counted)
 
-            expired = await SponsorshipQuoting(session, actor).expire_due(at=moment)
+                expired += await SponsorshipQuoting(session, actor).expire_due(
+                    at=moment
+                )
 
-            # Projected last, so events emitted by this very pass — including
-            # the ones the day accounting produced — are in the aggregates the
-            # dashboard reads immediately afterwards.
-            projection = await AnalyticsProjection(session).drain(at=moment)
+                projection = await AnalyticsProjection(session, actor).drain(at=moment)
+                projected += projection.projected
+                late += projection.late
             await session.commit()
         return AnalyticsPassReport(
             emitted=emitted,
-            projected=projection.projected,
-            late=projection.late,
-            campaigns_examined=len(outcomes),
+            projected=projected,
+            late=late,
+            campaigns_examined=examined,
             days_counted=counted,
             campaigns_paused=paused,
             quotes_expired=expired,

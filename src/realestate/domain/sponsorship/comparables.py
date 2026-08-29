@@ -39,23 +39,35 @@ from realestate.domain.sponsorship.labels import INSUFFICIENT_HISTORY
 
 #: Commercial Price Bands in MXN. An analytics grouping of the Listing's asking
 #: price — never a statement about the Contact (CONTEXT.md).
-PRICE_BANDS: tuple[tuple[str, Decimal | None], ...] = (
-    ("Hasta 2 M", Decimal("2000000")),
-    ("2 a 4 M", Decimal("4000000")),
-    ("4 a 7 M", Decimal("7000000")),
-    ("7 a 12 M", Decimal("12000000")),
-    ("Más de 12 M", None),
-)
+PRICE_BANDS: dict[str, tuple[tuple[str, Decimal | None], ...]] = {
+    "Sale": (
+        ("Hasta 5 M", Decimal("5000000")),
+        ("5 a 8 M", Decimal("8000000")),
+        ("8 a 12 M", Decimal("12000000")),
+        ("12 a 20 M", Decimal("20000000")),
+        ("Más de 20 M", None),
+    ),
+    "Rental": (
+        ("Hasta 20 mil", Decimal("20000")),
+        ("20 a 35 mil", Decimal("35000")),
+        ("35 a 50 mil", Decimal("50000")),
+        ("50 a 85 mil", Decimal("85000")),
+        ("Más de 85 mil", None),
+    ),
+}
 
 
-def price_band(amount: Decimal | None) -> str:
+def price_band(amount: Decimal | None, *, operation: str) -> str:
     """The band one asking price falls in, or an explicit unknown."""
     if amount is None:
         return "Sin precio registrado"
-    for label, ceiling in PRICE_BANDS:
+    bands = PRICE_BANDS.get(operation)
+    if bands is None:
+        return "Sin banda para la operación"
+    for label, ceiling in bands:
         if ceiling is None or amount <= ceiling:
             return label
-    return PRICE_BANDS[-1][0]  # pragma: no cover - the open band ends the loop
+    return bands[-1][0]  # pragma: no cover - the open band ends the loop
 
 
 @dataclass(frozen=True)
@@ -71,9 +83,21 @@ class CohortKey:
 
     @property
     def text(self) -> str:
+        operation = {"Sale": "Venta", "Rental": "Renta"}.get(
+            self.operation, self.operation
+        )
+        property_type = {
+            "House": "Casa",
+            "Apartment": "Departamento",
+            "Land": "Terreno",
+            "Development": "Desarrollo",
+        }.get(self.property_type, self.property_type)
+        surface = {"Search": "Resultados", "Homepage": "Inicio"}.get(
+            self.surface, self.surface
+        )
         return (
-            f"{self.operation} · {self.municipality} · {self.property_type} · "
-            f"{self.price_band} · {self.presentation_tier} · {self.surface}"
+            f"{operation} · {self.municipality} · {property_type} · "
+            f"{self.price_band} · {self.presentation_tier} · {surface}"
         )
 
 
@@ -131,7 +155,10 @@ class SponsorshipComparables:
             operation=offer.operation if offer else "Sin operación",
             municipality=_municipality(listing.public_location),
             property_type=await self._property_type(listing),
-            price_band=price_band(offer.price_amount if offer else None),
+            price_band=price_band(
+                offer.price_amount if offer else None,
+                operation=offer.operation if offer else "Sin operación",
+            ),
             presentation_tier=listing.tier_override
             or listing.automatic_tier
             or "Larevia",

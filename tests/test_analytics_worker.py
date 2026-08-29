@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from realestate.db.engine import Database
 from realestate.db.models import (
     AnalyticsDomainEvent,
+    AnalyticsEventName,
     AnalyticsOutboxEntry,
     AnalyticsOutboxStatus,
     OutboxMessage,
@@ -23,6 +24,7 @@ from realestate.db.models import (
     SponsorshipCampaignStatus,
     SponsorshipQuoteStatus,
 )
+from realestate.domain.analytics.events import AnalyticsEvent, AnalyticsEvents
 from realestate.domain.sponsorship.quoting import (
     QuoteCommand,
     SponsorshipQuoting,
@@ -69,11 +71,23 @@ async def test_one_pass_emits_projects_and_accounts_for_the_day(database) -> Non
         admin = await actor_for(session, ADMIN_LOGIN)
         await published_catalog(session, admin)
         campaign = await active_campaign(session, admin, "trabajador", paid_days=5)
+        await AnalyticsEvents(session, admin).record(
+            AnalyticsEvent(
+                event_key="worker-sponsored-served",
+                name=AnalyticsEventName.SPONSORED_SERVED_IMPRESSION,
+                occurred_at=MOMENT,
+                listing_id=campaign.listing.listing_id,
+                campaign_id=campaign.campaign_id,
+                session_value="worker-session",
+                attributes={"surface": "Search", "position": 1},
+            )
+        )
         state = await opportunity_for(session, "5213344440001")
         conversation = await make_conversation(session, state.lead, started_at=MOMENT)
         await make_inbound(session, conversation, sent_at=MOMENT)
         session.add(
             OutboxMessage(
+                organization_id=conversation.organization_id,
                 conversation_id=conversation.id,
                 idempotency_key="worker-outbox-1",
                 to_wa_id=state.lead.wa_id,
@@ -115,6 +129,17 @@ async def test_running_the_pass_again_the_same_day_changes_nothing(
         admin = await actor_for(session, ADMIN_LOGIN)
         await published_catalog(session, admin)
         campaign = await active_campaign(session, admin, "idempotente", paid_days=5)
+        await AnalyticsEvents(session, admin).record(
+            AnalyticsEvent(
+                event_key="idempotent-sponsored-served",
+                name=AnalyticsEventName.SPONSORED_SERVED_IMPRESSION,
+                occurred_at=MOMENT,
+                listing_id=campaign.listing.listing_id,
+                campaign_id=campaign.campaign_id,
+                session_value="idempotent-session",
+                attributes={"surface": "Search", "position": 1},
+            )
+        )
         await session.commit()
 
     worker = AnalyticsWorker(database)

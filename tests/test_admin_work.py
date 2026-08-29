@@ -36,7 +36,13 @@ from realestate.domain.inbox import InboxService
 from realestate.domain.properties import ArtifactStore, PropertyService
 from realestate.app import create_app
 from realestate.config import get_settings
-from tests.conftest import DATABASE_URL, env, requires_postgres, reset_property_inventory
+from tests.conftest import (
+    DATABASE_URL,
+    env,
+    larevia_organization_id,
+    requires_postgres,
+    reset_property_inventory,
+)
 from tests.fixtures import commercial, webhooks
 from tests.fixtures.stubs import SCHEDULE, StubCalendar
 
@@ -66,9 +72,12 @@ async def recovery(tmp_path: Path):
         # authoritative calendar, and reconciliation has to happen before the
         # first inbound message because intake assigns as it opens.
         await commercial.provision_bookable_team(session)
-        await PropertyService(session, ArtifactStore(tmp_path / "artifacts")).accept_upload(
-            "casa-roble.md", V1, actor_id="developer"
-        )
+        organization = await commercial.organization_id(session)
+        await PropertyService(
+            session,
+            ArtifactStore(tmp_path / "artifacts"),
+            organization_id=organization,
+        ).accept_upload("casa-roble.md", V1, actor_id="developer")
         message = parse_webhook(
             webhooks.text_message(wamid="w-recovery", body="quiero una cita")
         ).messages[0]
@@ -117,7 +126,11 @@ async def test_matching_calendar_evidence_confirms_and_queues_one_lead_notice(
 
     async with database.session_scope() as session:
         result = await AdminWorkService(session, calendar, schedule, day_of_reminder_hour=9).resolve(
-            row.reference, "Confirm", Administrator("telegram:1", "update:1")
+            row.reference, "Confirm", Administrator(
+                organization_id=row.organization_id,
+                actor_id="telegram:1",
+                origin_message_id="update:1",
+            )
         )
 
     assert result["result"] == "resolved"
@@ -126,12 +139,25 @@ async def test_matching_calendar_evidence_confirms_and_queues_one_lead_notice(
     async with database.session_scope() as session:
         saved = await session.get(Appointment, row.id)
         outbox = (await session.execute(select(OutboxMessage))).scalars().all()
-        audit = (await session.execute(select(AuditEvent))).scalars().all()
+        # Selected by what it *is* rather than by position: an unordered
+        # ``select`` over the whole audit trail returns rows in whatever order
+        # PostgreSQL likes, so "the last one" was only ever the administrator's
+        # by luck.
+        audit = (
+            await session.execute(
+                select(AuditEvent)
+                .where(
+                    AuditEvent.action == "PendingAdminWorkResolutionRequested"
+                )
+                .where(AuditEvent.subject_id == row.reference)
+            )
+        ).scalars().all()
     assert saved.status == AppointmentStatus.CONFIRMED.value
     assert saved.resolution_notification_status == LeadNotificationStatus.QUEUED.value
     assert len(outbox) == 1
-    assert audit[-1].actor_id == "telegram:1"
-    assert audit[-1].details["origin_message_id"] == "update:1"
+    assert len(audit) == 1
+    assert audit[0].actor_id == "telegram:1"
+    assert audit[0].details["origin_message_id"] == "update:1"
 
 
 async def test_contradictory_or_unavailable_evidence_preserves_needs_review(
@@ -142,7 +168,7 @@ async def test_contradictory_or_unavailable_evidence_preserves_needs_review(
     calendar.find_result = EventResult(CalendarOutcome.UNKNOWN, detail="timeout")
     async with database.session_scope() as session:
         ambiguous = await AdminWorkService(session, calendar, schedule, day_of_reminder_hour=9).resolve(
-            row.reference, "Confirm", Administrator("telegram:1")
+            row.reference, "Confirm", Administrator(organization_id=row.organization_id, actor_id="telegram:1")
         )
     assert ambiguous["result"] == "still_ambiguous"
 
@@ -155,7 +181,7 @@ async def test_contradictory_or_unavailable_evidence_preserves_needs_review(
     )
     async with database.session_scope() as session:
         conflict = await AdminWorkService(session, calendar, schedule, day_of_reminder_hour=9).resolve(
-            row.reference, "Confirm", Administrator("telegram:1")
+            row.reference, "Confirm", Administrator(organization_id=row.organization_id, actor_id="telegram:1")
         )
         saved = await session.get(Appointment, row.id)
     assert conflict["result"] == "conflict"
@@ -172,13 +198,13 @@ async def test_admin_resolution_is_idempotent_and_unknown_work_stays_absent(
     async with database.session_scope() as session:
         service = AdminWorkService(session, calendar, schedule, day_of_reminder_hour=9)
         repeated = await service.resolve(
-            row.reference, "Confirm", Administrator("telegram:1")
+            row.reference, "Confirm", Administrator(organization_id=row.organization_id, actor_id="telegram:1")
         )
         missing = await service.resolve(
-            "APT-DOES-NOT-EXIST", "Confirm", Administrator("telegram:1")
+            "APT-DOES-NOT-EXIST", "Confirm", Administrator(organization_id=row.organization_id, actor_id="telegram:1")
         )
         invalid = await service.resolve(
-            row.reference, "Delete", Administrator("telegram:1")
+            row.reference, "Delete", Administrator(organization_id=row.organization_id, actor_id="telegram:1")
         )
 
     assert repeated == {
@@ -205,9 +231,9 @@ async def test_closed_customer_window_creates_manual_notification_work(recovery)
 
     async with database.session_scope() as session:
         result = await AdminWorkService(session, calendar, schedule, day_of_reminder_hour=9).resolve(
-            row.reference, "Reject", Administrator("telegram:1")
+            row.reference, "Reject", Administrator(organization_id=row.organization_id, actor_id="telegram:1")
         )
-        pending = await AdminWorkService(session, calendar, schedule, day_of_reminder_hour=9).list_pending()
+        pending = await AdminWorkService(session, calendar, schedule, day_of_reminder_hour=9).list_pending(row.organization_id)
 
     assert result["lead_notification"] == "PendingManual"
     assert [item["type"] for item in pending["items"]] == [
@@ -217,10 +243,10 @@ async def test_closed_customer_window_creates_manual_notification_work(recovery)
     async with database.session_scope() as session:
         service = AdminWorkService(session, calendar, schedule, day_of_reminder_hour=9)
         marked = await service.resolve(
-            row.reference, "MarkNotified", Administrator("telegram:1")
+            row.reference, "MarkNotified", Administrator(organization_id=row.organization_id, actor_id="telegram:1")
         )
         repeated = await service.resolve(
-            row.reference, "MarkNotified", Administrator("telegram:1")
+            row.reference, "MarkNotified", Administrator(organization_id=row.organization_id, actor_id="telegram:1")
         )
         saved = await session.get(Appointment, row.id)
 
@@ -239,15 +265,15 @@ async def test_deactivation_opens_review_and_manual_completion_requires_event_ab
         changed = await AdministrationService(session).set_property_status(
             "casa-roble",
             "Inactive",
-            Administrator("telegram:1"),
+            Administrator(organization_id=row.organization_id, actor_id="telegram:1"),
             "Unspecified",
         )
     assert changed["affected_confirmed_appointments"] == 1
 
     async with database.session_scope() as session:
-        work = await AdminWorkService(session, calendar, schedule, day_of_reminder_hour=9).list_pending()
+        work = await AdminWorkService(session, calendar, schedule, day_of_reminder_hour=9).list_pending(row.organization_id)
         first = await AdminWorkService(session, calendar, schedule, day_of_reminder_hour=9).resolve(
-            row.reference, "HandleManually", Administrator("telegram:1")
+            row.reference, "HandleManually", Administrator(organization_id=row.organization_id, actor_id="telegram:1")
         )
     assert work["items"][0]["type"] == "InactivePropertyAppointmentReview"
     assert first["result"] == "resolved"
@@ -255,14 +281,14 @@ async def test_deactivation_opens_review_and_manual_completion_requires_event_ab
     calendar.find_result = EventResult(CalendarOutcome.OK, event_id="still-there")
     async with database.session_scope() as session:
         blocked = await AdminWorkService(session, calendar, schedule, day_of_reminder_hour=9).resolve(
-            row.reference, "MarkComplete", Administrator("telegram:1")
+            row.reference, "MarkComplete", Administrator(organization_id=row.organization_id, actor_id="telegram:1")
         )
     assert blocked["result"] == "conflict"
 
     calendar.find_result = EventResult(CalendarOutcome.OK)
     async with database.session_scope() as session:
         completed = await AdminWorkService(session, calendar, schedule, day_of_reminder_hour=9).resolve(
-            row.reference, "MarkComplete", Administrator("telegram:1")
+            row.reference, "MarkComplete", Administrator(organization_id=row.organization_id, actor_id="telegram:1")
         )
         saved = await session.get(Appointment, row.id)
     assert completed["result"] == "resolved"
@@ -291,11 +317,13 @@ async def test_plugin_boundary_allows_admin_and_refuses_sales(recovery) -> None:
         session.add_all(
             (
                 AgentSession(
+                    organization_id=await larevia_organization_id(session),
                     hermes_session_id="admin-recovery",
                     role=AgentRole.ADMINISTRATIVE.value,
                     channel_key="telegram:1",
                 ),
                 AgentSession(
+                    organization_id=await larevia_organization_id(session),
                     hermes_session_id="sales-recovery", role=AgentRole.SALES.value
                 ),
             )

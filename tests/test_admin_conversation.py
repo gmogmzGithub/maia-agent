@@ -30,6 +30,7 @@ from realestate.domain.properties import ArtifactStore, PropertyService
 from realestate.hermes import HermesClient
 from realestate.hermes.sessions import RoleSession, submit_prompt
 from tests.conftest import requires_hermes, reset_property_inventory
+from tests.fixtures import commercial
 
 FIXTURES = Path(__file__).parent / "fixtures"
 V1 = (FIXTURES / "casa-roble.md").read_bytes()
@@ -74,7 +75,8 @@ async def admin():
         await session.execute(delete(AgentSession))
         await session.commit()
     async with database.session_scope() as session:
-        service = PropertyService(session, artifacts)
+        organization = await commercial.organization_id(session)
+        service = PropertyService(session, artifacts, organization_id=organization)
         await service.accept_upload("casa-roble.md", V1, actor_id="developer")
         await service.accept_upload(
             "casa-encino.md", second_property(), actor_id="developer"
@@ -112,6 +114,7 @@ async def admin():
                 if row is None:
                     db.add(
                         AgentSession(
+                            organization_id=await commercial.organization_id(db),
                             hermes_session_id=hermes_session_id,
                             role=AgentRole.ADMINISTRATIVE.value,
                             channel_key=CHANNEL_KEY,

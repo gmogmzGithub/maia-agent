@@ -82,9 +82,10 @@ class ConversationRetention:
         """
         moment = now or _now()
         cutoff = moment - timedelta(days=days)
-        candidates = await self._inactive_since(cutoff, limit)
-        if not candidates:
+        pairs = await self._inactive_since(cutoff, limit)
+        if not pairs:
             return ExpiredContent(0, 0, 0, 0)
+        candidates = [conversation_id for conversation_id, _ in pairs]
 
         inbound = await self._session.execute(
             update(InboxMessage)
@@ -127,9 +128,10 @@ class ConversationRetention:
         )
         sessions_closed = len(list(closed))
 
-        for conversation_id in candidates:
+        for conversation_id, organization_id in pairs:
             await record_audit(
                 self._session,
+                organization_id=organization_id,
                 actor_type="Product",
                 actor_id="ConversationRetention",
                 action="ExpireConversationContent",
@@ -160,8 +162,16 @@ class ConversationRetention:
         )
         return result
 
-    async def _inactive_since(self, cutoff: datetime, limit: int) -> list[uuid.UUID]:
+    async def _inactive_since(
+        self, cutoff: datetime, limit: int
+    ) -> list[tuple[uuid.UUID, uuid.UUID]]:
         """Conversations with no interaction after *cutoff* and content left.
+
+        Returns ``(conversation_id, organization_id)`` pairs. The Organization
+        travels with the candidate rather than being looked up again when the
+        audit row is written: a sweep that spans Organizations must attribute
+        each removal to the right one, and a second lookup is a second chance to
+        get it wrong (ADR-0050).
 
         Inactivity is measured across both directions. A thread Product wrote
         to last month is not inactive just because the Contact stopped
@@ -195,7 +205,7 @@ class ConversationRetention:
             .distinct()
         )
         rows = await self._session.execute(
-            select(Conversation.id)
+            select(Conversation.id, Conversation.organization_id)
             .outerjoin(last_inbound, last_inbound.c.conversation_id == Conversation.id)
             .outerjoin(
                 last_outbound, last_outbound.c.conversation_id == Conversation.id
@@ -215,4 +225,4 @@ class ConversationRetention:
             .with_for_update(of=Conversation, skip_locked=True)
             .limit(limit)
         )
-        return [row[0] for row in rows]
+        return [(row[0], row[1]) for row in rows]

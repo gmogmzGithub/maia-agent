@@ -50,6 +50,7 @@ from realestate.domain.analytics.definitions import (
 from realestate.domain.analytics.taxonomy import FUNNEL_STEP_FOR_EVENT
 from realestate.domain.analytics.traffic import TrafficClassifier
 from realestate.domain.clock import utc_now
+from realestate.domain.commercial.actors import Actor
 
 #: How many Outbox rows one pass consumes. Bounded so a backlog is drained over
 #: several loop ticks instead of one transaction that holds locks for minutes.
@@ -106,8 +107,9 @@ class _Cell:
 class AnalyticsProjection:
     """Project enqueued events into versioned, reproducible aggregates."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, actor: Actor) -> None:
         self._session = session
+        self._actor = actor
 
     async def refresh(
         self,
@@ -131,7 +133,11 @@ class AnalyticsProjection:
 
         statement = (
             select(AnalyticsOutboxEntry)
-            .where(AnalyticsOutboxEntry.sequence > start)
+            .where(
+                AnalyticsOutboxEntry.organization_id
+                == self._actor.organization_id,
+                AnalyticsOutboxEntry.sequence > start,
+            )
             .order_by(AnalyticsOutboxEntry.sequence)
             .limit(batch_size)
         )
@@ -155,7 +161,7 @@ class AnalyticsProjection:
         # The watermark before this batch. An event whose day is at or before it
         # is late: its period has already been aggregated and reported.
         watermark = await self._latest_period(definition.version)
-        classifier = TrafficClassifier(self._session)
+        classifier = TrafficClassifier(self._session, self._actor.organization_id)
         touched: set[_Cell] = set()
         projected = excluded = late = 0
 
@@ -168,13 +174,12 @@ class AnalyticsProjection:
             inserted = await self._store(event)
             row.status = AnalyticsOutboxStatus.PROJECTED.value
             row.projected_at = moment
-            if not inserted:
-                continue
-            projected += 1
-            if not classification.counts:
-                excluded += 1
+            if inserted:
+                projected += 1
+                if not classification.counts:
+                    excluded += 1
             period = day_of(row.occurred_at)
-            if watermark is not None and period <= watermark:
+            if inserted and watermark is not None and period <= watermark:
                 late += 1
             touched.add(
                 _Cell(
@@ -192,6 +197,7 @@ class AnalyticsProjection:
         last = rows[-1].sequence
         self._session.add(
             AnalyticsProjectionRun(
+                organization_id=self._actor.organization_id,
                 definition_version=definition.version,
                 from_sequence=start,
                 last_sequence=last,
@@ -279,6 +285,11 @@ class AnalyticsProjection:
         ``ON CONFLICT DO NOTHING`` rather than a read-then-write: the read would
         make a replay racing a live pass insert twice, and the whole reason this
         module can be re-run is that it cannot.
+
+        The conflict target includes both Organization and definition version.
+        Organizations may mint the same key, and one raw event may be replayed
+        under several frozen definitions, while the same projection remains
+        idempotent.
         """
         statement = (
             insert(AnalyticsDomainEvent)
@@ -304,7 +315,13 @@ class AnalyticsProjection:
                 occurred_at=event.occurred_at,
                 projected_at=event.projected_at,
             )
-            .on_conflict_do_nothing(index_elements=["event_key"])
+            .on_conflict_do_nothing(
+                index_elements=[
+                    "organization_id",
+                    "event_key",
+                    "definition_version",
+                ]
+            )
             .returning(AnalyticsDomainEvent.id)
         )
         return (await self._session.execute(statement)).scalar() is not None
@@ -314,6 +331,8 @@ class AnalyticsProjection:
     async def _latest_period(self, version: str) -> datetime | None:
         latest: datetime | None = await self._session.scalar(
             select(func.max(AnalyticsFunnelAggregate.period_start)).where(
+                AnalyticsFunnelAggregate.organization_id
+                == self._actor.organization_id,
                 AnalyticsFunnelAggregate.definition_version == version
             )
         )
@@ -400,10 +419,32 @@ class AnalyticsProjection:
             if row.traffic_class != TrafficClass.VALID.value:
                 excluded[row.traffic_class] += 1
                 continue
+            if (
+                row.event_name
+                == AnalyticsEventName.SIGNIFICANT_GALLERY_EXPLORATION.value
+            ):
+                # Historic producers stored the then-current verdict. Replays
+                # must derive it from GalleryDepthReached under the requested
+                # frozen definition instead of trusting that old verdict.
+                continue
             counts[row.event_name] += 1
             step = FUNNEL_STEP_FOR_EVENT.get(AnalyticsEventName(row.event_name))
             if step is not None:
                 counts[f"step:{step}"] += 1
+            if (
+                row.event_name == AnalyticsEventName.GALLERY_DEPTH_REACHED.value
+                and definition.significant_exploration(
+                    photographs=int(row.attributes.get("photographs") or 0),
+                    gallery_fraction=float(
+                        row.attributes.get("gallery_fraction") or 0
+                    ),
+                )
+            ):
+                derived = AnalyticsEventName.SIGNIFICANT_GALLERY_EXPLORATION
+                counts[derived.value] += 1
+                derived_step = FUNNEL_STEP_FOR_EVENT.get(derived)
+                if derived_step is not None:
+                    counts[f"step:{derived_step}"] += 1
             if (
                 row.event_name
                 == AnalyticsEventName.SPONSORED_VISIBLE_IMPRESSION.value

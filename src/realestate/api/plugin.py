@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import hmac
 import logging
+import uuid
+from dataclasses import dataclass
 from decimal import Decimal
 from datetime import date, datetime, time
 
@@ -122,11 +124,41 @@ async def _binding(
     return binding
 
 
-async def resolve_role(request: Request, hermes_session_id: str) -> AgentRole | None:
-    """Resolve the trusted Hermes session to a product Role, or None."""
+@dataclass(frozen=True)
+class TrustedSession:
+    """What a bound Hermes session entitles the caller to, and where.
+
+    The Role was enough while one Brokerage Organization existed. It is not any
+    more: a tool that knows the Role but not the Organization has to ask
+    somebody, and the only available answer used to be "the one Organization",
+    which is exactly the shortcut that hands one brokerage's inventory to
+    another's Maia (ADR-0050).
+    """
+
+    role: AgentRole
+    organization_id: uuid.UUID
+    channel_key: str | None
+
+
+async def resolve_trusted(
+    request: Request, hermes_session_id: str
+) -> TrustedSession | None:
+    """Resolve the trusted Hermes session to a Role *and* an Organization."""
     async with request.app.state.database.session_scope() as session:
         binding = await _binding(session, hermes_session_id)
-    return AgentRole(binding.role) if binding is not None else None
+        if binding is None:
+            return None
+        return TrustedSession(
+            role=AgentRole(binding.role),
+            organization_id=binding.organization_id,
+            channel_key=binding.channel_key,
+        )
+
+
+async def resolve_role(request: Request, hermes_session_id: str) -> AgentRole | None:
+    """The Role alone, for the health report that has nothing to scope."""
+    trusted = await resolve_trusted(request, hermes_session_id)
+    return trusted.role if trusted is not None else None
 
 
 @router.get("/health", dependencies=[Depends(require_plugin_token)])
@@ -208,7 +240,8 @@ async def get_property_information(
     payload: PropertyInformationRequest,
     hermes_session_id: str = Header(default="", alias=SESSION_HEADER),
 ) -> dict[str, object]:
-    role = await resolve_role(request, hermes_session_id)
+    trusted = await resolve_trusted(request, hermes_session_id)
+    role = trusted.role if trusted is not None else None
     logger.info(
         "Plugin tool request: get_property_information (durable=%s, role=%s, payload=%s)",
         hermes_session_id or "<none>",
@@ -224,7 +257,12 @@ async def get_property_information(
         return {"result": "forbidden"}
 
     async with request.app.state.database.session_scope() as session:
-        service = PropertyService(session, request.app.state.artifacts)
+        assert trusted is not None  # narrowed by the refusal above
+        service = PropertyService(
+            session,
+            request.app.state.artifacts,
+            organization_id=trusted.organization_id,
+        )
         result = await service.get_property_information(
             payload.reference, role, actor_id=hermes_session_id
         )
@@ -286,6 +324,7 @@ async def set_property_status(
             payload.reference,
             payload.status,
             Administrator(
+                organization_id=binding.organization_id,
                 actor_id=binding.channel_key or hermes_session_id,
                 origin_message_id=request.headers.get(ORIGIN_HEADER) or None,
             ),
@@ -420,7 +459,8 @@ async def list_properties(
     payload: NoArguments,
     hermes_session_id: str = Header(default="", alias=SESSION_HEADER),
 ) -> dict[str, object]:
-    role = await resolve_role(request, hermes_session_id)
+    trusted = await resolve_trusted(request, hermes_session_id)
+    role = trusted.role if trusted is not None else None
     logger.info(
         "Plugin tool request: list_properties (durable=%s, role=%s)",
         hermes_session_id or "<none>",
@@ -434,11 +474,12 @@ async def list_properties(
         return {"result": "forbidden"}
 
     async with request.app.state.database.session_scope() as session:
+        assert trusted is not None  # narrowed by the refusal above
         service = AdministrationService(session)
         result = (
-            await service.list_active_properties_for_sales()
+            await service.list_active_properties_for_sales(trusted.organization_id)
             if role is AgentRole.SALES
-            else await service.list_properties()
+            else await service.list_properties(trusted.organization_id)
         )
         logger.debug(
             "Plugin tool result: list_properties (durable=%s, result=%s)",
@@ -483,6 +524,7 @@ async def resolve_pending_admin_work(
             payload.reference,
             payload.action,
             Administrator(
+                organization_id=binding.organization_id,
                 actor_id=binding.channel_key or hermes_session_id,
                 origin_message_id=request.headers.get(ORIGIN_HEADER) or None,
             ),
@@ -498,7 +540,8 @@ async def list_pending_admin_work(
     payload: NoArguments,
     hermes_session_id: str = Header(default="", alias=SESSION_HEADER),
 ) -> dict[str, object]:
-    if await resolve_admin(request, hermes_session_id) is None:
+    binding = await resolve_admin(request, hermes_session_id)
+    if binding is None:
         return {"result": "forbidden"}
     async with request.app.state.database.session_scope() as session:
         return await AdminWorkService(
@@ -506,7 +549,7 @@ async def list_pending_admin_work(
             request.app.state.calendars,
             request.app.state.appointment_policy.schedule,
             request.app.state.appointment_policy.day_of_reminder_hour,
-        ).list_pending()
+        ).list_pending(binding.organization_id)
 
 
 # --- Sales appointment tools --------------------------------------------------

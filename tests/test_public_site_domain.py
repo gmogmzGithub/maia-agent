@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 
 from realestate.db.engine import Database
 from realestate.db.models import (
+    AnalyticsOutboxEntry,
     Appointment,
     ChannelHandoffPurpose,
     ListingPublicationState,
@@ -18,6 +19,7 @@ from realestate.db.models import (
     PublicAnalyticsEventName,
     SavedCollection,
     SharedSelection,
+    SponsorshipContactAttribution,
     WebsiteConversation as WebsiteConversationRow,
     WebsiteMessage,
 )
@@ -58,6 +60,7 @@ from tests.fixtures.commercial import (
     provision,
     reset,
 )
+from tests.fixtures.sponsorship import active_campaign, published_catalog
 from tests.fixtures.public_site import publish_listing
 
 pytestmark = requires_postgres
@@ -514,6 +517,47 @@ async def test_channel_handoff_protects_saved_and_website_context(
         assert collection is not None and collection.protected_contact_id == contact_id
 
 
+async def test_a_sponsored_handoff_links_verified_outcomes_without_rewriting_origin(
+    database: Database,
+) -> None:
+    async with database.session_scope() as session:
+        admin = await actor_for(session, ADMIN_LOGIN)
+        await published_catalog(session, admin)
+        campaign = await active_campaign(session, admin, "handoff-attribution")
+        contact_id, _lead = await make_contact(session, "5213377777777")
+        actor = await product_actor(session)
+        module = ChannelHandoff(session, actor)
+        created = await module.create(
+            CreateHandoff(
+                purpose=ChannelHandoffPurpose.CONTINUE_WHATSAPP,
+                command_key="sponsored-handoff-attribution",
+                listing_id=campaign.listing.listing_id,
+                sponsorship_campaign_id=campaign.campaign_id,
+            ),
+            at=MOMENT,
+        )
+        await module.resolve(
+            created.token,
+            verified_contact_id=contact_id,
+            whatsapp_conversation_id=None,
+            at=MOMENT,
+        )
+        await session.flush()
+
+        attribution = await session.scalar(select(SponsorshipContactAttribution))
+        assert attribution is not None
+        assert attribution.campaign_id == campaign.campaign_id
+        assert attribution.contact_id == contact_id
+        event = await session.scalar(
+            select(AnalyticsOutboxEntry).where(
+                AnalyticsOutboxEntry.event_key
+                == f"sponsored-handoff:{created.handoff_id}"
+            )
+        )
+        assert event is not None
+        assert event.payload["campaign_id"] == str(campaign.campaign_id)
+
+
 async def test_channel_handoff_rejects_missing_or_withdrawn_context(
     database: Database,
 ) -> None:
@@ -753,6 +797,7 @@ async def test_hermes_website_responder_seeds_only_authorized_context(
         assert publication.listing is not None
         turn = WebsiteTurn(
             conversation_id=uuid.uuid4(),
+            organization_id=actor.organization_id,
             hermes_session_id="hermes-web-current",
             message="¿Cuál es el precio?",
             history=(

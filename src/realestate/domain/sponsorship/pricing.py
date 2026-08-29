@@ -151,6 +151,7 @@ class SponsorshipPricing:
         for line in command.lines:
             self._session.add(
                 SponsorshipPriceItem(
+                    organization_id=self._actor.organization_id,
                     catalog_id=row.id,
                     package=line.package,
                     duration_days=line.duration_days,
@@ -267,6 +268,7 @@ class SponsorshipPricing:
     ) -> None:
         await record_audit(
             self._session,
+            organization_id=self._actor.organization_id,
             actor_type=self._actor.actor_type,
             actor_id=self._actor.label,
             action=action,

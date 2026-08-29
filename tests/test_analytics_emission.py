@@ -21,6 +21,7 @@ from realestate.db.models import (
     AnalyticsOutboxEntry,
     Appointment,
     AppointmentStatus,
+    ChannelHandoffPurpose,
     OutboxMessage,
     OutboxStatus,
 )
@@ -35,6 +36,7 @@ from realestate.domain.commercial.opportunities import (
     OpportunityManagement,
     RecordLost,
 )
+from realestate.domain.public.handoff import ChannelHandoff, CreateHandoff
 from tests.conftest import (
     DATABASE_URL,
     requires_postgres,
@@ -49,7 +51,11 @@ from tests.fixtures.commercial import (
     provision,
     reset,
 )
-from tests.fixtures.sponsorship import MOMENT
+from tests.fixtures.sponsorship import (
+    MOMENT,
+    active_campaign,
+    published_catalog,
+)
 
 pytestmark = requires_postgres
 
@@ -171,6 +177,7 @@ async def test_a_first_response_is_one_event_per_conversation(database) -> None:
             )
         session.add(
             OutboxMessage(
+                organization_id=conversation.organization_id,
                 conversation_id=conversation.id,
                 idempotency_key="emission-outbox-1",
                 to_wa_id=state.lead.wa_id,
@@ -204,6 +211,7 @@ async def test_an_undelivered_reply_produces_no_first_response(database) -> None
         await make_inbound(session, conversation, sent_at=MOMENT)
         session.add(
             OutboxMessage(
+                organization_id=conversation.organization_id,
                 conversation_id=conversation.id,
                 idempotency_key="emission-outbox-pending",
                 to_wa_id=state.lead.wa_id,
@@ -239,7 +247,7 @@ async def test_an_emitted_outcome_reaches_the_event_store_pseudonymously(
         await session.commit()
         await AnalyticsEmission(session, admin).emit_operational()
         await session.commit()
-        await AnalyticsProjection(session).drain()
+        await AnalyticsProjection(session, admin).drain()
         await session.commit()
 
         row = await session.scalar(
@@ -252,6 +260,50 @@ async def test_an_emitted_outcome_reaches_the_event_store_pseudonymously(
         assert row.subject_reference is not None
         assert row.subject_reference != str(state.contact_id)
         assert len(row.subject_reference) == 32
+
+
+async def test_a_verified_sponsored_handoff_tags_the_later_outcome(database) -> None:
+    async with database.session_scope() as session:
+        admin = await actor_for(session, ADMIN_LOGIN)
+        await published_catalog(session, admin)
+        campaign = await active_campaign(session, admin, "emission-attribution")
+        state = await opportunity_for(session, "5213311110099", confirm_criteria=True)
+        handoff = ChannelHandoff(session, admin)
+        created = await handoff.create(
+            CreateHandoff(
+                purpose=ChannelHandoffPurpose.CONTINUE_WHATSAPP,
+                command_key="emission-sponsored-handoff",
+                listing_id=campaign.listing.listing_id,
+                sponsorship_campaign_id=campaign.campaign_id,
+            ),
+            at=MOMENT,
+        )
+        await handoff.resolve(
+            created.token,
+            verified_contact_id=state.contact_id,
+            whatsapp_conversation_id=None,
+            at=MOMENT,
+        )
+        await OpportunityManagement(session).record(
+            admin,
+            RecordLost(
+                opportunity_id=state.opportunity_id,
+                reason=LostReason.NO_BUDGET,
+                command_key="emission:sponsored-outcome",
+                at=MOMENT + timedelta(days=3),
+            ),
+        )
+        await session.commit()
+
+        await AnalyticsEmission(session, admin).emit_operational()
+        await session.commit()
+        outcome = await session.scalar(
+            select(AnalyticsOutboxEntry).where(
+                AnalyticsOutboxEntry.event_key == f"outcome:{state.opportunity_id}"
+            )
+        )
+        assert outcome is not None
+        assert outcome.payload["campaign_id"] == str(campaign.campaign_id)
 
 
 async def _keys(session) -> set[str]:

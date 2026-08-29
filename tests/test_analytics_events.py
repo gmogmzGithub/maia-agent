@@ -8,6 +8,7 @@ happened to look plausible on the day somebody checked.
 
 from __future__ import annotations
 
+import uuid
 from datetime import timedelta
 
 import pytest
@@ -17,9 +18,11 @@ from realestate.db.engine import Database
 from realestate.db.models import (
     AnalyticsDomainEvent,
     AnalyticsEventName,
+    AnalyticsFunnelAggregate,
     AnalyticsOutboxEntry,
     AnalyticsOutboxStatus,
     AnalyticsProjectionRun,
+    MeasurementDefinition,
 )
 from realestate.domain.analytics.definitions import (
     CURRENT_DEFINITION_VERSION,
@@ -102,7 +105,7 @@ async def test_events_are_projected_in_emission_order(database) -> None:
             await events.record(event(f"ordered-{key}-key", minutes=minutes))
         await session.commit()
 
-        report = await AnalyticsProjection(session).refresh()
+        report = await AnalyticsProjection(session, actor).refresh()
         await session.commit()
 
         assert report.projected == 3
@@ -131,7 +134,7 @@ async def test_a_replay_from_zero_rebuilds_the_same_store_and_aggregates(
             await events.record(event(f"replayable-event-{index}", minutes=index))
         await session.commit()
 
-        projection = AnalyticsProjection(session)
+        projection = AnalyticsProjection(session, actor)
         await projection.refresh()
         await session.commit()
         before = await _snapshot(session)
@@ -145,6 +148,126 @@ async def test_a_replay_from_zero_rebuilds_the_same_store_and_aggregates(
         assert replay.from_sequence == 0
         assert replay.projected == 0
         assert await _snapshot(session) == before
+
+
+async def test_a_replay_can_materialize_the_same_raw_event_under_a_new_definition(
+    database,
+) -> None:
+    async with database.session_scope() as session:
+        actor = await actor_for(session, ADMIN_LOGIN)
+        current = await session.scalar(
+            select(MeasurementDefinition).where(
+                MeasurementDefinition.version == CURRENT_DEFINITION_VERSION
+            )
+        )
+        assert current is not None
+        version = "measurement-v2-test"
+        alternate = await session.scalar(
+            select(MeasurementDefinition).where(
+                MeasurementDefinition.version == version
+            )
+        )
+        if alternate is None:
+            session.add(
+                MeasurementDefinition(
+                    version=version,
+                    definition=dict(current.definition),
+                    effective_from=current.effective_from + timedelta(days=1),
+                )
+            )
+        await AnalyticsEvents(session, actor).record(
+            event("replay-under-new-definition")
+        )
+        await session.commit()
+
+        await AnalyticsProjection(session, actor).drain()
+        replay = await AnalyticsProjection(session, actor).refresh(
+            version, from_sequence=0
+        )
+        await session.commit()
+
+        assert replay.projected == 1
+        assert (
+            await session.scalar(
+                select(func.count(AnalyticsDomainEvent.id)).where(
+                    AnalyticsDomainEvent.event_key == "replay-under-new-definition"
+                )
+            )
+            == 2
+        )
+        assert await session.scalar(
+            select(AnalyticsFunnelAggregate.id).where(
+                AnalyticsFunnelAggregate.definition_version
+                == version
+            )
+        ) is not None
+
+
+async def test_replay_recomputes_significant_gallery_from_raw_depth(database) -> None:
+    async with database.session_scope() as session:
+        actor = await actor_for(session, ADMIN_LOGIN)
+        current = await session.scalar(
+            select(MeasurementDefinition).where(
+                MeasurementDefinition.version == CURRENT_DEFINITION_VERSION
+            )
+        )
+        assert current is not None
+        version = "measurement-gallery-strict-test"
+        strict = await session.scalar(
+            select(MeasurementDefinition).where(
+                MeasurementDefinition.version == version
+            )
+        )
+        if strict is None:
+            definition = dict(current.definition)
+            definition["significant_gallery_exploration"] = {
+                "minimum_photographs": 999,
+                "minimum_gallery_fraction": 1.0,
+            }
+            session.add(
+                MeasurementDefinition(
+                    version=version,
+                    definition=definition,
+                    effective_from=current.effective_from + timedelta(days=2),
+                )
+            )
+        listing_id = uuid.uuid4()
+        events = AnalyticsEvents(session, actor)
+        attributes = {"photographs": 6, "gallery_fraction": 0.5}
+        await events.record(
+            AnalyticsEvent(
+                event_key="raw-gallery-depth-for-replay",
+                name=AnalyticsEventName.GALLERY_DEPTH_REACHED,
+                occurred_at=MOMENT,
+                listing_id=listing_id,
+                session_value="gallery-replay-browser",
+                attributes=attributes,
+            )
+        )
+        # Historic producers emitted this thresholded milestone too. A replay
+        # must not trust it when applying a different definition.
+        await events.record(
+            AnalyticsEvent(
+                event_key="historic-significant-gallery-for-replay",
+                name=AnalyticsEventName.SIGNIFICANT_GALLERY_EXPLORATION,
+                occurred_at=MOMENT,
+                listing_id=listing_id,
+                session_value="gallery-replay-browser",
+                attributes=attributes,
+            )
+        )
+        await session.commit()
+
+        await AnalyticsProjection(session, actor).refresh(version, from_sequence=0)
+        await session.commit()
+        aggregate = await session.scalar(
+            select(AnalyticsFunnelAggregate).where(
+                AnalyticsFunnelAggregate.definition_version == version,
+                AnalyticsFunnelAggregate.listing_id == listing_id,
+            )
+        )
+        assert aggregate is not None
+        assert aggregate.counts.get("SignificantGalleryExploration", 0) == 0
 
 
 async def test_a_restart_mid_batch_repeats_the_batch_instead_of_skipping_it(
@@ -164,7 +287,7 @@ async def test_a_restart_mid_batch_repeats_the_batch_instead_of_skipping_it(
             )
         await session.commit()
 
-        await AnalyticsProjection(session).refresh()
+        await AnalyticsProjection(session, actor).refresh()
         await session.rollback()
 
         pending = await session.scalar(
@@ -175,7 +298,7 @@ async def test_a_restart_mid_batch_repeats_the_batch_instead_of_skipping_it(
         stored = await session.scalar(select(func.count(AnalyticsDomainEvent.id)))
         assert (pending, stored) == (3, 0)
 
-        report = await AnalyticsProjection(session).refresh()
+        report = await AnalyticsProjection(session, actor).refresh()
         await session.commit()
         assert report.projected == 3
         assert (
@@ -194,7 +317,7 @@ async def test_every_stored_event_carries_its_taxonomy_and_schema_version(
         actor = await actor_for(session, ADMIN_LOGIN)
         await AnalyticsEvents(session, actor).record(event("versioned-event-key"))
         await session.commit()
-        await AnalyticsProjection(session).refresh()
+        await AnalyticsProjection(session, actor).refresh()
         await session.commit()
 
         stored = await session.scalar(
@@ -212,8 +335,9 @@ async def test_projecting_under_an_unknown_definition_version_is_refused(
     database,
 ) -> None:
     async with database.session_scope() as session:
+        actor = await actor_for(session, ADMIN_LOGIN)
         with pytest.raises(UnknownDefinition):
-            await AnalyticsProjection(session).refresh("measurement-v99")
+            await AnalyticsProjection(session, actor).refresh("measurement-v99")
 
 
 async def test_the_seeded_definition_version_is_readable_and_listed(database) -> None:
@@ -310,7 +434,8 @@ async def test_an_empty_outbox_reports_a_drained_pass_without_a_run_row(
 ) -> None:
     """Nothing to do is not a pass. A run row per idle tick would be noise."""
     async with database.session_scope() as session:
-        report = await AnalyticsProjection(session).refresh()
+        actor = await actor_for(session, ADMIN_LOGIN)
+        report = await AnalyticsProjection(session, actor).refresh()
         await session.commit()
         assert (report.projected, report.drained) == (0, True)
         assert (
@@ -329,7 +454,7 @@ async def test_drain_consumes_a_backlog_across_several_bounded_passes(
             )
         await session.commit()
 
-        report = await AnalyticsProjection(session).drain(batch_size=2)
+        report = await AnalyticsProjection(session, actor).drain(batch_size=2)
         await session.commit()
 
         assert report.drained is True

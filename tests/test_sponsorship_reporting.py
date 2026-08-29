@@ -25,6 +25,7 @@ from realestate.db.models import AnalyticsEventName, ReportAudience
 from realestate.domain.analytics.events import AnalyticsEvent, AnalyticsEvents
 from realestate.domain.analytics.metrics import (
     NOT_COMPUTABLE_TEXT,
+    PROTECTED_TEXT,
     UNRECORDED_TEXT,
 )
 from realestate.domain.analytics.projection import AnalyticsProjection
@@ -128,6 +129,17 @@ async def funnel_events(session, actor, campaign_id, listing_id, *, at=MOMENT) -
     )
     await events.record(
         AnalyticsEvent(
+            event_key=f"depth-{campaign_id}",
+            name=AnalyticsEventName.GALLERY_DEPTH_REACHED,
+            occurred_at=at,
+            listing_id=listing_id,
+            campaign_id=campaign_id,
+            session_value="visitor-0",
+            attributes={"photographs": 6, "gallery_fraction": 0.5},
+        )
+    )
+    await events.record(
+        AnalyticsEvent(
             event_key=f"explored-{campaign_id}",
             name=AnalyticsEventName.SIGNIFICANT_GALLERY_EXPLORATION,
             occurred_at=at,
@@ -140,19 +152,26 @@ async def funnel_events(session, actor, campaign_id, listing_id, *, at=MOMENT) -
 
 
 @pytest.mark.parametrize(
-    ("amount", "band"),
+    ("operation", "amount", "band"),
     [
-        (None, "Sin precio registrado"),
-        (Decimal("1500000"), "Hasta 2 M"),
-        (Decimal("2000000"), "Hasta 2 M"),
-        (Decimal("2000001"), "2 a 4 M"),
-        (Decimal("6500000"), "4 a 7 M"),
-        (Decimal("20000000"), "Más de 12 M"),
+        ("Sale", None, "Sin precio registrado"),
+        ("Sale", Decimal("5000000"), "Hasta 5 M"),
+        ("Sale", Decimal("5000001"), "5 a 8 M"),
+        ("Sale", Decimal("12000000"), "8 a 12 M"),
+        ("Sale", Decimal("20000000"), "12 a 20 M"),
+        ("Sale", Decimal("20000001"), "Más de 20 M"),
+        ("Rental", Decimal("20000"), "Hasta 20 mil"),
+        ("Rental", Decimal("20001"), "20 a 35 mil"),
+        ("Rental", Decimal("50000"), "35 a 50 mil"),
+        ("Rental", Decimal("85000"), "50 a 85 mil"),
+        ("Rental", Decimal("85001"), "Más de 85 mil"),
     ],
 )
-def test_a_price_band_describes_the_listing_and_names_the_unknown(amount, band) -> None:
+def test_a_price_band_describes_the_listing_and_names_the_unknown(
+    operation, amount, band
+) -> None:
     """A Commercial Price Band is about the Listing, never about the Contact."""
-    assert price_band(amount) == band
+    assert price_band(amount, operation=operation) == band
 
 
 async def test_a_cohort_below_the_minimum_sample_shows_no_number(database) -> None:
@@ -169,7 +188,7 @@ async def test_a_cohort_below_the_minimum_sample_shows_no_number(database) -> No
             session, admin, campaign.campaign_id, campaign.listing.listing_id
         )
         await session.commit()
-        await AnalyticsProjection(session).drain()
+        await AnalyticsProjection(session, admin).drain()
         await session.commit()
 
         report = await SponsorshipReporting(session, admin).generate(
@@ -183,7 +202,7 @@ async def test_a_cohort_below_the_minimum_sample_shows_no_number(database) -> No
         assert comparable.median_visible_impressions is None
         # The cohort key still discloses what it grouped by, so the absence is
         # readable rather than mysterious.
-        assert "Sale" in comparable.key.text
+        assert "Venta" in comparable.key.text
         assert "Zapopan" in comparable.key.text
 
 
@@ -229,7 +248,7 @@ async def test_a_cohort_at_the_minimum_sample_discloses_median_and_range(
                     )
                 )
         await session.commit()
-        await AnalyticsProjection(session).drain()
+        await AnalyticsProjection(session, admin).drain()
         await session.commit()
 
         report = await SponsorshipReporting(session, admin).generate(
@@ -259,7 +278,7 @@ async def test_the_funnel_is_reported_in_the_published_order_with_step_conversio
             session, admin, campaign.campaign_id, campaign.listing.listing_id
         )
         await session.commit()
-        await AnalyticsProjection(session).drain()
+        await AnalyticsProjection(session, admin).drain()
         await session.commit()
 
         report = await SponsorshipReporting(session, admin).generate(
@@ -273,11 +292,11 @@ async def test_the_funnel_is_reported_in_the_published_order_with_step_conversio
         ]
         assert steps["SponsoredServedImpression"].count == 4
         assert steps["SponsoredVisibleImpression"].count == 3
-        assert steps["ListingOpened"].count == 1
+        assert steps["ListingOpened"].count is None
         # Conversion from the step above, so "much exploration, no appointment"
         # is answerable at the boundary where it happened (SAN-067).
         assert steps["SponsoredVisibleImpression"].from_previous.text == "75 %"
-        assert steps["ListingOpened"].from_previous.text == "33.3 %"
+        assert steps["ListingOpened"].from_previous.text == PROTECTED_TEXT
         # The first row has nothing above it, so its conversion is not a zero.
         assert (
             report.funnel[0].from_previous.text == NOT_COMPUTABLE_TEXT
@@ -304,11 +323,13 @@ async def test_an_unrecorded_outcome_is_sin_registrar_and_not_a_loss(
             )
         )
         await session.commit()
-        await AnalyticsProjection(session).drain()
+        await AnalyticsProjection(session, admin).drain()
         await session.commit()
 
         report = await SponsorshipReporting(session, admin).generate(
-            campaign.campaign_id, ReportAudience.BUYER, at=MOMENT + timedelta(days=1)
+            campaign.campaign_id,
+            ReportAudience.ADMINISTRATOR,
+            at=MOMENT + timedelta(days=1),
         )
         assert report.outcomes == {"Won": 0, "Lost": 0, "Dormant": 0}
         assert report.unrecorded_outcomes.text == UNRECORDED_TEXT
@@ -327,11 +348,13 @@ async def test_unit_economics_without_a_denominator_are_not_computable(
             session, admin, campaign.campaign_id, campaign.listing.listing_id
         )
         await session.commit()
-        await AnalyticsProjection(session).drain()
+        await AnalyticsProjection(session, admin).drain()
         await session.commit()
 
         report = await SponsorshipReporting(session, admin).generate(
-            campaign.campaign_id, ReportAudience.BUYER, at=MOMENT + timedelta(days=1)
+            campaign.campaign_id,
+            ReportAudience.ADMINISTRATOR,
+            at=MOMENT + timedelta(days=1),
         )
         assert report.economics.price == Decimal("4000.00")
         # 4000 over three visible impressions.
@@ -353,6 +376,17 @@ async def test_attribution_reports_both_windows_without_claiming_cause(
             session, admin, campaign.campaign_id, campaign.listing.listing_id
         )
         events = AnalyticsEvents(session, admin)
+        # Campaign tagging alone is not attribution: this outcome predates every
+        # exposure and engagement and must be outside both windows.
+        await events.record(
+            AnalyticsEvent(
+                event_key="outcome-before-campaign-exposure",
+                name=AnalyticsEventName.OPPORTUNITY_OUTCOME_KNOWN,
+                occurred_at=MOMENT - timedelta(days=1),
+                campaign_id=campaign.campaign_id,
+                attributes={"outcome": "Dormant"},
+            )
+        )
         # Inside seven days of the exposure, and inside ninety.
         await events.record(
             AnalyticsEvent(
@@ -374,12 +408,12 @@ async def test_attribution_reports_both_windows_without_claiming_cause(
             )
         )
         await session.commit()
-        await AnalyticsProjection(session).drain()
+        await AnalyticsProjection(session, admin).drain()
         await session.commit()
 
         report = await SponsorshipReporting(session, admin).generate(
             campaign.campaign_id,
-            ReportAudience.BUYER,
+            ReportAudience.ADMINISTRATOR,
             at=MOMENT + timedelta(days=95),
         )
         assert report.attribution.view_through_days == 7
@@ -399,7 +433,7 @@ async def test_no_buyer_surface_uses_causal_language(database) -> None:
             session, admin, campaign.campaign_id, campaign.listing.listing_id
         )
         await session.commit()
-        await AnalyticsProjection(session).drain()
+        await AnalyticsProjection(session, admin).drain()
         await session.commit()
 
         report = await SponsorshipReporting(session, admin).generate(
@@ -458,7 +492,7 @@ async def test_much_exploration_and_no_appointment_is_described_not_diagnosed(
             session, admin, campaign.campaign_id, campaign.listing.listing_id
         )
         await session.commit()
-        await AnalyticsProjection(session).drain()
+        await AnalyticsProjection(session, admin).drain()
         await session.commit()
 
         report = await SponsorshipReporting(session, admin).generate(
@@ -479,7 +513,7 @@ async def test_the_internal_report_adds_the_commercial_half(database) -> None:
             session, admin, campaign.campaign_id, campaign.listing.listing_id
         )
         await session.commit()
-        await AnalyticsProjection(session).drain()
+        await AnalyticsProjection(session, admin).drain()
         await session.commit()
 
         internal = await SponsorshipReporting(session, admin).generate(
@@ -498,11 +532,13 @@ async def test_the_internal_report_adds_the_commercial_half(database) -> None:
         )
         assert buyer.internal is None
         assert buyer.is_buyer_view is True
-        # Both views count the same funnel: two implementations would drift, and
-        # a buyer noticing the two do not add up is unrecoverable.
-        assert [row.count for row in buyer.funnel] == [
-            row.count for row in internal.funnel
+        # Both views use one computation, but the buyer's person-level small
+        # cells are suppressed at the presentation boundary.
+        assert [row.count for row in buyer.funnel[:2]] == [
+            row.count for row in internal.funnel[:2]
         ]
+        assert buyer.funnel[2].count is None
+        assert internal.funnel[2].count == 1
 
 
 async def test_an_advisor_may_not_request_the_internal_report(database) -> None:

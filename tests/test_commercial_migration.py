@@ -30,7 +30,7 @@ NOW = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
 STAGE_1_HEAD = "0011_quarantine_legacy_outbound"
 CONTACTS_REVISION = "0012_organization_and_contacts"
 OPPORTUNITIES_REVISION = "0013_opportunities_and_actions"
-HEAD = "0025_analytics_and_sponsorship"
+HEAD = "0027_stage8_measurement_repairs"
 
 
 @pytest.fixture

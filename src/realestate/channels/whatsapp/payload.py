@@ -42,7 +42,12 @@ class DeliveryUpdate:
     status: str
     occurred_at: datetime
     recipient_wa_id: str | None
-    raw: dict[str, Any] = field(repr=False)
+    #: The number the callback arrived on. Present since Stage 9 because it is
+    #: how Product decides which Brokerage Organization's Outbox row a delivery
+    #: result belongs to (ADR-0050). Meta reports it in the same ``metadata``
+    #: block as for an inbound message, so no extra parsing is needed.
+    phone_number_id: str = ""
+    raw: dict[str, Any] = field(repr=False, default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -129,6 +134,7 @@ def parse_webhook(body: dict[str, Any]) -> ParsedWebhook:
                         status=str(state),
                         occurred_at=_timestamp(status.get("timestamp")),
                         recipient_wa_id=status.get("recipient_id"),
+                        phone_number_id=phone_number_id,
                         raw=status,
                     )
                 )

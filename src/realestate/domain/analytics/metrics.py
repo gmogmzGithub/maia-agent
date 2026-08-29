@@ -49,6 +49,7 @@ from realestate.domain.commercial.views import CommercialInbox
 #: synonym that reads like a business result.
 UNRECORDED_TEXT = "Sin registrar"
 NOT_COMPUTABLE_TEXT = "No calculable"
+PROTECTED_TEXT = "Muestra protegida"
 
 
 class MeasureKind(str, enum.Enum):
@@ -59,6 +60,8 @@ class MeasureKind(str, enum.Enum):
     UNRECORDED = "Unrecorded"
     #: There are no subjects, so the ratio has no denominator.
     NOT_COMPUTABLE = "NotComputable"
+    #: A buyer-facing cell is too small to disclose safely.
+    PROTECTED = "Protected"
 
 
 @dataclass(frozen=True)
@@ -99,12 +102,18 @@ class Measure:
     def not_computable(cls, *, unit: str = "") -> Measure:
         return cls(MeasureKind.NOT_COMPUTABLE, unit=unit)
 
+    @classmethod
+    def protected(cls, *, sample: int = 0, unit: str = "") -> Measure:
+        return cls(MeasureKind.PROTECTED, unit=unit, sample=sample)
+
     @property
     def text(self) -> str:
         """The Mexican Spanish rendering, including the honest non-answers."""
         if self.kind is MeasureKind.UNRECORDED:
             return UNRECORDED_TEXT
         if self.kind is MeasureKind.NOT_COMPUTABLE or self.value is None:
+            if self.kind is MeasureKind.PROTECTED:
+                return PROTECTED_TEXT
             return NOT_COMPUTABLE_TEXT
         quantised = self.value.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
         rendered = f"{quantised.normalize():f}" if quantised % 1 else f"{int(quantised)}"

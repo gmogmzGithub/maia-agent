@@ -16,9 +16,9 @@ protections an account would have provided.
   scoped to one campaign at the ``Buyer`` audience. There is no route from a
   token to a mutation, and no route from a token to a second campaign.
 
-Rendering lives here too, because the PDF and the shared page must contain
-exactly the same figures. Two renderers would eventually let one of them keep a
-field the other stopped showing.
+The PDF presentation lives here too. Both the structured shared page and the PDF
+are derived from the same buyer-scoped ``SponsorshipReport``; neither renderer
+can reach CRM records or an Administrator-only report.
 """
 
 from __future__ import annotations
@@ -136,6 +136,7 @@ class SponsorshipSharing:
         await self._session.flush()
         await record_audit(
             self._session,
+            organization_id=self._actor.organization_id,
             actor_type=self._actor.actor_type,
             actor_id=self._actor.label,
             action="ShareSponsorshipReport",
@@ -167,6 +168,7 @@ class SponsorshipSharing:
             await self._session.flush()
             await record_audit(
                 self._session,
+                organization_id=self._actor.organization_id,
                 actor_type=self._actor.actor_type,
                 actor_id=self._actor.label,
                 action="RevokeSponsorshipReportLink",
@@ -222,8 +224,12 @@ def _status(row: SponsorshipReportLink) -> ShareStatus:
     )
 
 
+def _shown_count(value: int | None) -> str:
+    return "Muestra protegida" if value is None else str(value)
+
+
 def report_lines(report: SponsorshipReport) -> list[Line]:
-    """One report as ordered text lines, shared by the page and the PDF.
+    """One buyer-scoped report as the PDF's ordered presentation lines.
 
     The label comes first and the disclaimer last, so a buyer reading only the
     top knows the visibility was paid for and a buyer reading to the bottom has
@@ -231,6 +237,21 @@ def report_lines(report: SponsorshipReport) -> list[Line]:
     a phone number or a message: it reads only aggregate fields off the report,
     and the buyer report has no others.
     """
+    steps = {row.step: row for row in report.funnel}
+
+    def count(step: str) -> str:
+        value = steps[step].count
+        return str(value) if value is not None else "Muestra protegida"
+
+    interest_values = [
+        steps[name].count
+        for name in ("SavedOrShared", "MaiaStarted", "WhatsAppHandoff")
+    ]
+    interest = (
+        "Muestra protegida"
+        if any(value is None for value in interest_values)
+        else str(sum(value or 0 for value in interest_values))
+    )
     lines: list[Line] = [
         Line(f"Reporte de campaña {SPONSORED_LABEL}", Style.TITLE),
         Line(report.listing_title, Style.HEADING),
@@ -239,25 +260,51 @@ def report_lines(report: SponsorshipReport) -> list[Line]:
             f"{report.period_end:%d/%m/%Y}"
         ),
         Line(f"Superficies: {', '.join(report.surfaces) or 'Sin superficies'}"),
+        Line(""),
+        Line("Resumen del periodo", Style.HEADING),
+        Line(f"Impresiones visibles | {count('SponsoredVisibleImpression')}", Style.METRIC),
+        Line(f"Aperturas de publicación | {count('ListingOpened')}", Style.METRIC),
+        Line(f"Acciones de interés | {interest}", Style.METRIC),
+        Line(f"Solicitudes de cita | {count('AppointmentRequested')}", Style.METRIC),
+        Line(""),
+        Line("Estado de la campaña", Style.HEADING),
+        Line(f"Estado: {report.campaign.status_label}"),
         Line(
-            f"Días pagados: {report.campaign.paid_days} · entregados: "
-            f"{report.campaign.delivered_days} · restantes: "
+            f"Días pagados: {report.campaign.paid_days} | entregados: "
+            f"{report.campaign.delivered_days} | restantes: "
             f"{report.campaign.remaining_days}"
         ),
-        Line(f"Versión de medición: {report.definition_version}"),
         Line(""),
-        Line("Embudo", Style.HEADING),
+        Line("Embudo completo", Style.HEADING),
     ]
     for row in report.funnel:
+        funnel_count = row.count if row.count is not None else "Muestra protegida"
         lines.append(
-            Line(f"{row.label}: {row.count} (paso anterior {row.from_previous.text})")
+            Line(
+                f"{row.label}: {funnel_count} "
+                f"(paso anterior {row.from_previous.text})"
+            )
         )
     lines.extend(
         [
             Line(""),
+            Line("Tendencia", Style.HEADING),
+            *(
+                [
+                    Line(
+                        f"{point.period_start:%d/%m}: "
+                        f"visibles {_shown_count(point.visible_impressions)} | "
+                        f"aperturas {_shown_count(point.listing_opens)} | "
+                        f"interés {_shown_count(point.interest_actions)}"
+                    )
+                    for point in report.trend
+                ]
+                or [Line("Sin actividad registrada en el periodo.")]
+            ),
+            Line(""),
             Line("Resultados conocidos", Style.HEADING),
             *[
-                Line(f"{name}: {count}")
+                Line(f"{name}: {count if count is not None else 'Muestra protegida'}")
                 for name, count in sorted(report.outcomes.items())
             ],
             Line(f"Completitud de resultados: {report.unrecorded_outcomes.text}"),
@@ -297,11 +344,12 @@ def report_lines(report: SponsorshipReport) -> list[Line]:
             Line(
                 f"Resultados hasta {report.attribution.view_through_days} días "
                 f"después de una exposición: "
-                f"{report.attribution.view_through_outcomes}"
+                f"{report.attribution.view_through_outcomes if report.attribution.view_through_outcomes is not None else 'Muestra protegida'}"
             ),
             Line(
                 f"Resultados hasta {report.attribution.engaged_days} días después "
-                f"de una interacción: {report.attribution.engaged_outcomes}"
+                "de una interacción: "
+                f"{report.attribution.engaged_outcomes if report.attribution.engaged_outcomes is not None else 'Muestra protegida'}"
             ),
         ]
     )
@@ -312,13 +360,17 @@ def report_lines(report: SponsorshipReport) -> list[Line]:
     lines.extend(
         [
             Line(""),
+            Line("Definiciones", Style.HEADING),
+            *[Line(definition) for definition in report.definitions],
+            Line(f"Versión aplicada: {report.definition_version}"),
+            Line(""),
             Line(SPONSORED_DISCLOSURE),
-            Line(NON_CAUSAL_DISCLAIMER),
+            Line(NON_CAUSAL_DISCLAIMER, Style.NOTE),
         ]
     )
     return lines
 
 
 def report_pdf(report: SponsorshipReport) -> bytes:
-    """The buyer report as a PDF, built from the same lines as the page."""
+    """The buyer report as a PDF, built only from buyer-scoped fields."""
     return render(report_lines(report))

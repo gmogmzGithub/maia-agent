@@ -825,6 +825,7 @@ class OutboundMessaging:
         exists to prevent.
         """
         decision = OutboundDecision(
+            organization_id=intent.conversation.organization_id,
             conversation_id=intent.conversation.id,
             lead_id=lead.id if lead else None,
             idempotency_key=intent.idempotency_key,
@@ -894,6 +895,7 @@ class OutboundMessaging:
         row.next_attempt_at = None
         await record_audit(
             self._session,
+            organization_id=row.organization_id,
             actor_type="Product",
             actor_id="OutboundEligibilityGate",
             action="WithholdOutboundAtDelivery",
@@ -979,6 +981,7 @@ async def _active_suppression(
 async def record_explicit_opt_out(
     session: AsyncSession,
     *,
+    organization_id: uuid.UUID,
     lead_id: uuid.UUID,
     phrase: str,
     source_inbox_id: uuid.UUID | None,
@@ -1000,6 +1003,7 @@ async def record_explicit_opt_out(
 
     session.add(
         SuppressionRecord(
+            organization_id=organization_id,
             lead_id=lead_id,
             scope="BusinessInitiated",
             reason="ExplicitOptOut",
@@ -1011,6 +1015,7 @@ async def record_explicit_opt_out(
     # marketing category a real, dated Revoked state instead of mere absence.
     session.add(
         ConsentRecord(
+            organization_id=organization_id,
             lead_id=lead_id,
             category=ConsentCategory.MARKETING.value,
             state=ConsentState.REVOKED.value,

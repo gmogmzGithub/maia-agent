@@ -20,6 +20,7 @@ from tests.conftest import (
     requires_postgres,
     reset_property_inventory,
 )
+from tests.fixtures import commercial
 
 FIXTURES = Path(__file__).parent / "fixtures"
 V1 = (FIXTURES / "casa-roble.md").read_bytes()
@@ -136,7 +137,8 @@ async def test_a_malformed_replacement_leaves_the_accepted_version_intact(wired)
     assert rejected.status_code == 422
     # The Sales Role still sees version 1 with its original price.
     async with app.state.database.session_scope() as session:
-        service = PropertyService(session, app.state.artifacts)
+        organization = await commercial.organization_id(session)
+        service = PropertyService(session, app.state.artifacts, organization_id=organization)
         current = await service.get_property_information("casa-roble", AgentRole.SALES)
 
     assert current["document_version"] == 1

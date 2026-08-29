@@ -287,6 +287,11 @@ async def test_the_whole_commercial_flow_runs_through_the_operator_surface(
         f"/crm/patrocinios/campanas/{campaign.id}/reporte", auth=ADMIN
     )
     assert internal.status_code == 200
+    assert "Cuatro cifras para empezar" in internal.text
+    assert "Tendencia diaria" in internal.text
+    assert "Embudo completo" in internal.text
+    assert "Acciones de interés" in internal.text
+    assert "Definiciones de medición" in internal.text
     assert "Sólo interno" in internal.text
     assert "precios-api" in internal.text
     assert "Un comprador nunca recibe este bloque" in internal.text
@@ -407,19 +412,24 @@ async def test_a_visible_impression_below_the_threshold_is_not_counted(wired) ->
 
         admin = await commercial.actor_for(session, commercial.ADMIN_LOGIN)
         await published_catalog(session, admin)
-        campaign = await active_campaign(session, admin, "api-visible")
+        await active_campaign(session, admin, "api-visible")
         await session.commit()
 
+    browser = site({"X-Session-Reference": "navegador-visible"})
+    served = await client.get(
+        "/internal/public-site/sponsored",
+        params={"surface": "Search", "visible_results": 12},
+        headers=browser,
+    )
+    exposure_id = served.json()["cards"][0]["exposure_id"]
     body = {
-        "campaign_id": str(campaign.campaign_id),
-        "listing_id": str(campaign.listing.listing_id),
-        "surface": "Search",
+        "exposure_id": exposure_id,
         "visible_fraction": 0.4,
         "continuous_milliseconds": 4000,
         "occurred_at": "2026-08-28T18:00:00+00:00",
     }
     below = await client.post(
-        "/internal/public-site/sponsored/visible", json=body, headers=site()
+        "/internal/public-site/sponsored/visible", json=body, headers=browser
     )
     assert below.status_code == 202
     assert below.json() == {"counted": False}
@@ -427,9 +437,38 @@ async def test_a_visible_impression_below_the_threshold_is_not_counted(wired) ->
     body["visible_fraction"] = 0.5
     body["continuous_milliseconds"] = 1000
     above = await client.post(
-        "/internal/public-site/sponsored/visible", json=body, headers=site()
+        "/internal/public-site/sponsored/visible", json=body, headers=browser
     )
     assert above.json() == {"counted": True}
+
+
+async def test_a_visible_impression_requires_its_original_browser_session(wired) -> None:
+    client, database = wired
+    async with database.session_scope() as session:
+        from tests.fixtures.sponsorship import active_campaign, published_catalog
+
+        admin = await commercial.actor_for(session, commercial.ADMIN_LOGIN)
+        await published_catalog(session, admin)
+        await active_campaign(session, admin, "api-visible-session")
+        await session.commit()
+
+    served = await client.get(
+        "/internal/public-site/sponsored",
+        params={"surface": "Search", "visible_results": 12},
+        headers=site({"X-Session-Reference": "navegador-original"}),
+    )
+    exposure_id = served.json()["cards"][0]["exposure_id"]
+    forged = await client.post(
+        "/internal/public-site/sponsored/visible",
+        json={
+            "exposure_id": exposure_id,
+            "visible_fraction": 0.5,
+            "continuous_milliseconds": 1000,
+            "occurred_at": "2026-08-28T18:00:00+00:00",
+        },
+        headers=site({"X-Session-Reference": "otro-navegador"}),
+    )
+    assert forged.status_code == 422
 
 
 async def test_gallery_depth_at_the_border_also_records_the_milestone(wired) -> None:
@@ -482,14 +521,75 @@ async def test_a_listing_open_is_recorded_once_per_session_and_day(wired) -> Non
         "surface": "TechnicalSheet",
         "occurred_at": "2026-08-28T18:00:00+00:00",
     }
+    headers = site({"X-Session-Reference": "sesion-api-apertura"})
     first = await client.post(
-        "/internal/public-site/measurement/listing-open", json=body, headers=site()
+        "/internal/public-site/measurement/listing-open", json=body, headers=headers
     )
     second = await client.post(
-        "/internal/public-site/measurement/listing-open", json=body, headers=site()
+        "/internal/public-site/measurement/listing-open",
+        json={**body, "event_key": "otro-id-del-cliente"},
+        headers=headers,
     )
     assert first.json() == {"recorded": True}
     assert second.json() == {"recorded": False}
+
+    async with database.session_scope() as session:
+        event = await session.scalar(
+            select(AnalyticsOutboxEntry).where(
+                AnalyticsOutboxEntry.event_name
+                == AnalyticsEventName.LISTING_OPENED.value
+            )
+        )
+        assert event is not None
+        assert "sesion-api-apertura" not in event.event_key
+        assert event.event_key not in {
+            "apertura-misma-sesion",
+            "otro-id-del-cliente",
+        }
+
+
+async def test_a_listing_open_inherits_campaign_only_from_its_served_exposure(
+    wired,
+) -> None:
+    client, database = wired
+    async with database.session_scope() as session:
+        from tests.fixtures.sponsorship import active_campaign, published_catalog
+
+        admin = await commercial.actor_for(session, commercial.ADMIN_LOGIN)
+        await published_catalog(session, admin)
+        campaign = await active_campaign(session, admin, "api-open-campaign")
+        await session.commit()
+
+    headers = site({"X-Session-Reference": "navegador-apertura"})
+    served = await client.get(
+        "/internal/public-site/sponsored",
+        params={"surface": "Search", "visible_results": 12},
+        headers=headers,
+    )
+    exposure_id = served.json()["cards"][0]["exposure_id"]
+    opened = await client.post(
+        "/internal/public-site/measurement/listing-open",
+        json={
+            "event_key": "apertura-patrocinada-correlacionada",
+            "listing_id": str(campaign.listing.listing_id),
+            "surface": "TechnicalSheet",
+            "occurred_at": "2026-08-28T18:00:00+00:00",
+        },
+        headers={**headers, "X-Sponsored-Exposure": exposure_id},
+    )
+    assert opened.status_code == 202
+
+    async with database.session_scope() as session:
+        event = await session.scalar(
+            select(AnalyticsOutboxEntry).where(
+                AnalyticsOutboxEntry.event_name
+                == AnalyticsEventName.LISTING_OPENED.value,
+                AnalyticsOutboxEntry.payload["campaign_id"].astext
+                == str(campaign.campaign_id),
+            )
+        )
+        assert event is not None
+        assert event.payload["campaign_id"] == str(campaign.campaign_id)
 
 
 async def test_a_crawler_header_marks_the_event_excluded(wired) -> None:
@@ -506,7 +606,8 @@ async def test_a_crawler_header_marks_the_event_excluded(wired) -> None:
         headers=site({"X-Crawler": "true"}),
     )
     async with database.session_scope() as session:
-        await AnalyticsProjection(session).drain()
+        admin = await commercial.actor_for(session, commercial.ADMIN_LOGIN)
+        await AnalyticsProjection(session, admin).drain()
         await session.commit()
         from realestate.db.models import AnalyticsDomainEvent
 

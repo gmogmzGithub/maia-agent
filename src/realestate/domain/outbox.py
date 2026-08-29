@@ -21,11 +21,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from realestate.channels.whatsapp.client import SendOutcome, SendResult
 from realestate.db.models import (
+    ChannelBindingKind,
     Conversation,
     DeliveryStatus,
     OutboxMessage,
     OutboxStatus,
 )
+from realestate.domain.platform.routing import OrganizationRouting
 
 # P-036: three total attempts — immediately, after 5s, after 30s.
 MAX_ATTEMPTS = 3
@@ -80,6 +82,10 @@ class Enqueued:
 class OutboxService:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+        # Held rather than built per callback, for the same reason as
+        # :class:`~realestate.domain.inbox.InboxService`: one webhook body
+        # carries many callbacks from the same phone number id.
+        self._routing = OrganizationRouting(session)
 
     async def stage(
         self,
@@ -104,14 +110,18 @@ class OutboxService:
         commit, which callers already handle.
         """
         existing: uuid.UUID | None = await self._session.scalar(
-            select(OutboxMessage.id).where(
-                OutboxMessage.idempotency_key == idempotency_key
-            )
+            select(OutboxMessage.id)
+            # The key is unique *per Organization* since Stage 9. Reading it
+            # without the Organization would let a key another brokerage minted
+            # satisfy this one's staging and return their Outbox row.
+            .where(OutboxMessage.organization_id == conversation.organization_id)
+            .where(OutboxMessage.idempotency_key == idempotency_key)
         )
         if existing is not None:
             return Enqueued(outbox_id=existing, created=False)
 
         row = OutboxMessage(
+            organization_id=conversation.organization_id,
             conversation_id=conversation.id,
             inbox_group_id=inbox_group_id,
             idempotency_key=idempotency_key,
@@ -276,6 +286,7 @@ class OutboxService:
     async def record_delivery_status(
         self,
         *,
+        phone_number_id: str,
         provider_message_id: str,
         status: str,
         occurred_at: datetime,
@@ -285,17 +296,35 @@ class OutboxService:
 
         Persisted as product state rather than a debug log (TC-006). Duplicate
         callbacks are absorbed by the unique constraint.
+
+        The Organization is resolved here from the WhatsApp phone number id the
+        callback arrived on, rather than taken as an argument, for the reason
+        :meth:`~realestate.domain.inbox.InboxService.accept` states about the
+        inbound path: the refusal for an unbound number is part of what this
+        method *is*, and a second copy of it in each caller is how a later fix
+        gets applied to one path and silently missed on the other. An unroutable
+        number raises rather than defaulting (ADR-0050).
+
+        It is deliberately not derived from the provider identifier: Meta's
+        message id is opaque, and searching for it across the whole table would
+        let a callback for one brokerage attach itself to another's row if the
+        identifier ever collided or was replayed against the wrong endpoint.
         """
+        routed = await self._routing.resolve(
+            ChannelBindingKind.WHATSAPP_PHONE_NUMBER, phone_number_id
+        )
+        organization_id = routed.organization_id
         outbox = (
             await self._session.execute(
-                select(OutboxMessage).where(
-                    OutboxMessage.provider_message_id == provider_message_id
-                )
+                select(OutboxMessage)
+                .where(OutboxMessage.organization_id == organization_id)
+                .where(OutboxMessage.provider_message_id == provider_message_id)
             )
         ).scalar_one_or_none()
 
         self._session.add(
             DeliveryStatus(
+                organization_id=organization_id,
                 outbox_id=outbox.id if outbox else None,
                 provider_message_id=provider_message_id,
                 status=status,

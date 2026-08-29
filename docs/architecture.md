@@ -202,6 +202,59 @@ Administrator's do not add up is not recoverable. The buyer's half travels by an
 expiring, revocable, read-only link stored only as a digest, with a PDF built from
 the same line list as the page.
 
+## The Managed Platform
+
+Stage 9 turns one brokerage's product into a service several brokerages are on,
+and almost all of it is one property: **no operation reaches across
+Organizations.** The mechanisms are in `domain/platform/`, and each of them exists
+because the failure it prevents is silent.
+
+The foundation is not a module — it is the schema. Every table holding a
+Brokerage Organization's data names it in an `organization_id` column, with a
+deferred composite foreign key so the column and its parent cannot disagree, and
+every business key that was globally unique is unique per Organization instead.
+`domain/platform/scoping.py` writes down which table is which, with a stated
+reason for each of the four that are deliberately platform-wide, and three
+independent mechanisms read that table rather than restating it: the export, the
+deletion, and the isolation matrix. A table missing from it fails a test.
+
+| Seam | The only way to |
+|---|---|
+| `OrganizationRouting.resolve` | decide which Organization an inbound number, bot or hostname belongs to — and refuse an unbound one |
+| `OrganizationProvisioning.provision` / `.deprovision` | bring an Organization into existence, or take it out, resumably and reversibly |
+| `OrganizationConfiguration.record` | state how an Organization operates, as a version somebody explained |
+| `IntegrationCredentials.resolve` | reach a provider as one Organization, never as the platform and never as another |
+| `Entitlements.evaluate` / `.require` | decide whether an Organization may do something, and say why not |
+| `SupportAccess.grant` / `.revoke` | let an internal engineer read a customer's records, temporarily and visibly |
+| `OrganizationImport.plan` / `.apply` / `.roll_back` | bring an Organization's existing records in, dry-run first |
+| `OrganizationDataLifecycle.export` / `.delete` | hand over or remove everything an Organization owns |
+| `PlatformUsage.refresh` / `.read` | count what the platform measures about an Organization |
+| `operating_organizations` | ask which Organizations a background pass should act for |
+
+Two authorities, deliberately of different *types* rather than two values of one
+flag. An `Actor` is a caller inside one Organization and is what every commercial,
+catalog, conversation and analytics surface takes. A `PlatformOperator` is an
+internal operator of the service; it provisions, configures, entitles and
+measures, and it is refused by every surface that reads a customer's records.
+Neither can be constructed by a domain module — one comes from a member row, the
+other from a dedicated credential plus a mandatory operator name.
+
+That split is what replaces the superadmin. To read a customer's records an
+internal engineer takes a support grant, which creates an *ordinary* read-only
+member row inside one Organization — so every existing authorization check applies
+unchanged, because there is no second code path with weaker rules — expiring
+within eight hours, checked at login resolution rather than by a worker, and
+listed on that Organization's own `/crm/plataforma` page with the reason on it.
+
+Credentials are the other place the boundary has to hold, and there the failure
+mode is a *success*: an Organization with no token of its own silently using the
+platform's would send its messages from somebody else's number, into somebody
+else's Meta account. So a credential is never inherited. Product stores a
+*reference* — the name of the place the value lives — and resolution consults only
+the asking Organization's own, with one bounded exception: the process environment
+answers for the single founding Organization named in configuration, compared by
+id, and for nobody else.
+
 ## Human Operation, Team and Visits
 
 Stage 3 adds the part of the operation that has people in it. Three separations
@@ -334,9 +387,18 @@ containers. Product reaches PostgreSQL through the private Compose network.
 Only Product port 8080 is published to the host.
 
 Runtime configuration lives in one ignored `.env`. Docker volumes retain
-PostgreSQL data, Hermes profile state, and accepted Property Documents. No
-local Python virtual environment or sibling Hermes checkout is part of the
-operator workflow.
+PostgreSQL data, Hermes profile state, accepted Property Documents, Listing media
+and per-Organization export artifacts. No local Python virtual environment or
+sibling Hermes checkout is part of the operator workflow.
+
+Since Stage 9 that `.env` describes exactly one Brokerage Organization — the
+founding one, named by `PLATFORM_BOOTSTRAP_ORGANIZATION_SLUG` — and startup binds
+its channels and names its existing credentials as references, idempotently,
+without moving a secret. Every other Organization reads its own versioned
+configuration and its own secret references, or is refused. The topology's two
+single-Organization limits follow from the container count rather than the
+boundary: the administrative worker polls one Telegram bot, and the `site`
+container serves one public origin.
 
 Optional integrations require their normal provider credentials:
 

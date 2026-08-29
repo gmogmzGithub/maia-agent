@@ -164,14 +164,19 @@ class WhatsAppWorker:
         cycle: LeadEngagementCycle,
         lead: Lead | None,
     ) -> str:
-        role_session = await session_for_cycle(session, cycle.id)
+        role_session = await session_for_cycle(
+            session, cycle.id, cycle.organization_id
+        )
         seed, recovered_messages = await self._recovery_seed(
             session, cycle, lead
         )
 
         async def bind(hermes_session_id: str) -> None:
             await bind_cycle_session(
-                session, cycle_id=cycle.id, hermes_session_id=hermes_session_id
+                session,
+                organization_id=cycle.organization_id,
+                cycle_id=cycle.id,
+                hermes_session_id=hermes_session_id,
             )
 
         # Local to this call: the worker instance is shared across concurrently
@@ -390,6 +395,7 @@ class WhatsAppWorker:
         )
         await record_audit(
             session,
+            organization_id=conversation.organization_id,
             actor_type="Product",
             actor_id="WhatsAppWorker",
             action="WithholdMaiaReplyForHuman",

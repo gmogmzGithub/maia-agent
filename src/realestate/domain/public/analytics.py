@@ -57,6 +57,7 @@ class PublicEventCommand:
     surface: str
     occurred_at: datetime
     listing_id: uuid.UUID | None = None
+    campaign_id: uuid.UUID | None = None
     properties: dict[str, Any] | None = None
     #: An opaque per-browser reference the site minted. Pseudonymised before it
     #: reaches the analytics schema and never stored on the Stage 5 row.
@@ -144,6 +145,7 @@ class PublicAnalytics:
                 name=mapped,
                 occurred_at=command.occurred_at,
                 listing_id=command.listing_id,
+                campaign_id=command.campaign_id,
                 session_value=command.session_value,
                 attributes=attributes,
                 bot=command.bot,

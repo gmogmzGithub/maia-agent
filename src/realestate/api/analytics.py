@@ -231,6 +231,10 @@ async def dashboard(
         runs = tuple(
             await session.scalars(
                 select(AnalyticsProjectionRun)
+                .where(
+                    AnalyticsProjectionRun.organization_id
+                    == actor.organization_id
+                )
                 .order_by(desc(AnalyticsProjectionRun.ran_at))
                 .limit(10)
             )
@@ -267,7 +271,7 @@ async def project(
     replay = bool(form.get("replay"))
     try:
         async with request.app.state.database.session_scope() as session:
-            projection = AnalyticsProjection(session)
+            projection = AnalyticsProjection(session, actor)
             if replay:
                 report = await projection.refresh(version, from_sequence=0)
             else:

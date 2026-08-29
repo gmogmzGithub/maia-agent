@@ -503,6 +503,7 @@ class OpportunityManagement:
         opportunity.updated_at = _now()
         await record_audit(
             self._session,
+            organization_id=actor.organization_id,
             actor_type=actor.actor_type,
             actor_id=actor.label,
             action="AttachPropertyNeed",
@@ -571,6 +572,7 @@ class OpportunityManagement:
         self._session.add(row)
         await record_audit(
             self._session,
+            organization_id=actor.organization_id,
             actor_type=actor.actor_type,
             actor_id=actor.label,
             action="RecordOpportunityException",
@@ -598,6 +600,7 @@ class OpportunityManagement:
         existing.cleared_at = _now()
         await record_audit(
             self._session,
+            organization_id=actor.organization_id,
             actor_type=actor.actor_type,
             actor_id=actor.label,
             action="ClearOpportunityException",
@@ -673,6 +676,7 @@ class OpportunityManagement:
         )
         await record_audit(
             self._session,
+            organization_id=actor.organization_id,
             actor_type=actor.actor_type,
             actor_id=actor.label,
             action="OpenOpportunity",
@@ -800,6 +804,7 @@ class OpportunityManagement:
             )
         await record_audit(
             self._session,
+            organization_id=actor.organization_id,
             actor_type=actor.actor_type,
             actor_id=actor.label,
             action="ChangeOpportunityStage",

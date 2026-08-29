@@ -736,3 +736,101 @@ An Administrator-recorded pilot stop-condition event — wrong information, a
 complaint, an untimely message, an assignment failure, an incorrect appointment
 or operational overload — with written evidence and a moment.
 _Avoid_: Advisor performance score, complaint ticket, automatic pause trigger
+
+### The managed platform
+
+**Managed Platform**:
+The service on which several Brokerage Organizations operate the same product,
+each isolated to its own data, credentials and configuration, onboarded with
+accompaniment rather than by self-service signup.
+_Avoid_: Tenant system, marketplace, SaaS signup, dedicated deployment per
+customer
+
+**Founding Organization**:
+The one Brokerage Organization whose numbers, tokens, calendars and behaviour the
+process environment describes, named explicitly in configuration. It is the only
+Organization permitted to read a process setting as a bootstrap; every other one
+is refused.
+_Avoid_: Default organization, fallback tenant, primary account, the only
+organization
+
+**Channel Binding**:
+The recorded claim of one external identifier — a WhatsApp phone number id, a
+WhatsApp Business Account id, a Telegram bot id, a public hostname — by exactly
+one Brokerage Organization. An unbound identifier is refused, never resolved to a
+default.
+_Avoid_: Routing guess, implicit ownership, shared number, fallback organization
+
+**Organization Configuration Version**:
+One immutable, checksummed, numbered document stating how a Brokerage
+Organization operates — brand, service area, bookable hours, default Advisor,
+channel identifiers, expected integrations and permitted operational limits —
+with a written reason for its existence. It never contains a credential.
+_Avoid_: Settings row, environment variable, editable preferences, secret store
+
+**Secret Reference**:
+The recorded *name* of the place one Brokerage Organization's provider credential
+lives, with a fingerprint of what that name last resolved to. Product never
+stores, logs, exports or displays the credential itself.
+_Avoid_: Access token, API key, credential value, password field
+
+**Credential Rotation**:
+Recording a new Secret Reference for a provider while the outgoing one is kept as
+history, proved by a changed fingerprint. It does not verify that the provider
+accepts the new value.
+_Avoid_: Overwritten secret, verified credential, tested integration
+
+**Entitlement**:
+One append-only statement of whether a Brokerage Organization may use one named
+capability, with an optional numeric ceiling, a source, a written reason and an
+author. A capability with no recorded entitlement is refused.
+_Avoid_: Feature flag, permission, plan field, price, invoice line
+
+**Seat Tier**:
+The named band describing how large a Brokerage Organization's Advisor team may
+be, together with its monthly conversation allowance. It carries no price.
+_Avoid_: Price plan, subscription, billing tier, contract
+
+**Support Access Grant**:
+One temporary, read-only, expiring permission for an internal engineer to read a
+single Brokerage Organization's records, carrying a written reason, an optional
+request reference and a recorded use count, visible to that Organization's own
+Administrator.
+_Avoid_: Superadmin, impersonation, platform-wide access, permanent support login
+
+**Platform Operator**:
+An authenticated internal operator of the Managed Platform, authorized by its own
+credential to provision, configure, entitle and measure Brokerage Organizations,
+and refused by every surface that reads a Brokerage Organization's records.
+_Avoid_: Organization Administrator, superadmin, support engineer with data access
+
+**Provisioning Run**:
+One named, resumable, individually reversible sequence of steps that brings a
+Brokerage Organization into existence; the Organization is not operable until the
+final step completes.
+_Avoid_: Signup, setup script, one-shot migration, tenant creation
+
+**Organization Import**:
+The initial migration of a Brokerage Organization's existing records, requiring a
+dry run over the identical source before any apply, producing one finding per
+incoming record with the source's own reference, and rolling back by stored
+identifier.
+_Avoid_: Bulk upload, silent sync, catalog publication, verified inventory
+
+**Retention Hold**:
+A recorded obligation — legal, contractual or a dispute — that forbids deleting a
+Brokerage Organization's data, with a named authority. A deletion request meeting
+a live hold is refused outright rather than partially applied.
+_Avoid_: Soft delete, deferred deletion, partial compliance, archive flag
+
+**Organization Data Export**:
+One artifact containing everything a Brokerage Organization owns, with per-table
+row counts, a checksum, and every withheld column named — salts, credential
+fingerprints, live token digests and model session handles.
+_Avoid_: Database dump, complete backup, unredacted extract
+
+**Scoping Table**:
+The written classification of every database table as one Brokerage
+Organization's data or as deliberately platform-wide with a stated reason, read by
+the export, by deletion and by the isolation tests.
+_Avoid_: Documentation, naming convention, implicit tenancy, ORM inheritance

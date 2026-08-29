@@ -18,9 +18,12 @@ from realestate.db.models import (
     ContactChannelIdentity,
     Conversation,
     SavedCollection,
+    SponsorshipContactAttribution,
     WebsiteConversation as WebsiteConversationRow,
     WebsiteConversationStatus,
+    AnalyticsEventName,
 )
+from realestate.domain.analytics.events import AnalyticsEvent, AnalyticsEvents
 from realestate.domain.audit import record_audit
 from realestate.domain.commercial.actors import Actor, CommercialError, NotFound
 from realestate.domain.public.listing import PublicListing
@@ -51,6 +54,7 @@ class CreateHandoff:
     saved_collection_id: uuid.UUID | None = None
     listing_id: uuid.UUID | None = None
     expected_contact_id: uuid.UUID | None = None
+    sponsorship_campaign_id: uuid.UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -105,6 +109,7 @@ class ChannelHandoff:
             website_conversation_id=command.website_conversation_id,
             saved_collection_id=command.saved_collection_id,
             listing_id=command.listing_id,
+            sponsorship_campaign_id=command.sponsorship_campaign_id,
             expected_contact_id=command.expected_contact_id,
             created_at=at,
             expires_at=at + lifetime,
@@ -116,8 +121,11 @@ class ChannelHandoff:
             )
             assert conversation is not None
             conversation.status = WebsiteConversationStatus.HANDOFF_PENDING.value
+            if row.sponsorship_campaign_id is None:
+                row.sponsorship_campaign_id = conversation.sponsorship_campaign_id
         await record_audit(
             self._session,
+            organization_id=self._actor.organization_id,
             actor_type=self._actor.actor_type,
             actor_id=self._actor.label,
             action="CreateChannelHandoff",
@@ -198,8 +206,28 @@ class ChannelHandoff:
             whatsapp.property_uuid = listing.listing.property_id
         row.consumed_at = at
         row.consumed_by_contact_id = verified_contact_id
+        if row.sponsorship_campaign_id is not None:
+            self._session.add(
+                SponsorshipContactAttribution(
+                    organization_id=self._actor.organization_id,
+                    campaign_id=row.sponsorship_campaign_id,
+                    contact_id=verified_contact_id,
+                    handoff_id=row.id,
+                    engaged_at=at,
+                )
+            )
+            await AnalyticsEvents(self._session, self._actor).record(
+                AnalyticsEvent(
+                    event_key=f"sponsored-handoff:{row.id}",
+                    name=AnalyticsEventName.WHATSAPP_HANDOFF,
+                    occurred_at=at,
+                    campaign_id=row.sponsorship_campaign_id,
+                    subject_value=str(verified_contact_id),
+                )
+            )
         await record_audit(
             self._session,
+            organization_id=self._actor.organization_id,
             actor_type="Contact",
             actor_id=str(verified_contact_id),
             action="ResolveChannelHandoff",

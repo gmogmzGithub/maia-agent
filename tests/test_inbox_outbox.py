@@ -680,11 +680,16 @@ def _commit_a_competing_outbox_row(conversation_id, key: str) -> None:
         connection.execute(
             """
             INSERT INTO outbox_messages
-                (id, conversation_id, idempotency_key, to_wa_id, kind, body,
-                 covered_inbox_ids, status, attempts)
-            VALUES (gen_random_uuid(), %s, %s, %s, %s, %s, '[]'::jsonb, %s, 0)
+                (id, organization_id, conversation_id, idempotency_key, to_wa_id,
+                 kind, body, covered_inbox_ids, status, attempts)
+            VALUES (
+                gen_random_uuid(),
+                (SELECT organization_id FROM conversations WHERE id = %s),
+                %s, %s, %s, %s, %s, '[]'::jsonb, %s, 0
+            )
             """,
             (
+                str(conversation_id),
                 str(conversation_id),
                 key,
                 "5215550000001",

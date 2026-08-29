@@ -24,6 +24,7 @@ from realestate.site.gateway import (
     GatewayResponse,
     HttpProductSiteGateway,
     ProductSiteGateway,
+    host_of,
 )
 from realestate.site.templates import (
     absolute,
@@ -132,12 +133,32 @@ def _crawler(user_agent: str) -> bool:
     )
 
 
-def _measurement_headers(request: Request) -> dict[str, str]:
+def _session_reference(request: Request) -> str:
+    """Return the browser reference used throughout this request.
+
+    Sponsored selection happens before the HTML response exists.  Minting the
+    value here ensures the Served event and the cookie written later name the
+    same browser session, including on the very first page view.
+    """
+    existing = request.cookies.get(SESSION_COOKIE)
+    if existing:
+        return existing
+    minted = getattr(request.state, "session_reference", None)
+    if not isinstance(minted, str):
+        minted = uuid.uuid4().hex
+        request.state.session_reference = minted
+    return minted
+
+
+def _measurement_headers(
+    request: Request, *, sponsored_exposure: object | None = None
+) -> dict[str, str]:
     """The session reference and crawler flag Product needs for capping."""
     headers = {"X-Crawler": "true" if _crawler(request.headers.get("user-agent", "")) else "false"}
-    reference = request.cookies.get(SESSION_COOKIE)
-    if reference:
-        headers["X-Session-Reference"] = reference
+    headers["X-Session-Reference"] = _session_reference(request)
+    exposure = sponsored_exposure or request.query_params.get("patrocinio")
+    if exposure:
+        headers["X-Sponsored-Exposure"] = str(exposure)
     return headers
 
 
@@ -146,7 +167,7 @@ def _set_session_cookie(response: Response, request: Request) -> str:
     existing = request.cookies.get(SESSION_COOKIE)
     if existing:
         return existing
-    minted = uuid.uuid4().hex
+    minted = _session_reference(request)
     response.set_cookie(
         SESSION_COOKIE,
         minted,
@@ -180,6 +201,7 @@ def create_site_app(
     product = gateway or HttpProductSiteGateway(
         configuration.product_internal_base_url,
         configuration.site_internal_token,
+        site_host=host_of(configuration.site_public_origin),
     )
 
     @asynccontextmanager
@@ -363,7 +385,11 @@ def create_site_app(
                     projection.get("description")
                     or f"Consulta la ficha autorizada de {listing['title']}."
                 ),
-                body=technical_sheet(listing, projection),
+                body=technical_sheet(
+                    listing,
+                    projection,
+                    sponsored_exposure=request.query_params.get("patrocinio"),
+                ),
                 origin=configuration.site_public_origin,
                 canonical_path=f"/propiedades/{slug}",
                 structured_data=structured,
@@ -589,6 +615,7 @@ def create_site_app(
                         else None
                     ),
                     listing_ids=context,
+                    sponsored_exposure=request.query_params.get("patrocinio"),
                 ),
                 origin=configuration.site_public_origin,
                 canonical_path="/maia",
@@ -606,12 +633,16 @@ def create_site_app(
             "command_key": str(form.get("command_key") or ""),
             "listing_ids": [str(value) for value in form.getlist("listing_ids")],
         }
+        sponsored_exposure = str(form.get("sponsored_exposure") or "") or None
         result = await product.request(
             "POST",
             "/internal/public-site/conversation",
             body=body,
             token_header=_token_header(
                 "X-Conversation-Token", request.cookies.get(CONVERSATION_COOKIE)
+            ),
+            headers=_measurement_headers(
+                request, sponsored_exposure=sponsored_exposure
             ),
         )
         data = _data(result)
@@ -629,6 +660,7 @@ def create_site_app(
                     else None
                 ),
                 listing_ids=list(body["listing_ids"]),
+                sponsored_exposure=sponsored_exposure,
                 error=_detail(result) if result.status_code >= 400 else "",
             ),
             origin=configuration.site_public_origin,
@@ -658,8 +690,14 @@ def create_site_app(
             )
             if form.get(key)
         }
+        sponsored_exposure = str(form.get("sponsored_exposure") or "") or None
         result = await product.request(
-            "POST", "/internal/public-site/handoffs", body=body
+            "POST",
+            "/internal/public-site/handoffs",
+            body=body,
+            headers=_measurement_headers(
+                request, sponsored_exposure=sponsored_exposure
+            ),
         )
         if result.status_code >= 400:
             return _html(
@@ -707,11 +745,12 @@ def create_site_app(
             body = await request.json()
         except ValueError:
             return Response(status_code=400)
+        exposure = body.pop("exposure_id", None) if isinstance(body, dict) else None
         result = await product.request(
             "POST",
             "/internal/public-site/events",
             body=body,
-            headers=_measurement_headers(request),
+            headers=_measurement_headers(request, sponsored_exposure=exposure),
         )
         return Response(status_code=202 if result.status_code < 400 else 422)
 
@@ -727,11 +766,12 @@ def create_site_app(
             body = await request.json()
         except ValueError:
             return Response(status_code=400)
+        exposure = body.pop("exposure_id", None) if isinstance(body, dict) else None
         result = await product.request(
             "POST",
             "/internal/public-site/measurement/gallery-depth",
             body=body,
-            headers=_measurement_headers(request),
+            headers=_measurement_headers(request, sponsored_exposure=exposure),
         )
         return Response(status_code=202 if result.status_code < 400 else 422)
 
@@ -987,13 +1027,11 @@ async def _record_listing_open(
     ignored on purpose: measurement must never be able to break the page it is
     measuring.
     """
-    reference = request.cookies.get(SESSION_COOKIE) or "anon"
-    day = datetime.now(tz=UTC).date().isoformat()
     await product.request(
         "POST",
         "/internal/public-site/measurement/listing-open",
         body={
-            "event_key": f"open:{listing_id}:{reference}:{day}",
+            "event_key": f"open:{listing_id}:{uuid.uuid4().hex}",
             "listing_id": listing_id,
             "surface": "TechnicalSheet",
             "occurred_at": datetime.now(tz=UTC).isoformat(),

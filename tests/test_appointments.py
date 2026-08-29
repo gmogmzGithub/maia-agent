@@ -71,7 +71,8 @@ async def booking(tmp_path: Path):
         # it, and Stage 3 will not confirm a visit without a Responsible Advisor
         # who has an authoritative calendar.
         await commercial.provision_bookable_team(session)
-        await PropertyService(session, artifacts).accept_upload(
+        organization = await commercial.organization_id(session)
+        await PropertyService(session, artifacts, organization_id=organization).accept_upload(
             "casa-roble.md", V1, actor_id="developer"
         )
         message = parse_webhook(

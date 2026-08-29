@@ -167,15 +167,13 @@ async def test_serving_a_paid_card_records_its_served_impression(database) -> No
         await session.commit()
 
         sponsored = PublicSponsored(session, admin)
-        await sponsored.for_surface(
+        first = await sponsored.for_surface(
             surface="Search",
             at=MOMENT,
             visible_results=12,
             session_value="navegador-2",
         )
-        # The same page rendered twice in one session and day is one served
-        # impression: the key is built from the session, the day and the slot.
-        await sponsored.for_surface(
+        second = await sponsored.for_surface(
             surface="Search",
             at=MOMENT,
             visible_results=12,
@@ -191,9 +189,10 @@ async def test_serving_a_paid_card_records_its_served_impression(database) -> No
                 )
             )
         )
-        assert len(rows) == 1
-        assert rows[0].duplicate_attempts == 1
-        assert "navegador-2" not in rows[0].event_key
+        assert len(rows) == 2
+        assert first.cards[0].exposure_id != second.cards[0].exposure_id
+        assert {row.duplicate_attempts for row in rows} == {0}
+        assert all("navegador-2" not in row.event_key for row in rows)
 
 
 async def test_a_browser_claim_below_the_threshold_is_not_a_visible_impression(
@@ -207,23 +206,26 @@ async def test_a_browser_claim_below_the_threshold_is_not_a_visible_impression(
     async with database.session_scope() as session:
         admin = await actor_for(session, ADMIN_LOGIN)
         await published_catalog(session, admin)
-        campaign = await active_campaign(session, admin, "visible")
+        await active_campaign(session, admin, "visible")
         await session.commit()
 
         sponsored = PublicSponsored(session, admin)
-        below = await sponsored.count_visible(
-            campaign_id=campaign.campaign_id,
-            listing_id=campaign.listing.listing_id,
+        surface = await sponsored.for_surface(
             surface="Search",
+            at=MOMENT,
+            visible_results=12,
+            session_value="navegador-3",
+        )
+        exposure_id = surface.cards[0].exposure_id
+        below = await sponsored.count_visible(
+            exposure_id=exposure_id,
             visible_fraction=0.49,
             continuous_milliseconds=5000,
             session_value="navegador-3",
             at=MOMENT,
         )
         exact = await sponsored.count_visible(
-            campaign_id=campaign.campaign_id,
-            listing_id=campaign.listing.listing_id,
-            surface="Search",
+            exposure_id=exposure_id,
             visible_fraction=0.5,
             continuous_milliseconds=1000,
             session_value="navegador-3",
@@ -232,6 +234,44 @@ async def test_a_browser_claim_below_the_threshold_is_not_a_visible_impression(
         await session.commit()
         assert below is False
         assert exact is True
+
+
+async def test_three_distinct_served_exposures_reach_the_real_session_cap(
+    database,
+) -> None:
+    async with database.session_scope() as session:
+        admin = await actor_for(session, ADMIN_LOGIN)
+        await published_catalog(session, admin)
+        await active_campaign(session, admin, "tope-real")
+        await session.commit()
+
+        sponsored = PublicSponsored(session, admin)
+        session_value = "navegador-con-tope"
+        exposure_ids = []
+        for _ in range(3):
+            surface = await sponsored.for_surface(
+                surface="Search",
+                at=MOMENT,
+                visible_results=12,
+                session_value=session_value,
+            )
+            exposure_ids.append(surface.cards[0].exposure_id)
+            assert await sponsored.count_visible(
+                exposure_id=surface.cards[0].exposure_id,
+                visible_fraction=0.5,
+                continuous_milliseconds=1000,
+                session_value=session_value,
+                at=MOMENT,
+            ) is True
+
+        assert len(set(exposure_ids)) == 3
+        capped = await sponsored.for_surface(
+            surface="Search",
+            at=MOMENT,
+            visible_results=12,
+            session_value=session_value,
+        )
+        assert capped.cards == ()
 
 
 async def test_an_unpublished_listing_leaves_its_slot_empty_not_substituted(
@@ -281,6 +321,7 @@ def test_a_sponsored_card_renders_the_visible_chip_and_an_accessible_name() -> N
     """
     card = {
         "campaign_id": "11111111-1111-1111-1111-111111111111",
+        "exposure_id": "33333333-3333-3333-3333-333333333333",
         "listing": {
             "listing_id": "22222222-2222-2222-2222-222222222222",
             "slug": "casa-etiquetada",
@@ -297,6 +338,7 @@ def test_a_sponsored_card_renders_the_visible_chip_and_an_accessible_name() -> N
     assert f'aria-label="{SPONSORED_ARIA_LABEL}"' in html
     assert 'class="listing-card sponsored"' in html
     assert 'data-sponsored-campaign="11111111-1111-1111-1111-111111111111"' in html
+    assert 'data-sponsored-exposure="33333333-3333-3333-3333-333333333333"' in html
     # An organic card carries neither.
     organic = site_templates.listing_card(card["listing"], surface="Search")
     assert SPONSORED_LABEL not in organic

@@ -105,6 +105,19 @@ class TelegramClient:
     def configured(self) -> bool:
         return bool(self._token)
 
+    @property
+    def bot_id(self) -> str:
+        """The bot's own numeric identity, taken from its token.
+
+        Telegram tokens are ``<bot_id>:<secret>``, and the left half is public
+        information — it is the bot's user id. Stage 9 uses it as the channel
+        binding's external identifier, so "which Organization does this
+        administrative channel belong to" is a lookup rather than an assumption.
+        Returning only the prefix also means the binding, the audit trail and
+        the operator surface never carry the secret half.
+        """
+        return self._token.split(":", 1)[0] if self._token else ""
+
     def _client(self) -> httpx.AsyncClient:
         """The process-lifetime client, created on first use.
 

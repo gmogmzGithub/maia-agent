@@ -17,6 +17,7 @@ from sqlalchemy import select
 
 from realestate.db.engine import Database
 from realestate.db.models import (
+    AnalyticsEventName,
     ListingAuthority,
     ListingAvailability,
     SponsoredEligibilityRecord,
@@ -24,6 +25,7 @@ from realestate.db.models import (
     SponsorshipCampaignStatus,
     SponsorshipDeliveryDay,
 )
+from realestate.domain.analytics.events import AnalyticsEvent, AnalyticsEvents
 from realestate.domain.catalog.administration import (
     CatalogAdministration,
     SetListingAuthority,
@@ -81,6 +83,20 @@ def context(**overrides) -> DeliveryContext:
     }
     base.update(overrides)
     return DeliveryContext(**base)  # type: ignore[arg-type]
+
+
+async def measured_serve(session, actor, campaign, *, at, suffix: str) -> None:
+    await AnalyticsEvents(session, actor).record(
+        AnalyticsEvent(
+            event_key=f"served-delivery-day-{suffix}",
+            name=AnalyticsEventName.SPONSORED_SERVED_IMPRESSION,
+            occurred_at=at,
+            listing_id=campaign.listing.listing_id,
+            campaign_id=campaign.campaign_id,
+            session_value=f"browser-{suffix}",
+            attributes={"surface": "Search", "position": 1},
+        )
+    )
 
 
 async def test_the_page_gets_one_slot_per_six_visible_results(database) -> None:
@@ -351,6 +367,7 @@ async def test_the_daily_pass_pauses_an_ineligible_campaign_and_keeps_its_days(
         await session.commit()
 
         campaigns = SponsorshipCampaigns(session, admin)
+        await measured_serve(session, admin, campaign, at=MOMENT, suffix="pausada-0")
         first = await campaigns.run_daily(at=MOMENT)
         await session.commit()
         assert [item.counted for item in first] == [True]
@@ -386,6 +403,13 @@ async def test_the_daily_pass_pauses_an_ineligible_campaign_and_keeps_its_days(
             ),
         )
         await session.commit()
+        await measured_serve(
+            session,
+            admin,
+            campaign,
+            at=MOMENT + timedelta(days=2),
+            suffix="pausada-2",
+        )
         await campaigns.run_daily(at=MOMENT + timedelta(days=2))
         await session.commit()
         row = await session.get(SponsorshipCampaign, campaign.campaign_id)
@@ -402,6 +426,7 @@ async def test_the_daily_pass_is_idempotent_within_one_service_date(database) ->
         await session.commit()
 
         campaigns = SponsorshipCampaigns(session, admin)
+        await measured_serve(session, admin, campaign, at=MOMENT, suffix="repetida")
         await campaigns.run_daily(at=MOMENT)
         await campaigns.run_daily(at=MOMENT + timedelta(hours=3))
         await session.commit()
@@ -429,7 +454,11 @@ async def test_a_campaign_completes_when_its_paid_days_are_delivered(
 
         campaigns = SponsorshipCampaigns(session, admin)
         for offset in range(2):
-            await campaigns.run_daily(at=MOMENT + timedelta(days=offset))
+            at = MOMENT + timedelta(days=offset)
+            await measured_serve(
+                session, admin, campaign, at=at, suffix=f"completa-{offset}"
+            )
+            await campaigns.run_daily(at=at)
             await session.commit()
 
         row = await session.get(SponsorshipCampaign, campaign.campaign_id)

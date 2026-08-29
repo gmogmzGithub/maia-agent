@@ -27,7 +27,14 @@ from realestate.db.models import (
 )
 from realestate.domain.administration import AdministrationService, Administrator
 from realestate.domain.properties import ArtifactStore, PropertyService
-from tests.conftest import DATABASE_URL, env, requires_postgres, reset_property_inventory
+from tests.conftest import (
+    DATABASE_URL,
+    env,
+    larevia_organization_id,
+    requires_postgres,
+    reset_property_inventory,
+)
+from tests.fixtures import commercial
 
 FIXTURES = Path(__file__).parent / "fixtures"
 V1 = (FIXTURES / "casa-roble.md").read_bytes()
@@ -62,11 +69,13 @@ async def wired(tmp_path: Path):
         session.add_all(
             [
                 AgentSession(
+                    organization_id=await larevia_organization_id(session),
                     hermes_session_id=ADMIN_SESSION,
                     role=AgentRole.ADMINISTRATIVE.value,
                     channel_key="telegram:12345",
                 ),
                 AgentSession(
+                    organization_id=await larevia_organization_id(session),
                     hermes_session_id=SALES_SESSION, role=AgentRole.SALES.value
                 ),
             ]
@@ -78,7 +87,8 @@ async def wired(tmp_path: Path):
     app.state.artifacts = ArtifactStore(tmp_path / "artifacts")
 
     async with database.session_scope() as session:
-        service = PropertyService(session, app.state.artifacts)
+        organization = await commercial.organization_id(session)
+        service = PropertyService(session, app.state.artifacts, organization_id=organization)
         await service.accept_upload("casa-roble.md", V1, actor_id="developer")
         await service.accept_upload(
             "casa-encino.md", second_property(), actor_id="developer"
@@ -404,7 +414,12 @@ async def test_an_invalid_status_is_refused_at_the_service_too(wired) -> None:
 
     async with app.state.database.session_scope() as session:
         result = await AdministrationService(session).set_property_status(
-            "casa-roble", "Vendida", Administrator(actor_id="t:1")
+            "casa-roble",
+            "Vendida",
+            Administrator(
+                organization_id=await larevia_organization_id(session),
+                actor_id="t:1",
+            ),
         )
 
     assert result["result"] == "ambiguous"

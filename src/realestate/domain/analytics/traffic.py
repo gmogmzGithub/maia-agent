@@ -16,6 +16,7 @@ undercount.
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
@@ -78,8 +79,9 @@ class Classification:
 class TrafficClassifier:
     """Assign a traffic class to one enqueued event."""
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, organization_id: uuid.UUID) -> None:
         self._session = session
+        self._organization_id = organization_id
 
     async def classify(
         self, payload: dict[str, Any], *, occurred_at: datetime
@@ -114,6 +116,7 @@ class TrafficClassifier:
         window = timedelta(minutes=1)
         already = await self._session.scalar(
             select(func.count(AnalyticsDomainEvent.id)).where(
+                AnalyticsDomainEvent.organization_id == self._organization_id,
                 AnalyticsDomainEvent.session_reference == reference,
                 AnalyticsDomainEvent.occurred_at >= occurred_at - window,
                 AnalyticsDomainEvent.occurred_at <= occurred_at + window,

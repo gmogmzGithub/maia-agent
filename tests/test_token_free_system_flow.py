@@ -227,7 +227,8 @@ async def test_whatsapp_lead_booking_reaches_telegram_without_provider_tokens(
         # who has an authoritative calendar, so the vertical scenario has to
         # provision one before the first message arrives.
         await commercial.provision_bookable_team(session)
-        await PropertyService(session, app.state.artifacts).accept_upload(
+        organization = await commercial.organization_id(session)
+        await PropertyService(session, app.state.artifacts, organization_id=organization).accept_upload(
             "casa-roble.md", CASA_ROBLE, actor_id="offline-developer"
         )
 
@@ -279,6 +280,9 @@ async def test_whatsapp_lead_booking_reaches_telegram_without_provider_tokens(
             "accepted": 1,
             "duplicates": 0,
             "statuses": 0,
+            # Stage 9: a body on a number no Organization claims is counted and
+            # logged rather than answered or retried forever (ADR-0050).
+            "unroutable": 0,
         }
         duplicate = await _post_signed(client, first)
         assert duplicate.json()["duplicates"] == 1

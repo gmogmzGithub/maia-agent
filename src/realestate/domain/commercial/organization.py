@@ -34,13 +34,35 @@ from realestate.db.models import (
     MemberRole,
     Organization,
     OrganizationMember,
+    OrganizationStatus,
 )
 from realestate.domain.audit import record_audit
 from realestate.domain.commercial.actors import (
     Actor,
+    CommercialError,
+    NotFound,
     UnknownMember,
     authority_for,
 )
+from realestate.domain.platform.support import SUPPORT_LOGIN_PREFIX, SupportAccess
+
+
+class OrganizationSuspended(CommercialError):
+    """The member exists but their Organization is not operating."""
+
+    message = (
+        "El servicio de tu organización está pausado. Contacta a tu "
+        "administrador o al equipo de Maia."
+    )
+
+
+class SupportAccessExpired(CommercialError):
+    """A support login whose temporary grant has ended (ADR-0054)."""
+
+    message = (
+        "Tu acceso temporal de soporte terminó. Solicita uno nuevo con el motivo "
+        "correspondiente."
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -192,7 +214,13 @@ class OrganizationDirectory:
         self._session = session
 
     async def organization(self, slug: str | None = None) -> Organization:
-        """The Brokerage Organization. Created by migration 0012, not here.
+        """One Organization by slug, defaulting to the founding one.
+
+        The default is the *bootstrap* Organization and nothing more general than
+        that. It is what startup reconciliation of the process environment reads,
+        and it is deliberately not what any inbound, public or worker path reads
+        any more: those resolve an Organization from a channel binding, an Actor
+        or the registry (ADR-0050).
 
         A missing row means the database is behind the code, which must fail
         loudly: inserting one would hand every legacy record to an Organization
@@ -225,13 +253,27 @@ class OrganizationDirectory:
         """
         return (await self.organization(slug)).id
 
-    async def reconcile(self, plan: DirectoryPlan) -> Reconciliation:
-        """Make the member table match the configured team. Commits.
+    async def reconcile(
+        self, plan: DirectoryPlan, *, organization_id: uuid.UUID | None = None
+    ) -> Reconciliation:
+        """Make one Organization's member table match a team plan. Commits.
 
         Idempotent by construction: a second run with the same plan reports no
         changes and writes no audit events.
+
+        ``organization_id`` is how Stage 9 provisioning reconciles a *second*
+        Organization's founding team with the same code the first one uses. Left
+        unset it means the bootstrap Organization, which is what the startup
+        reconciliation of the process environment is about and the only caller
+        that may omit it.
         """
-        organization = await self.organization()
+        organization = (
+            await self._session.get(Organization, organization_id)
+            if organization_id is not None
+            else await self.organization()
+        )
+        if organization is None:
+            raise NotFound("No encontramos esa organización.")
         existing = {
             member.login: member
             for member in (
@@ -344,6 +386,7 @@ class OrganizationDirectory:
         if result.changed:
             await record_audit(
                 self._session,
+                organization_id=organization.id,
                 actor_type="Product",
                 actor_id="OrganizationDirectory",
                 action="ReconcileOrganizationMembers",
@@ -364,6 +407,24 @@ class OrganizationDirectory:
         """The Actor behind an authenticated login, or a refusal.
 
         The only way an Actor comes into existence for a human caller.
+
+        Three refusals, and Stage 9 added the last two:
+
+        * no active member row — a credential that authenticates but belongs to
+          nobody (ADR-0046);
+        * the member's Organization is not operating. A suspended or
+          half-provisioned Organization must not be worked in, and the member
+          rows are deliberately left intact so resuming it is a status change
+          rather than a re-provisioning;
+        * the login is a support login whose grant has lapsed. Checked here
+          rather than trusted to the expiry sweep, so an internal engineer's
+          access ends on the clock and not on a worker having run (ADR-0054).
+
+        The login namespace is platform-wide, not per Organization: HTTP Basic
+        carries no Organization, so the username has to identify one row. That is
+        a named Stage 9 limit — a login already taken elsewhere is refused at
+        provisioning time with a message saying so, rather than silently attached
+        to the wrong brokerage.
         """
         member: OrganizationMember | None = await self._session.scalar(
             select(OrganizationMember).where(OrganizationMember.login == login)
@@ -371,6 +432,23 @@ class OrganizationDirectory:
         if member is None or not member.active:
             logger.info("Refused commercial access for login %r: no active member", login)
             raise UnknownMember()
+
+        organization = await self._session.get(Organization, member.organization_id)
+        if organization is None or organization.status != OrganizationStatus.ACTIVE.value:
+            logger.info(
+                "Refused commercial access for login %r: Organization %s is %s",
+                login,
+                member.organization_id,
+                organization.status if organization is not None else "missing",
+            )
+            raise OrganizationSuspended()
+
+        if login.startswith(SUPPORT_LOGIN_PREFIX):
+            grant = await SupportAccess(self._session).live_for_login(login)
+            if grant is None:
+                logger.info("Refused lapsed support access for login %r", login)
+                raise SupportAccessExpired()
+
         return Actor(
             organization_id=member.organization_id,
             authority=authority_for(member.role),

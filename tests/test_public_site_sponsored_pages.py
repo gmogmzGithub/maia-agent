@@ -24,6 +24,7 @@ from realestate.site.templates import SPONSORED_ARIA_LABEL, SPONSORED_LABEL
 LISTING_ID = "11111111-1111-1111-1111-111111111111"
 SPONSORED_LISTING_ID = "22222222-2222-2222-2222-222222222222"
 CAMPAIGN_ID = "33333333-3333-3333-3333-333333333333"
+EXPOSURE_ID = "44444444-4444-4444-4444-444444444444"
 
 
 def listing(listing_id: str, slug: str, title: str) -> dict[str, Any]:
@@ -75,7 +76,13 @@ class SponsoredGateway:
         headers: dict[str, str] | None = None,
     ) -> GatewayResponse:
         self.calls.append(
-            {"method": method, "path": path, "params": params, "headers": headers}
+            {
+                "method": method,
+                "path": path,
+                "params": params,
+                "body": body,
+                "headers": headers,
+            }
         )
         if path == "/internal/public-site/catalog":
             return _json(
@@ -98,6 +105,7 @@ class SponsoredGateway:
                         {
                             "position": 1,
                             "campaign_id": CAMPAIGN_ID,
+                            "exposure_id": EXPOSURE_ID,
                             "label": SPONSORED_LABEL,
                             "accessible_label": SPONSORED_ARIA_LABEL,
                             "listing": listing(
@@ -125,6 +133,45 @@ class SponsoredGateway:
                     "label": SPONSORED_LABEL,
                     "listing_title": "Casa Patrocinada",
                     "definition_version": "measurement-v1",
+                    "period_start": "2026-08-28T00:00:00Z",
+                    "period_end": "2026-09-01T00:00:00Z",
+                    "summary": [
+                        {"label": "Impresiones visibles", "value": 12},
+                        {"label": "Aperturas de publicación", "value": 7},
+                        {"label": "Acciones de interés", "value": 5},
+                        {"label": "Solicitudes de cita", "value": 3},
+                    ],
+                    "status": {
+                        "state": "Activa",
+                        "paid_days": 30,
+                        "delivered_days": 3,
+                        "remaining_days": 27,
+                    },
+                    "trend": [
+                        {
+                            "date": "2026-08-28T00:00:00Z",
+                            "visible": 12,
+                            "opens": 7,
+                            "interest": 5,
+                        }
+                    ],
+                    "funnel": [
+                        {
+                            "label": "Impresiones visibles",
+                            "value": 12,
+                            "conversion": "66.7 %",
+                        },
+                        {
+                            "label": "Exploración significativa de galería",
+                            "value": None,
+                            "conversion": "Muestra protegida",
+                        },
+                    ],
+                    "definitions": [
+                        "Visible: al menos 50 % de la tarjeta durante 1 segundo."
+                    ],
+                    "disclosure": "La visibilidad pagada no cambia las recomendaciones de Maia.",
+                    "disclaimer": "Estas cifras no miden causalidad.",
                     "lines": [
                         {"text": "Reporte de campaña Patrocinada", "style": "title"},
                         {"text": "Embudo", "style": "heading"},
@@ -185,6 +232,7 @@ async def test_a_paid_card_is_labelled_visibly_and_accessibly(path) -> None:
     assert f">{SPONSORED_LABEL}<" in body
     assert f'aria-label="{SPONSORED_ARIA_LABEL}"' in body
     assert f'data-sponsored-campaign="{CAMPAIGN_ID}"' in body
+    assert f'data-sponsored-exposure="{EXPOSURE_ID}"' in body
     # The organic card is present, and its own article carries no label at all.
     assert "Casa Orgánica" in body
     organic_article = next(
@@ -243,6 +291,7 @@ async def test_the_site_mints_one_opaque_session_reference_and_reuses_it() -> No
         for call in gateway.calls
         if call["path"] == "/internal/public-site/sponsored"
     ]
+    assert forwarded[0]["X-Session-Reference"] == cookie
     assert forwarded[-1]["X-Session-Reference"] == cookie
     assert forwarded[-1]["X-Crawler"] == "false"
 
@@ -291,6 +340,25 @@ async def test_the_technical_sheet_records_its_own_listing_open() -> None:
     assert call["method"] == "POST"
 
 
+async def test_two_first_time_browsers_get_distinct_listing_open_keys() -> None:
+    gateway = SponsoredGateway()
+    async with await client_for(gateway) as first:
+        await first.get("/propiedades/casa-organica")
+    async with await client_for(gateway) as second:
+        await second.get("/propiedades/casa-organica")
+
+    calls = [
+        item
+        for item in gateway.calls
+        if item["path"] == "/internal/public-site/measurement/listing-open"
+    ]
+    assert len(calls) == 2
+    assert calls[0]["body"]["event_key"] != calls[1]["body"]["event_key"]
+    for call in calls:
+        reference = call["headers"]["X-Session-Reference"]
+        assert reference not in call["body"]["event_key"]
+
+
 async def test_the_buyer_report_page_is_private_noindex_and_offers_the_pdf() -> None:
     gateway = SponsoredGateway()
     async with await client_for(gateway) as client:
@@ -300,8 +368,13 @@ async def test_the_buyer_report_page_is_private_noindex_and_offers_the_pdf() -> 
     assert page.status_code == 200
     assert page.headers["cache-control"] == "private, no-store"
     assert page.headers["x-robots-tag"] == "noindex, follow"
-    assert "Reporte de campaña Patrocinada" in page.text
-    assert "Impresiones visibles: 12" in page.text
+    assert "Reporte de campaña" in page.text
+    assert "Cuatro cifras para empezar" in page.text
+    assert page.text.count("Impresiones visibles") >= 2
+    assert "Tendencia" in page.text
+    assert "Embudo completo" in page.text
+    assert "Muestra protegida" in page.text
+    assert "Estas cifras no miden causalidad" in page.text
     assert "/reportes/token-sintetico/patrocinio.pdf" in page.text
     # No cookie is set: the link is the whole surface, not the start of a session.
     assert "set-cookie" not in page.headers
@@ -329,9 +402,7 @@ async def test_the_visibility_and_gallery_beacons_forward_and_validate() -> None
         accepted = await client.post(
             "/patrocinadas/visible",
             json={
-                "campaign_id": CAMPAIGN_ID,
-                "listing_id": SPONSORED_LISTING_ID,
-                "surface": "Search",
+                "exposure_id": EXPOSURE_ID,
                 "visible_fraction": 0.6,
                 "continuous_milliseconds": 1200,
                 "occurred_at": "2026-08-28T18:00:00+00:00",
@@ -356,6 +427,15 @@ async def test_the_visibility_and_gallery_beacons_forward_and_validate() -> None
     assert depth.status_code == 202
     assert malformed.status_code == 400
     assert malformed_depth.status_code == 400
+    forwarded = next(
+        call for call in gateway.calls if call["path"] == "/internal/public-site/sponsored/visible"
+    )
+    assert forwarded["body"] == {
+        "exposure_id": EXPOSURE_ID,
+        "visible_fraction": 0.6,
+        "continuous_milliseconds": 1200,
+        "occurred_at": "2026-08-28T18:00:00+00:00",
+    }
 
 
 async def test_the_paid_section_survives_a_product_failure_without_a_page_error(

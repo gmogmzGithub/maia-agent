@@ -74,7 +74,10 @@ class HermesWebsiteResponder:
         async def bind(durable_id: str) -> None:
             async with self._database.session_scope() as session:
                 await bind_role_session(
-                    session, role=AgentRole.SALES, hermes_session_id=durable_id
+                    session,
+                    organization_id=turn.organization_id,
+                    role=AgentRole.SALES,
+                    hermes_session_id=durable_id,
                 )
 
         result = await run_turn(

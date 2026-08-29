@@ -278,6 +278,7 @@ async def test_first_response_minutes_come_from_the_emitted_events(database) -> 
         await make_inbound(session, conversation, sent_at=MOMENT)
         session.add(
             OutboxMessage(
+                organization_id=conversation.organization_id,
                 conversation_id=conversation.id,
                 idempotency_key="metrics-outbox-1",
                 to_wa_id=state.lead.wa_id,
@@ -292,7 +293,7 @@ async def test_first_response_minutes_come_from_the_emitted_events(database) -> 
 
         await AnalyticsEmission(session, admin).emit_operational()
         await session.commit()
-        await AnalyticsProjection(session).drain()
+        await AnalyticsProjection(session, admin).drain()
         await session.commit()
 
         card = await OperationMetrics(session, admin).scorecard(
@@ -411,7 +412,7 @@ async def test_excluded_events_are_reported_next_to_the_results(database) -> Non
             )
         )
         await session.commit()
-        await AnalyticsProjection(session).drain()
+        await AnalyticsProjection(session, admin).drain()
         await session.commit()
 
         card = await OperationMetrics(session, admin).scorecard(

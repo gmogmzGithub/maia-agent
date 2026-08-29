@@ -166,7 +166,9 @@ async def build(session: AsyncSession, artifacts_root: Path) -> Operation:
     second = calendars.add(commercial.SECOND_ADVISOR_CALENDAR_ID)
 
     accepted = await PropertyService(
-        session, ArtifactStore(artifacts_root)
+        session,
+        ArtifactStore(artifacts_root),
+        organization_id=await commercial.organization_id(session),
     ).accept_upload("casa-roble.md", CASA_ROBLE, actor_id="developer")
     property_uuid = await session.scalar(
         select(Property.id).where(Property.property_key == accepted.property_key)

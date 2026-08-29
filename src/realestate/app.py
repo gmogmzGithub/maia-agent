@@ -24,6 +24,7 @@ from realestate.api import catalog as catalog_api
 from realestate.api import external_inventory as external_inventory_api
 from realestate.api import engagement as engagement_api
 from realestate.api import operations as operations_api
+from realestate.api import platform as platform_api
 from realestate.api import plugin as plugin_api
 from realestate.api import public_site as public_site_api
 from realestate.api import public_proxy as public_proxy_api
@@ -40,11 +41,18 @@ from realestate.domain.appointments import AppointmentPolicy
 from realestate.domain.admin_work import AdminWorkService
 from realestate.domain.availability import WeeklySchedule
 from realestate.domain.commercial.organization import OrganizationDirectory
+from realestate.domain.platform.bootstrap import (
+    BootstrapEnvironment,
+    PlatformBootstrap,
+)
+from realestate.domain.platform.credentials import SecretResolver
+from realestate.db.models import IntegrationProvider
 from realestate.domain.catalog.storage import LocalMediaStorage
 from realestate.domain.external_inventory.easybroker import EasyBrokerAdapter
 from realestate.domain.scheduling.calendars import GoogleCalendarDirectory
 from realestate.domain.properties import ArtifactStore, CatalogStore
 from realestate.hermes import HermesClient
+from realestate.hosts import host_of as site_host_of
 from realestate.worker.broker import BrokerNotifier
 from realestate.worker.external_inventory import ExternalInventoryCleanupWorker
 from realestate.worker.analytics import AnalyticsWorker
@@ -52,6 +60,7 @@ from realestate.worker.engagement import EngagementWorker
 from realestate.worker.followups import LeadFollowUpWorker
 from realestate.worker.loop import BackgroundLoop, idle_tick
 from realestate.worker.operations import OperationsWorker
+from realestate.worker.platform import PlatformWorker
 from realestate.worker.telegram import TelegramAdminWorker
 from realestate.worker.upkeep import CommercialUpkeepWorker
 from realestate.worker.whatsapp import WhatsAppWorker
@@ -101,6 +110,62 @@ async def _reconcile_directory(app: FastAPI) -> None:
         logger.info(
             "Organization members already match configuration (%d member(s))",
             len(plan.logins),
+        )
+
+
+async def _bootstrap_platform(app: FastAPI) -> None:
+    """Bind the founding Organization's channels from the process environment.
+
+    Runs *before* the member reconciliation, because Stage 9 refuses a login
+    whose Organization is not Active and this is what asserts that status on a
+    database restored from an older dump.
+
+    Best-effort for the same reason the directory reconciliation is: an operator
+    needs ``/health`` to say why, and an installation with no founding
+    Organization is a legitimate state in which this does nothing.
+    """
+    settings: Settings = app.state.settings
+    environment = BootstrapEnvironment(
+        slug=settings.platform_bootstrap_organization_slug,
+        whatsapp_phone_number_id=settings.meta_phone_number_id,
+        whatsapp_business_account_id=settings.meta_waba_id,
+        telegram_bot_id=app.state.telegram.bot_id,
+        public_site_host=site_host_of(settings.site_public_origin),
+        credential_references={
+            IntegrationProvider(provider): name
+            for provider, name in settings.bootstrap_credential_references.items()
+        },
+    )
+    try:
+        async with app.state.database.session_scope() as session:
+            report = await PlatformBootstrap(
+                session, app.state.secret_resolver
+            ).reconcile(environment)
+    except Exception:
+        logger.exception(
+            "Could not reconcile the founding Organization's channel bindings; "
+            "inbound WhatsApp, Telegram and public-site traffic will be refused "
+            "until this succeeds"
+        )
+        return
+    app.state.bootstrap_organization_id = report.organization_id
+    if report.changed:
+        logger.info(
+            "Platform bootstrap bound %s and named %s",
+            list(report.bound),
+            list(report.references),
+        )
+    if report.skipped:
+        logger.error(
+            "Platform bootstrap left %s alone: another Organization holds it",
+            list(report.skipped),
+        )
+    if report.organization_id is None:
+        logger.warning(
+            "No Organization has the slug %r, so nothing in the process "
+            "environment applies to any Organization. Provision one before "
+            "accepting traffic.",
+            environment.slug,
         )
 
 
@@ -205,6 +270,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         day_of_reminder_hour=settings.appointment_day_of_reminder_hour,
     )
     app.state.telegram = TelegramClient(bot_token=settings.telegram_bot_token)
+    # The only object that reads a secret's value. A deployment backed by a
+    # secret manager replaces this and nothing else (ADR-0052).
+    app.state.secret_resolver = SecretResolver()
+    app.state.bootstrap_organization_id = None
     app.state.admin_worker = TelegramAdminWorker(
         database=app.state.database,
         hermes=app.state.hermes,
@@ -253,6 +322,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # quote expiry. Paced by its own interval: a measurement pass has no
     # business running once a second.
     app.state.analytics_worker = AnalyticsWorker(database=app.state.database)
+    # Support-grant expiry and the per-Organization usage projection. Its own
+    # object because both rules outlive one tick and neither belongs to a
+    # Brokerage Organization's own work.
+    app.state.platform_worker = PlatformWorker(database=app.state.database)
 
     async def tick() -> None:
         # Lead work, follow-ups, Administrative work, and the Broker's
@@ -285,6 +358,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ),
             ("reactivation and campaigns", app.state.engagement_worker.tick),
             ("analytics and sponsorship", app.state.analytics_worker.tick),
+            ("platform upkeep", app.state.platform_worker.tick),
             ("human operations", app.state.operations_worker.tick),
             ("administrative", app.state.admin_worker.tick),
             ("broker notifications", app.state.broker_notifier.tick),
@@ -308,6 +382,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await app.state.background_loop.start()
     else:
         logger.warning("Background worker is disabled; API stays up but no Inbox polling runs")
+    await _bootstrap_platform(app)
     await _reconcile_directory(app)
     await _log_startup_report(app)
 
@@ -365,6 +440,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(analytics_api.router)
     app.include_router(sponsorship_api.router)
     app.include_router(operations_api.router)
+    # Two routers from one module and deliberately so: the platform's own
+    # surface authenticates with the platform credential, while the panel an
+    # Organization Administrator reads authenticates as they always did.
+    app.include_router(platform_api.router)
+    app.include_router(platform_api.organization_router)
     app.include_router(plugin_api.router)
     app.include_router(public_site_api.router)
     app.include_router(upload_api.router)

@@ -473,7 +473,7 @@ async def test_media_robots_sitemap_security_and_frontend_budgets() -> None:
     assert b":focus-visible" in css.content
     assert b"localStorage" in javascript.content
     assert b"BroadcastChannel" in javascript.content
-    assert b"MaiaStarted" in javascript.content
+    assert b"MaiaStarted" not in javascript.content
     assert b"mousemove" not in javascript.content
     assert b"keydown" in javascript.content  # gallery keyboard, not key capture
     assert b"https://" not in javascript.content

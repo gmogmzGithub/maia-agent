@@ -386,10 +386,26 @@ async def test_the_daily_pass_activates_a_scheduled_campaign_on_its_start_date(
 
         on_time = await campaigns.run_daily(at=start)
         await session.commit()
-        assert [item.counted for item in on_time] == [True]
+        assert [item.counted for item in on_time] == [False]
         row = await session.get(SponsorshipCampaign, view.campaign_id)
         assert row is not None
         assert row.status == SponsorshipCampaignStatus.ACTIVE.value
+        assert row.delivered_days == 0
+
+        await AnalyticsEvents(session, admin).record(
+            AnalyticsEvent(
+                event_key="served:programada:primera-entrega",
+                name=AnalyticsEventName.SPONSORED_SERVED_IMPRESSION,
+                occurred_at=start,
+                listing_id=listing.listing_id,
+                campaign_id=view.campaign_id,
+                session_value="navegador-programada",
+                attributes={"surface": "Search", "position": 1},
+            )
+        )
+        delivered = await campaigns.run_daily(at=start + timedelta(hours=1))
+        await session.commit()
+        assert [item.counted for item in delivered] == [True]
         assert row.delivered_days == 1
 
         # The delivery days are readable, including the ones that consumed nothing.
@@ -515,7 +531,7 @@ async def test_measured_exposure_appears_once_there_are_seven_days_of_it(
                     )
                 )
         await session.commit()
-        await AnalyticsProjection(session).drain()
+        await AnalyticsProjection(session, admin).drain()
         await session.commit()
 
         forecast = await SponsorshipCapacity(session, admin).forecast(
@@ -820,12 +836,12 @@ async def test_known_outcomes_are_counted_and_completeness_is_a_real_ratio(
             )
         )
         await session.commit()
-        await AnalyticsProjection(session).drain()
+        await AnalyticsProjection(session, admin).drain()
         await session.commit()
 
         report = await SponsorshipReporting(session, admin).generate(
             campaign.campaign_id,
-            ReportAudience.BUYER,
+            ReportAudience.ADMINISTRATOR,
             at=MOMENT + timedelta(days=1),
             period_start=MOMENT - timedelta(days=1),
         )

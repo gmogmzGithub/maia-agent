@@ -41,6 +41,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from realestate.db.models import (
+    Capability,
     ACTIVE_STAGES,
     AdvisorAbsence,
     Appointment,
@@ -65,6 +66,7 @@ from realestate.domain.commercial.actors import (
 )
 from realestate.domain.commercial.idempotency import CommercialCommands
 from realestate.domain.internal_alerts import InternalAlerts
+from realestate.domain.platform.entitlements import Entitlements
 
 logger = logging.getLogger(__name__)
 
@@ -341,6 +343,11 @@ class TeamAdministration:
         if not login:
             raise InvalidTransition("El usuario no puede quedar vacío.")
         advises = command.advises or command.role is MemberRole.ADVISOR
+        if advises:
+            # The seat ceiling is checked before the row is claimed, so an
+            # Organization over its tier is told to upgrade rather than having
+            # the eleventh Advisor land and be discovered later (ADR-0053).
+            await Entitlements(self._session).require(actor, Capability.ADVISOR_SEATS)
         replay = await self._commands.claim(
             actor,
             command_key=command.command_key,
@@ -974,6 +981,7 @@ class TeamAdministration:
     ) -> None:
         await record_audit(
             self._session,
+            organization_id=actor.organization_id,
             actor_type=actor.actor_type,
             actor_id=actor.label,
             action=action,

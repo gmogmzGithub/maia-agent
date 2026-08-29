@@ -32,12 +32,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from realestate.db.models import (
+    Capability,
     SponsorshipCampaign,
     SponsorshipCampaignStatus,
     SponsorshipQuote,
     SponsorshipQuoteStatus,
 )
 from realestate.domain.audit import record_audit
+from realestate.domain.platform.entitlements import Entitlements
 from realestate.domain.commercial.actors import (
     Actor,
     CommercialError,
@@ -150,6 +152,9 @@ class SponsorshipQuoting:
 
     async def quote(self, command: QuoteCommand, *, at: datetime) -> QuoteView:
         self._actor.require_administrator()
+        await Entitlements(self._session).require(
+            self._actor, Capability.SPONSORED_PLACEMENT
+        )
         if not command.command_key.strip():
             raise QuoteRefused("La cotización requiere una clave de operación.")
         if command.duration_days <= 0:
@@ -353,6 +358,7 @@ class SponsorshipQuoting:
     ) -> None:
         await record_audit(
             self._session,
+            organization_id=self._actor.organization_id,
             actor_type=self._actor.actor_type,
             actor_id=self._actor.label,
             action=action,

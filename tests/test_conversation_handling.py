@@ -597,6 +597,7 @@ async def test_a_suppressed_contact_may_still_be_answered_by_a_human(
         )
         session.add(
             SuppressionRecord(
+                organization_id=conversation.organization_id,
                 lead_id=conversation.lead_id,
                 channel="WhatsApp",
                 reason="ExplicitOptOut",

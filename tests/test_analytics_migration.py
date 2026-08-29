@@ -17,7 +17,7 @@ from sqlalchemy import inspect, text
 from tests.conftest import database_at_revision, requires_postgres
 
 PREVIOUS_HEAD = "0024_reactivation_campaigns"
-HEAD = "0025_analytics_and_sponsorship"
+HEAD = "0027_stage8_measurement_repairs"
 MIGRATION_DATABASE = "realestate_analytics_migration_test"
 
 ANALYTICS_TABLES = {
@@ -39,6 +39,7 @@ SPONSORSHIP_TABLES = {
     "sponsorship_delivery_days",
     "sponsored_exposure_counters",
     "sponsorship_report_links",
+    "sponsorship_contact_attributions",
     "harm_signals",
 }
 
@@ -113,6 +114,54 @@ def test_the_schema_upgrades_downgrades_and_seeds_its_definitions(
     assert "analytics" not in inspector.get_schema_names()
     # Stage 7 is untouched by the reversal.
     assert "development_campaigns" in set(inspector.get_table_names())
+
+
+@requires_postgres
+def test_definition_replays_with_equal_timestamps_can_downgrade_safely(
+    at_previous_head,
+) -> None:
+    """The old identity keeps exactly one replay even when timestamps tie."""
+    config, engine = at_previous_head
+    command.upgrade(config, HEAD)
+    with engine.begin() as connection:
+        organization_id = connection.execute(
+            text("SELECT id FROM organizations WHERE slug = 'larevia'")
+        ).scalar_one()
+        connection.execute(
+            text(
+                "INSERT INTO analytics.measurement_definitions "
+                "(id, version, definition, effective_from) "
+                "SELECT gen_random_uuid(), 'measurement-v2', definition, effective_from "
+                "FROM analytics.measurement_definitions "
+                "WHERE version = 'measurement-v1'"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO analytics.domain_events "
+                "(id, sequence, organization_id, event_key, event_name, "
+                "schema_version, taxonomy_version, definition_version, "
+                "traffic_class, occurred_at, projected_at) VALUES "
+                "(gen_random_uuid(), 9001, :organization_id, 'same-raw-event', "
+                "'ListingOpened', 1, 'analytics-events-v1', 'measurement-v1', "
+                "'Valid', '2026-08-29T00:00:00Z', '2026-08-29T01:00:00Z'), "
+                "(gen_random_uuid(), 9002, :organization_id, 'same-raw-event', "
+                "'ListingOpened', 1, 'analytics-events-v1', 'measurement-v2', "
+                "'Valid', '2026-08-29T00:00:00Z', '2026-08-29T01:00:00Z')"
+            ),
+            {"organization_id": organization_id},
+        )
+
+    command.downgrade(config, "0026_managed_platform")
+    with engine.begin() as connection:
+        assert connection.execute(
+            text(
+                "SELECT count(*) FROM analytics.domain_events "
+                "WHERE organization_id = :organization_id "
+                "AND event_key = 'same-raw-event'"
+            ),
+            {"organization_id": organization_id},
+        ).scalar_one() == 1
 
 
 @requires_postgres

@@ -593,6 +593,7 @@ async def test_a_pending_message_with_no_text_offers_nothing_to_the_turn(
             session.add(
                 InboxMessage(
                     wamid="w-media-2",
+                    organization_id=row.organization_id,
                     conversation_id=row.conversation_id,
                     lead_id=row.lead_id,
                     cycle_id=row.cycle_id,

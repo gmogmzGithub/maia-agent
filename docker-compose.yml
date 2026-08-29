@@ -35,6 +35,10 @@ services:
       PROPERTY_CATALOG_ROOT: /app/src/properties
       LISTING_MEDIA_ROOT: /app/var/listing-media/originals
       LISTING_MEDIA_CACHE_ROOT: /app/var/listing-media/cache
+      # Per-Organization export artifacts. On its own durable volume because an
+      # export is a customer deliverable: losing it to a container rebuild would
+      # mean regenerating somebody's entire record set to answer one request.
+      ORGANIZATION_EXPORT_ROOT: /app/var/organization-exports
     depends_on:
       db:
         condition: service_healthy
@@ -43,6 +47,7 @@ services:
     volumes:
       - property-documents:/app/var/property-documents
       - listing-media:/app/var/listing-media
+      - organization-exports:/app/var/organization-exports
       - ./src/properties:/app/src/properties
       - ./secrets:/run/secrets:ro
     healthcheck:
@@ -118,3 +123,4 @@ volumes:
   hermes-state:
   property-documents:
   listing-media:
+  organization-exports:

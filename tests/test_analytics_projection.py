@@ -85,7 +85,7 @@ async def test_excluded_traffic_is_stored_classified_and_reported(
             maia("classified-event-key", **flags)
         )
         await session.commit()
-        await AnalyticsProjection(session).refresh()
+        await AnalyticsProjection(session, actor).refresh()
         await session.commit()
 
         row = await session.scalar(
@@ -121,7 +121,7 @@ async def test_a_bot_and_a_test_flag_together_report_the_bot(database) -> None:
             maia("precedence-event-key", bot=True, synthetic=True, internal=True)
         )
         await session.commit()
-        await AnalyticsProjection(session).refresh()
+        await AnalyticsProjection(session, actor).refresh()
         await session.commit()
         row = await session.scalar(
             select(AnalyticsDomainEvent).where(
@@ -183,7 +183,7 @@ async def test_an_implausible_event_rate_for_one_session_is_excluded(
                 )
             )
         await session.commit()
-        await AnalyticsProjection(session).drain()
+        await AnalyticsProjection(session, actor).drain()
         await session.commit()
 
         excluded = await session.scalar(
@@ -209,7 +209,7 @@ async def test_a_late_event_rebuilds_its_own_period_instead_of_todays(
         events = AnalyticsEvents(session, actor)
         await events.record(maia("on-time-event-key", minutes=0))
         await session.commit()
-        await AnalyticsProjection(session).refresh()
+        await AnalyticsProjection(session, actor).refresh()
         await session.commit()
 
         # Arrives now, happened six days ago.
@@ -223,7 +223,7 @@ async def test_a_late_event_rebuilds_its_own_period_instead_of_todays(
             )
         )
         await session.commit()
-        report = await AnalyticsProjection(session).refresh()
+        report = await AnalyticsProjection(session, actor).refresh()
         await session.commit()
 
         assert report.late == 1
@@ -243,12 +243,12 @@ async def test_a_late_event_in_an_already_reported_period_does_not_double_count(
         events = AnalyticsEvents(session, actor)
         await events.record(maia("first-of-the-day-key", minutes=0))
         await session.commit()
-        await AnalyticsProjection(session).refresh()
+        await AnalyticsProjection(session, actor).refresh()
         await session.commit()
 
         await events.record(maia("second-of-the-day-key", minutes=30))
         await session.commit()
-        await AnalyticsProjection(session).refresh()
+        await AnalyticsProjection(session, actor).refresh()
         await session.commit()
 
         cells = list(await session.scalars(select(AnalyticsFunnelAggregate)))
@@ -286,7 +286,7 @@ async def test_the_delivery_view_is_refreshed_by_the_pass(database) -> None:
             )
         )
         await session.commit()
-        await AnalyticsProjection(session).refresh()
+        await AnalyticsProjection(session, actor).refresh()
         await session.commit()
 
         rows_after = await session.execute(
@@ -308,7 +308,7 @@ async def test_the_run_row_reports_what_the_pass_actually_did(database) -> None:
         await events.record(maia("run-report-valid-key"))
         await events.record(maia("run-report-bot-key", bot=True))
         await session.commit()
-        await AnalyticsProjection(session).refresh()
+        await AnalyticsProjection(session, actor).refresh()
         await session.commit()
 
         run = await session.scalar(

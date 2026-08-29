@@ -233,10 +233,12 @@ that a link existed and was withdrawn discloses a commercial relationship. The
 link resolves to one campaign's buyer report and nothing else; there is no route
 from a token to a mutation, to a second campaign, or to a CRM account.
 
-The page and the PDF are rendered from the same line list, so they cannot
-disagree. The PDF is written by a small module in this repository rather than a
-new dependency: one page size, one built-in font, text lines only — a document
-that can only contain the characters somebody passed in.
+The structured page and the PDF are derived from the same buyer-scoped aggregate
+report. Product explicitly allowlists the page fields and the PDF renderer reads
+only that report, so neither surface can reach CRM identities or internal
+commercial terms. The PDF is written by a small module in this repository rather
+than a new dependency: one page size, one built-in font, text lines only — a
+document that can only contain the characters somebody passed in.
 
 ## Surfaces
 

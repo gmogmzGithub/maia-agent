@@ -302,6 +302,7 @@ async def test_a_delivery_status_is_linked_to_its_outbox_row(wired) -> None:
         conversation = (await session.execute(select(Conversation))).scalar_one()
         session.add(
             OutboxMessage(
+                organization_id=conversation.organization_id,
                 conversation_id=conversation.id,
                 idempotency_key=f"reply:{uuid.uuid4()}",
                 to_wa_id=webhooks.LEAD_WA_ID,

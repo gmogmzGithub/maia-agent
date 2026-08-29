@@ -9,6 +9,7 @@ transition.
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import UTC, datetime
 from typing import Any
 
@@ -132,11 +133,20 @@ class AdminWorkService:
             return self._calendars.for_advisor(legacy)
         return None
 
-    async def list_pending(self) -> dict[str, Any]:
+    async def list_pending(self, organization_id: uuid.UUID) -> dict[str, Any]:
+        """Administrative work still owed, inside one Organization.
+
+        The Organization is a parameter since Stage 9. This read the whole
+        ``appointments`` table, which an Administrative Hermes session could
+        reach — so one brokerage's pending visits, Property names and Contact
+        references were listed to another's administrator (ADR-0050).
+        """
         rows = (
             (
                 await self._session.execute(
-                    select(Appointment).order_by(Appointment.created_at)
+                    select(Appointment)
+                    .where(Appointment.organization_id == organization_id)
+                    .order_by(Appointment.created_at)
                 )
             )
             .scalars()
@@ -203,6 +213,11 @@ class AdminWorkService:
         row = (
             await self._session.execute(
                 select(Appointment)
+                # The readable reference is unique per Organization, not
+                # globally: it is short enough to guess, so resolving it without
+                # the Organization would let one administrator confirm or reject
+                # another brokerage's visit.
+                .where(Appointment.organization_id == actor.organization_id)
                 .where(Appointment.reference == reference)
                 .with_for_update()
             )
@@ -461,6 +476,7 @@ class AdminWorkService:
     ) -> None:
         await record_audit(
             self._session,
+            organization_id=actor.organization_id,
             actor_type="Administrative",
             actor_id=actor.actor_id,
             action="PendingAdminWorkResolutionRequested",

@@ -238,6 +238,7 @@ class HumanHandoff:
         await self._acknowledge_to_contact(row, command)
         await record_audit(
             self._session,
+            organization_id=actor.organization_id,
             actor_type=actor.actor_type,
             actor_id=actor.label,
             action="RequestHumanHandling",
@@ -308,6 +309,7 @@ class HumanHandoff:
         await self._session.flush()
         await record_audit(
             self._session,
+            organization_id=actor.organization_id,
             actor_type=actor.actor_type,
             actor_id=actor.label,
             action="AcknowledgeHumanHandling",
@@ -359,6 +361,7 @@ class HumanHandoff:
         await self._session.flush()
         await record_audit(
             self._session,
+            organization_id=actor.organization_id,
             actor_type=actor.actor_type,
             actor_id=actor.label,
             action="CancelHumanHandling",
@@ -421,6 +424,7 @@ class HumanHandoff:
             row.admin_alert_at = moment
             await record_audit(
                 self._session,
+                organization_id=actor.organization_id,
                 actor_type=actor.actor_type,
                 actor_id=actor.label,
                 action="EscalateHumanHandling",

@@ -110,7 +110,14 @@ class AnalyticsEvents:
             raise EventRejected("El evento requiere la publicación que describe.")
 
         existing = await self._session.scalar(
-            select(AnalyticsOutboxEntry).where(AnalyticsOutboxEntry.event_key == key)
+            select(AnalyticsOutboxEntry)
+            # Scoped: since Stage 9 the event key is unique *per Organization*,
+            # because it is built from product identifiers two Organizations can
+            # legitimately share. Unscoped, one brokerage's emission would be
+            # counted as a duplicate of another's and silently dropped
+            # (ADR-0050).
+            .where(AnalyticsOutboxEntry.organization_id == self._actor.organization_id)
+            .where(AnalyticsOutboxEntry.event_key == key)
         )
         if existing is not None:
             # Counted, not ignored. A duplicate rate that nobody can see is the

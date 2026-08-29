@@ -23,14 +23,16 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from realestate.domain.clock import utc_now
+from realestate.hosts import SITE_HOST_HEADER, host_of
 from realestate.db.models import (
+    ChannelBindingKind,
     ChannelHandoffPurpose,
     PublicAnalyticsEventName,
     SponsoredSurface,
 )
 from realestate.domain.catalog.storage import MediaStorageError
 from realestate.domain.commercial.actors import Actor, CommercialError, NotFound
-from realestate.domain.commercial.organization import OrganizationDirectory
+from realestate.domain.platform.routing import OrganizationRouting
 from realestate.domain.public.analytics import PublicAnalytics, PublicEventCommand
 from realestate.domain.public.catalog import PublicCatalog, SearchQuery
 from realestate.domain.public.discovery import DiscoveryPublication
@@ -57,6 +59,7 @@ from realestate.domain.public.website_conversation import (
     WebsiteCommand,
     WebsiteConversation,
 )
+
 
 def require_site_token(request: Request) -> None:
     """Every route on this router is site-only, so the guard hangs off the router.
@@ -133,17 +136,47 @@ class VisibleImpressionBody(BaseModel):
     Impression it did not earn.
     """
 
-    campaign_id: uuid.UUID
-    listing_id: uuid.UUID
-    surface: str = Field(min_length=1, max_length=20)
+    exposure_id: uuid.UUID
     visible_fraction: float = Field(ge=0, le=1)
     continuous_milliseconds: int = Field(ge=0, le=600_000)
     occurred_at: datetime
 
 
-async def _actor(session: AsyncSession) -> Actor:
-    organization_id = await OrganizationDirectory(session).organization_id()
-    return Actor.product(organization_id, "PublicSite")
+def site_host(request: Request) -> str:
+    """The public hostname this request is about.
+
+    The forwarded header first, then the request's own ``Host``. Neither is
+    trusted as *authority*: both are only used to look up a registered binding,
+    and an unregistered hostname is refused. A caller supplying somebody else's
+    hostname therefore reaches the Organization that already owns it and gains
+    nothing — the site token is what authenticates the caller at all.
+    """
+    forwarded = request.headers.get(SITE_HOST_HEADER, "").strip()
+    # The port is stripped by ``host_of``: a binding names a hostname, and the
+    # same brand is reached on 8080 locally and on 443 behind a proxy.
+    return host_of(forwarded or request.headers.get("host", ""))
+
+
+async def _actor(request: Request, session: AsyncSession) -> Actor:
+    """Product acting for the Organization whose site this is.
+
+    A refusal when no Organization claims the hostname. Answering with a default
+    would publish one brokerage's Listings under another's brand, which is both a
+    disclosure and a commercial injury.
+    """
+    try:
+        routed = await OrganizationRouting(session).resolve(
+            ChannelBindingKind.PUBLIC_SITE_HOST, site_host(request)
+        )
+    except CommercialError as exc:
+        # 503 rather than 404: the hostname is not a missing record, it is an
+        # installation that has not been told which brokerage it serves. The site
+        # renders this as unavailable, which is honest, instead of as an empty
+        # catalog, which looks like a brokerage with no properties.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=exc.message
+        ) from exc
+    return Actor.product(routed.organization_id, "PublicSite")
 
 
 def _json(value: object, *, status_code: int = 200) -> JSONResponse:
@@ -173,7 +206,9 @@ async def catalog(
 ) -> JSONResponse:
     try:
         async with request.app.state.database.session_scope() as session:
-            result = await PublicCatalog(session, await _actor(session)).search(
+            result = await PublicCatalog(
+                session, await _actor(request, session)
+            ).search(
                 SearchQuery(
                     operation=operation,
                     zone=zone,
@@ -195,7 +230,7 @@ async def catalog(
 async def listing(request: Request, slug: str) -> JSONResponse:
     try:
         async with request.app.state.database.session_scope() as session:
-            result = await PublicListing(session, await _actor(session)).read(
+            result = await PublicListing(session, await _actor(request, session)).read(
                 slug, at=utc_now()
             )
             return _json(result, status_code=result.status_code)
@@ -207,7 +242,7 @@ async def listing(request: Request, slug: str) -> JSONResponse:
 async def media(request: Request, media_id: uuid.UUID) -> Response:
     try:
         async with request.app.state.database.session_scope() as session:
-            result = await PublicListing(session, await _actor(session)).media(
+            result = await PublicListing(session, await _actor(request, session)).media(
                 media_id, at=utc_now()
             )
         content = await request.app.state.media_storage.read(result.storage_key)
@@ -230,7 +265,7 @@ async def saved(
     token: str | None = Header(default=None, alias="X-Collection-Token"),
 ) -> JSONResponse:
     async with request.app.state.database.session_scope() as session:
-        result = await SavedCollections(session, await _actor(session)).read(
+        result = await SavedCollections(session, await _actor(request, session)).read(
             token, at=utc_now()
         )
         return _json(result)
@@ -244,7 +279,9 @@ async def mutate_saved(
 ) -> JSONResponse:
     try:
         async with request.app.state.database.session_scope() as session:
-            result = await SavedCollections(session, await _actor(session)).record(
+            result = await SavedCollections(
+                session, await _actor(request, session)
+            ).record(
                 SavedCommand(
                     action=body.action,
                     command_key=body.command_key,
@@ -263,9 +300,9 @@ async def mutate_saved(
 async def shared(request: Request, token: str) -> JSONResponse:
     try:
         async with request.app.state.database.session_scope() as session:
-            result = await SavedCollections(session, await _actor(session)).shared(
-                token, at=utc_now()
-            )
+            result = await SavedCollections(
+                session, await _actor(request, session)
+            ).shared(token, at=utc_now())
             return _json(result)
     except NotFound as exc:
         raise HTTPException(status_code=410, detail=str(exc)) from exc
@@ -279,7 +316,7 @@ async def conversation(
     async with request.app.state.database.session_scope() as session:
         module = WebsiteConversation(
             session,
-            await _actor(session),
+            await _actor(request, session),
             HermesWebsiteResponder(
                 request.app.state.database,
                 request.app.state.hermes,
@@ -299,9 +336,19 @@ async def converse(
 ) -> JSONResponse:
     try:
         async with request.app.state.database.session_scope() as session:
+            actor = await _actor(request, session)
+            session_value, bot, internal = _measurement_context(request)
+            campaign_id = await _campaign_for_exposure(
+                session,
+                actor,
+                request,
+                session_value,
+                body.listing_ids[0] if len(body.listing_ids) == 1 else None,
+            )
+            moment = utc_now()
             result = await WebsiteConversation(
                 session,
-                await _actor(session),
+                actor,
                 HermesWebsiteResponder(
                     request.app.state.database,
                     request.app.state.hermes,
@@ -313,9 +360,29 @@ async def converse(
                     command_key=body.command_key,
                     conversation_token=token,
                     listing_ids=body.listing_ids,
+                    sponsorship_campaign_id=campaign_id,
                 ),
-                at=utc_now(),
+                at=moment,
             )
+            if result.conversation_token is not None and not result.replayed:
+                await PublicAnalytics(session, actor).record(
+                    PublicEventCommand(
+                        event_key=(
+                            f"website-conversation-started:{result.conversation_id}"
+                        ),
+                        name=PublicAnalyticsEventName.MAIA_STARTED,
+                        surface="Maia",
+                        occurred_at=moment,
+                        listing_id=(
+                            body.listing_ids[0] if len(body.listing_ids) == 1 else None
+                        ),
+                        campaign_id=campaign_id,
+                        properties={"source": "website"},
+                        session_value=session_value,
+                        bot=bot,
+                        internal=internal,
+                    )
+                )
             await session.commit()
             return _json(result)
     except (ValueError, CommercialError) as exc:
@@ -326,8 +393,14 @@ async def converse(
 async def handoff(request: Request, body: HandoffBody) -> JSONResponse:
     try:
         async with request.app.state.database.session_scope() as session:
-            result = await ChannelHandoff(session, await _actor(session)).create(
-                CreateHandoff(**body.model_dump()), at=utc_now()
+            actor = await _actor(request, session)
+            session_value, _bot, _internal = _measurement_context(request)
+            campaign_id = await _campaign_for_exposure(
+                session, actor, request, session_value, body.listing_id
+            )
+            result = await ChannelHandoff(session, actor).create(
+                CreateHandoff(**body.model_dump(), sponsorship_campaign_id=campaign_id),
+                at=utc_now(),
             )
             await session.commit()
             return _json(result)
@@ -340,9 +413,14 @@ async def event(request: Request, body: EventBody) -> JSONResponse:
     try:
         async with request.app.state.database.session_scope() as session:
             session_value, bot, internal = _measurement_context(request)
-            recorded = await PublicAnalytics(session, await _actor(session)).record(
+            actor = await _actor(request, session)
+            campaign_id = await _campaign_for_exposure(
+                session, actor, request, session_value, body.listing_id
+            )
+            recorded = await PublicAnalytics(session, actor).record(
                 PublicEventCommand(
                     **body.model_dump(),
+                    campaign_id=campaign_id,
                     session_value=session_value,
                     bot=bot,
                     internal=internal,
@@ -367,6 +445,29 @@ def _measurement_context(request: Request) -> tuple[str, bool, bool]:
         request.headers.get("X-Internal-Preview", "").strip().casefold() == "true"
     )
     return session_value, bot, internal
+
+
+async def _campaign_for_exposure(
+    session: AsyncSession,
+    actor: Actor,
+    request: Request,
+    session_value: str,
+    listing_id: uuid.UUID | None,
+) -> uuid.UUID | None:
+    """Resolve an optional browser correlation through Product-owned evidence."""
+    raw = request.headers.get("X-Sponsored-Exposure", "").strip()
+    if not raw:
+        return None
+    try:
+        exposure_id = uuid.UUID(raw)
+    except ValueError as exc:
+        raise ValueError("La exposición patrocinada no es válida.") from exc
+    exposure = await PublicSponsored(session, actor).resolve_exposure(
+        exposure_id=exposure_id,
+        session_value=session_value,
+        listing_id=listing_id,
+    )
+    return exposure.campaign_id
 
 
 @router.get("/sponsored")
@@ -394,7 +495,9 @@ async def sponsored(
         ) from exc
     session_value, bot, internal = _measurement_context(request)
     async with request.app.state.database.session_scope() as session:
-        result = await PublicSponsored(session, await _actor(session)).for_surface(
+        result = await PublicSponsored(
+            session, await _actor(request, session)
+        ).for_surface(
             surface=surface,
             at=utc_now(),
             visible_results=visible_results,
@@ -415,11 +518,9 @@ async def visible_impression(
     try:
         async with request.app.state.database.session_scope() as session:
             counted = await PublicSponsored(
-                session, await _actor(session)
+                session, await _actor(request, session)
             ).count_visible(
-                campaign_id=body.campaign_id,
-                listing_id=body.listing_id,
-                surface=body.surface,
+                exposure_id=body.exposure_id,
                 visible_fraction=body.visible_fraction,
                 continuous_milliseconds=body.continuous_milliseconds,
                 session_value=session_value,
@@ -438,11 +539,14 @@ async def listing_open(request: Request, body: ListingOpenBody) -> JSONResponse:
     session_value, bot, internal = _measurement_context(request)
     try:
         async with request.app.state.database.session_scope() as session:
-            recorded = await PublicMeasurement(
-                session, await _actor(session)
-            ).listing_open(
+            actor = await _actor(request, session)
+            campaign_id = await _campaign_for_exposure(
+                session, actor, request, session_value, body.listing_id
+            )
+            recorded = await PublicMeasurement(session, actor).listing_open(
                 ListingOpen(
                     **body.model_dump(),
+                    campaign_id=campaign_id,
                     session_value=session_value,
                     bot=bot,
                     internal=internal,
@@ -459,11 +563,14 @@ async def gallery_depth(request: Request, body: GalleryDepthBody) -> JSONRespons
     session_value, bot, internal = _measurement_context(request)
     try:
         async with request.app.state.database.session_scope() as session:
-            outcome = await PublicMeasurement(
-                session, await _actor(session)
-            ).gallery_depth(
+            actor = await _actor(request, session)
+            campaign_id = await _campaign_for_exposure(
+                session, actor, request, session_value, body.listing_id
+            )
+            outcome = await PublicMeasurement(session, actor).gallery_depth(
                 GalleryDepth(
                     **body.model_dump(),
+                    campaign_id=campaign_id,
                     session_value=session_value,
                     bot=bot,
                     internal=internal,
@@ -485,10 +592,24 @@ async def sponsorship_report(request: Request, token: str) -> JSONResponse:
     """
     try:
         async with request.app.state.database.session_scope() as session:
-            report = await SponsorshipSharing(session, await _actor(session)).resolve(
-                token, at=utc_now()
-            )
+            report = await SponsorshipSharing(
+                session, await _actor(request, session)
+            ).resolve(token, at=utc_now())
             await session.commit()
+            steps = {row.step: row for row in report.funnel}
+
+            def reported(step: str) -> int | None:
+                return steps[step].count
+
+            interest_values = [
+                reported(step)
+                for step in ("SavedOrShared", "MaiaStarted", "WhatsAppHandoff")
+            ]
+            interest_total = (
+                None
+                if any(value is None for value in interest_values)
+                else sum(value or 0 for value in interest_values)
+            )
             return _json(
                 {
                     "label": report.label,
@@ -496,6 +617,47 @@ async def sponsorship_report(request: Request, token: str) -> JSONResponse:
                     "period_start": report.period_start,
                     "period_end": report.period_end,
                     "definition_version": report.definition_version,
+                    "summary": [
+                        {
+                            "label": "Impresiones visibles",
+                            "value": reported("SponsoredVisibleImpression"),
+                        },
+                        {
+                            "label": "Aperturas de publicación",
+                            "value": reported("ListingOpened"),
+                        },
+                        {"label": "Acciones de interés", "value": interest_total},
+                        {
+                            "label": "Solicitudes de cita",
+                            "value": reported("AppointmentRequested"),
+                        },
+                    ],
+                    "status": {
+                        "state": report.campaign.status_label,
+                        "paid_days": report.campaign.paid_days,
+                        "delivered_days": report.campaign.delivered_days,
+                        "remaining_days": report.campaign.remaining_days,
+                    },
+                    "funnel": [
+                        {
+                            "label": row.label,
+                            "value": row.count,
+                            "conversion": row.from_previous.text,
+                        }
+                        for row in report.funnel
+                    ],
+                    "trend": [
+                        {
+                            "date": point.period_start,
+                            "visible": point.visible_impressions,
+                            "opens": point.listing_opens,
+                            "interest": point.interest_actions,
+                        }
+                        for point in report.trend
+                    ],
+                    "definitions": report.definitions,
+                    "disclosure": report.disclosure,
+                    "disclaimer": report.disclaimer,
                     "lines": [
                         {"text": line.text, "style": str(line.style)}
                         for line in report_lines(report)
@@ -510,9 +672,9 @@ async def sponsorship_report(request: Request, token: str) -> JSONResponse:
 async def sponsorship_report_pdf(request: Request, token: str) -> Response:
     try:
         async with request.app.state.database.session_scope() as session:
-            report = await SponsorshipSharing(session, await _actor(session)).resolve(
-                token, at=utc_now()
-            )
+            report = await SponsorshipSharing(
+                session, await _actor(request, session)
+            ).resolve(token, at=utc_now())
             content = report_pdf(report)
             await session.commit()
     except ShareUnavailable as exc:
@@ -532,9 +694,9 @@ async def sponsorship_report_pdf(request: Request, token: str) -> Response:
 async def discovery(request: Request, listing_id: uuid.UUID) -> JSONResponse:
     try:
         async with request.app.state.database.session_scope() as session:
-            result = await DiscoveryPublication(session, await _actor(session)).project(
-                listing_id, at=utc_now()
-            )
+            result = await DiscoveryPublication(
+                session, await _actor(request, session)
+            ).project(listing_id, at=utc_now())
             return _json(result, status_code=result.status_code)
     except NotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

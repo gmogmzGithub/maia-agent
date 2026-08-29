@@ -17,6 +17,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from realestate.config import get_settings
+from realestate.domain.commercial.actors import Actor
 from realestate.domain.properties import PropertyService
 
 _basic = HTTPBasic(auto_error=False)
@@ -86,15 +87,22 @@ def require_developer(
     return credentials.username
 
 
-def property_writer(request: Request, session: AsyncSession) -> PropertyService:
+def property_writer(
+    request: Request, session: AsyncSession, actor: Actor
+) -> PropertyService:
     """A ``PropertyService`` that always writes to both stores.
 
     Assembled here rather than at each route because forgetting the catalog is
     silent: accepted documents simply stop reaching ``src/properties`` with no
     error anywhere.
+
+    Takes the ``Actor`` rather than an Organization id so a route cannot supply
+    one the caller does not belong to: the only Organization reachable through
+    this helper is the authenticated member's own (ADR-0050).
     """
     return PropertyService(
         session,
         request.app.state.artifacts,
         request.app.state.property_catalog,
+        organization_id=actor.organization_id,
     )

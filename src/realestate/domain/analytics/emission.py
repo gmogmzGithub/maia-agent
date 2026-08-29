@@ -22,6 +22,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from typing import cast
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,12 +31,14 @@ from realestate.db.models import (
     AnalyticsEventName,
     Appointment,
     AppointmentStatus,
+    ContactChannelIdentity,
     HarmSignal,
     InboxMessage,
     Opportunity,
     OpportunityStage,
     OutboxMessage,
     OutboxStatus,
+    SponsorshipContactAttribution,
 )
 from realestate.domain.analytics.events import AnalyticsEvent, AnalyticsEvents
 from realestate.domain.commercial.actors import Actor
@@ -112,6 +115,9 @@ class AnalyticsEmission:
                 InboxMessage.conversation_id.label("conversation_id"),
                 func.min(InboxMessage.sent_at).label("first_inbound_at"),
             )
+            .where(
+                InboxMessage.organization_id == self._actor.organization_id
+            )
             .group_by(InboxMessage.conversation_id)
             .subquery()
         )
@@ -119,6 +125,9 @@ class AnalyticsEmission:
             select(
                 OutboxMessage.conversation_id.label("conversation_id"),
                 func.min(OutboxMessage.sent_at).label("first_outbound_at"),
+            )
+            .where(
+                OutboxMessage.organization_id == self._actor.organization_id
             )
             .where(OutboxMessage.status == OutboxStatus.SENT.value)
             .where(OutboxMessage.sent_at.is_not(None))
@@ -172,11 +181,15 @@ class AnalyticsEmission:
         emitted = 0
         for row in rows:
             assert row.qualified_at is not None
+            campaign_id = await self._campaign_for_contact(
+                row.contact_id, row.qualified_at
+            )
             recorded = await self._events.record(
                 AnalyticsEvent(
                     event_key=f"qualified:{row.id}",
                     name=AnalyticsEventName.OPPORTUNITY_QUALIFIED,
                     occurred_at=row.qualified_at,
+                    campaign_id=campaign_id,
                     subject_value=str(row.contact_id),
                 )
             )
@@ -199,6 +212,18 @@ class AnalyticsEmission:
         )
         emitted = 0
         for row in rows:
+            contact_id = await self._session.scalar(
+                select(ContactChannelIdentity.contact_id).where(
+                    ContactChannelIdentity.organization_id
+                    == self._actor.organization_id,
+                    ContactChannelIdentity.lead_id == row.lead_id,
+                )
+            )
+            campaign_id = (
+                await self._campaign_for_contact(contact_id, row.created_at)
+                if contact_id is not None
+                else None
+            )
             emitted += int(
                 (
                     await self._events.record(
@@ -206,6 +231,8 @@ class AnalyticsEmission:
                             event_key=f"appointment-requested:{row.id}",
                             name=AnalyticsEventName.APPOINTMENT_REQUESTED,
                             occurred_at=row.created_at,
+                            campaign_id=campaign_id,
+                            subject_value=str(contact_id or ""),
                         )
                     )
                 ).created
@@ -218,6 +245,8 @@ class AnalyticsEmission:
                                 event_key=f"appointment-verified:{row.id}",
                                 name=AnalyticsEventName.APPOINTMENT_VERIFIED,
                                 occurred_at=row.created_at,
+                                campaign_id=campaign_id,
+                                subject_value=str(contact_id or ""),
                             )
                         )
                     ).created
@@ -230,6 +259,8 @@ class AnalyticsEmission:
                                 event_key=f"appointment-attended:{row.id}",
                                 name=AnalyticsEventName.APPOINTMENT_ATTENDED,
                                 occurred_at=row.attendance_recorded_at,
+                                campaign_id=campaign_id,
+                                subject_value=str(contact_id or ""),
                                 attributes={"attendance": row.attendance},
                             )
                         )
@@ -251,17 +282,39 @@ class AnalyticsEmission:
         emitted = 0
         for row in rows:
             assert row.closed_at is not None
+            campaign_id = await self._campaign_for_contact(
+                row.contact_id, row.closed_at
+            )
             recorded = await self._events.record(
                 AnalyticsEvent(
                     event_key=f"outcome:{row.id}",
                     name=AnalyticsEventName.OPPORTUNITY_OUTCOME_KNOWN,
                     occurred_at=row.closed_at,
+                    campaign_id=campaign_id,
                     subject_value=str(row.contact_id),
                     attributes={"outcome": _CLOSING_STAGES[row.stage]},
                 )
             )
             emitted += int(recorded.created)
         return emitted
+
+    async def _campaign_for_contact(
+        self, contact_id: uuid.UUID, occurred_at: datetime
+    ) -> uuid.UUID | None:
+        return cast(
+            uuid.UUID | None,
+            await self._session.scalar(
+                select(SponsorshipContactAttribution.campaign_id)
+                .where(
+                    SponsorshipContactAttribution.organization_id
+                    == self._actor.organization_id,
+                    SponsorshipContactAttribution.contact_id == contact_id,
+                    SponsorshipContactAttribution.engaged_at <= occurred_at,
+                )
+                .order_by(SponsorshipContactAttribution.engaged_at.desc())
+                .limit(1)
+            ),
+        )
 
     async def _harm_signals(self) -> int:
         rows = await self._session.scalars(
@@ -286,6 +339,7 @@ class AnalyticsEmission:
     async def emit_sponsored_exposure(
         self,
         *,
+        exposure_id: uuid.UUID,
         campaign_id: uuid.UUID,
         listing_id: uuid.UUID,
         surface: str,
@@ -296,7 +350,7 @@ class AnalyticsEmission:
         bot: bool = False,
         internal: bool = False,
     ) -> bool:
-        """One Served Impression, keyed so a re-rendered page counts once.
+        """One Served Impression, keyed to the server-issued exposure.
 
         The key is built from the *pseudonymous* reference, the day and the
         position — the exact granularity the per-session daily cap is expressed
@@ -305,13 +359,9 @@ class AnalyticsEmission:
         stored key; passing the raw one into the key would put a browser
         identifier into a column.
         """
-        day = occurred_at.date().isoformat()
         recorded = await self._events.record(
             AnalyticsEvent(
-                event_key=(
-                    f"served:{campaign_id}:{session_reference or 'anon'}"
-                    f":{day}:{position}"
-                ),
+                event_key=f"served:{exposure_id}",
                 name=AnalyticsEventName.SPONSORED_SERVED_IMPRESSION,
                 occurred_at=occurred_at,
                 listing_id=listing_id,

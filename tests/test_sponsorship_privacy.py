@@ -141,7 +141,7 @@ async def test_a_recorded_event_stores_the_reference_and_not_the_raw_value(
             )
         )
         await session.commit()
-        await AnalyticsProjection(session).drain()
+        await AnalyticsProjection(session, admin).drain()
         await session.commit()
 
         row = await session.scalar(
@@ -182,6 +182,47 @@ async def test_a_buyer_link_is_opaque_stored_hashed_and_expiring(database) -> No
         # operator reading the table must not be able to open the report.
         assert stored.token_digest == digest_of(minted.token)
         assert minted.token not in stored.token_digest
+
+
+async def test_a_buyer_report_suppresses_a_small_person_level_cell(database) -> None:
+    async with database.session_scope() as session:
+        admin = await actor_for(session, ADMIN_LOGIN)
+        await published_catalog(session, admin)
+        campaign = await active_campaign(session, admin, "celda-pequena")
+        await AnalyticsEvents(session, admin).record(
+            AnalyticsEvent(
+                event_key="single-sponsored-listing-open",
+                name=AnalyticsEventName.LISTING_OPENED,
+                occurred_at=MOMENT,
+                listing_id=campaign.listing.listing_id,
+                campaign_id=campaign.campaign_id,
+                session_value="una-sesion",
+                attributes={"surface": "TechnicalSheet"},
+            )
+        )
+        await session.commit()
+        await AnalyticsProjection(session, admin).drain()
+        await session.commit()
+
+        report = await SponsorshipReporting(session, admin).generate(
+            campaign.campaign_id,
+            ReportAudience.BUYER,
+            at=MOMENT + timedelta(days=1),
+        )
+        opened = next(row for row in report.funnel if row.step == "ListingOpened")
+        assert opened.count is None
+        assert len(report.trend) == 1
+        assert report.trend[0].listing_opens is None
+        rendered = "\n".join(line.text for line in report_lines(report))
+        assert "Aperturas de la publicación: Muestra protegida" in rendered
+        assert "aperturas Muestra protegida" in rendered
+
+        internal = await SponsorshipReporting(session, admin).generate(
+            campaign.campaign_id,
+            ReportAudience.ADMINISTRATOR,
+            at=MOMENT + timedelta(days=1),
+        )
+        assert internal.trend[0].listing_opens == 1
 
 
 async def test_an_expired_or_revoked_link_gives_the_same_refusal(database) -> None:
@@ -333,7 +374,7 @@ async def test_no_buyer_surface_contains_identity_phone_or_conversation(
         assert saved.collection_token
         await session.commit()
 
-        await AnalyticsProjection(session).drain()
+        await AnalyticsProjection(session, admin).drain()
         await session.commit()
 
         sharing = SponsorshipSharing(session, admin)

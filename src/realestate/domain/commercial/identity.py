@@ -186,6 +186,7 @@ class CommercialIdentity:
 
         await record_audit(
             self._session,
+            organization_id=organization_id,
             actor_type="Product",
             actor_id="CommercialIdentity",
             action="CreateContact",
