@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any
 from urllib.parse import quote
 
@@ -36,6 +37,7 @@ from realestate.domain.commercial.organization import (
     ROLE_LABELS,
     OrganizationDirectory,
 )
+from realestate.domain.internal_alerts import InternalAlerts
 
 
 async def require_actor(
@@ -51,6 +53,10 @@ async def require_actor(
     async with request.app.state.database.session_scope() as session:
         try:
             actor = await OrganizationDirectory(session).resolve_actor(login)
+            actor = replace(
+                actor,
+                alert_count=await InternalAlerts(session).open_count(actor),
+            )
             if actor.read_only and request.method.upper() not in {"GET", "HEAD", "OPTIONS"}:
                 actor.require_writable()
             return actor
@@ -93,6 +99,12 @@ def shell(actor: Actor, title: str, content: str, *, active: str) -> HTMLRespons
             if actor.is_administrator
             else ROLE_LABELS[MemberRole.ADVISOR.value]
         ),
+        organization_label=actor.organization_name,
+        is_administrator=actor.is_administrator,
+        read_only=actor.read_only,
+        support_expires_at=actor.support_expires_at,
+        support_reason=actor.support_reason,
+        alert_count=actor.alert_count,
     )
 
 

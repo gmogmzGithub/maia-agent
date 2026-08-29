@@ -477,6 +477,9 @@ async def test_support_access_is_granted_listed_and_revoked(wired) -> None:
     support_auth = (payload["login"], "support-password")
     crm = await client.get("/crm", auth=support_auth)
     assert crm.status_code == 200
+    assert "Soporte Maia · Sólo lectura · Acceso hasta" in crm.text
+    assert "El cliente reporta que una cita no aparece en la agenda." in crm.text
+    assert "Mi trabajo · Sólo lectura" in crm.text
     blocked_write = await client.post(
         "/crm/inventario-externo/sincronizar", auth=support_auth
     )

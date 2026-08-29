@@ -444,12 +444,16 @@ class OrganizationDirectory:
             raise OrganizationSuspended()
 
         read_only = False
+        support_expires_at = None
+        support_reason = None
         if login.startswith(SUPPORT_LOGIN_PREFIX):
             grant = await SupportAccess(self._session).live_for_login(login)
             if grant is None:
                 logger.info("Refused lapsed support access for login %r", login)
                 raise SupportAccessExpired()
             read_only = True
+            support_expires_at = grant.expires_at
+            support_reason = grant.reason
 
         return Actor(
             organization_id=member.organization_id,
@@ -457,7 +461,10 @@ class OrganizationDirectory:
             member_id=member.id,
             label=member.login,
             display_name=member.display_name,
+            organization_name=organization.display_name,
             read_only=read_only,
+            support_expires_at=support_expires_at,
+            support_reason=support_reason,
         )
 
     async def _member(

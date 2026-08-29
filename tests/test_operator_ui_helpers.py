@@ -19,6 +19,7 @@ from realestate.api.ui import (
     escape,
     flash,
     local,
+    layout,
     options,
     parse_datetime_input,
     relative,
@@ -115,3 +116,25 @@ def test_options_select_the_current_value_and_use_its_label() -> None:
     assert '<option value="Rent" selected>Renta</option>' in rendered
     # Without labels the raw value is shown, escaped.
     assert options(("<x>",), "") == '<option value="&lt;x&gt;">&lt;x&gt;</option>'
+
+
+def test_read_only_shell_keeps_filters_and_removes_mutation_controls() -> None:
+    response = layout(
+        "Consulta de soporte",
+        '<form method="get"><button>Filtrar</button></form>'
+        '<form method="post"><button>Guardar</button></form>',
+        actor_label="Soporte Maia",
+        role_label="Asesor inmobiliario",
+        organization_label="Larevia",
+        read_only=True,
+        support_expires_at=NOON_UTC,
+        support_reason="Revisar una cita que no aparece.",
+    )
+    body = response.body.decode()
+
+    assert "Soporte Maia · Sólo lectura · Acceso hasta" in body
+    assert "Revisar una cita que no aparece." in body
+    assert 'method="get"' in body
+    assert "Filtrar" in body
+    assert 'method="post"' not in body
+    assert "Guardar" not in body

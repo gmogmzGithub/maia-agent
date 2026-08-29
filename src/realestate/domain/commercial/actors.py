@@ -17,6 +17,7 @@ from __future__ import annotations
 import enum
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 
 from realestate.db.models import MemberRole
 
@@ -132,10 +133,20 @@ class Actor:
     #: Audit identity. A login for a human, a subsystem name for Product.
     label: str
     display_name: str
+    #: Brokerage Brand shown throughout the authorized CRM shell. It comes
+    #: from the Organization row resolved with this Actor; the interface never
+    #: guesses a default Organization or offers a switcher.
+    organization_name: str = "Larevia"
     #: Temporary support grants may inspect the ordinary CRM but may not mutate
     #: it. Kept on the trusted Actor so the HTTP boundary can enforce the grant
     #: without inferring authority again from a login string.
     read_only: bool = False
+    support_expires_at: datetime | None = None
+    support_reason: str | None = None
+    #: Open, actionable Internal Operational Alerts in this Actor's scope.
+    #: Filled at the HTTP boundary so every CRM page can render one truthful
+    #: global count without issuing presentation-layer queries.
+    alert_count: int = 0
 
     @property
     def actor_type(self) -> str:
