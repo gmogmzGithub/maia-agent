@@ -14,8 +14,11 @@ from __future__ import annotations
 
 import hmac
 import logging
+import uuid
+from dataclasses import dataclass
 from decimal import Decimal
 from datetime import date, datetime, time
+from typing import cast
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
@@ -45,7 +48,7 @@ from realestate.domain.commercial.handoff import (
     HumanHandoff,
     RequestHumanHandling,
 )
-from realestate.domain.appointments import AppointmentService
+from realestate.domain.appointments import AppointmentPolicy, AppointmentService
 from realestate.domain.properties import PropertyService
 from realestate.domain.service_area import service_area_pattern
 from realestate.domain.external_inventory.inventory import ExternalInventory
@@ -55,6 +58,7 @@ from realestate.domain.external_inventory.types import (
     InventorySearchCriteria,
     IntendedAction,
 )
+from realestate.domain.scheduling.calendars import CalendarDirectory
 
 router = APIRouter(prefix="/internal/plugin", tags=["plugin"])
 logger = logging.getLogger(__name__)
@@ -122,11 +126,41 @@ async def _binding(
     return binding
 
 
-async def resolve_role(request: Request, hermes_session_id: str) -> AgentRole | None:
-    """Resolve the trusted Hermes session to a product Role, or None."""
+@dataclass(frozen=True)
+class TrustedSession:
+    """What a bound Hermes session entitles the caller to, and where.
+
+    The Role was enough while one Brokerage Organization existed. It is not any
+    more: a tool that knows the Role but not the Organization has to ask
+    somebody, and the only available answer used to be "the one Organization",
+    which is exactly the shortcut that hands one brokerage's inventory to
+    another's Maia (ADR-0050).
+    """
+
+    role: AgentRole
+    organization_id: uuid.UUID
+    channel_key: str | None
+
+
+async def resolve_trusted(
+    request: Request, hermes_session_id: str
+) -> TrustedSession | None:
+    """Resolve the trusted Hermes session to a Role *and* an Organization."""
     async with request.app.state.database.session_scope() as session:
         binding = await _binding(session, hermes_session_id)
-    return AgentRole(binding.role) if binding is not None else None
+        if binding is None:
+            return None
+        return TrustedSession(
+            role=AgentRole(binding.role),
+            organization_id=binding.organization_id,
+            channel_key=binding.channel_key,
+        )
+
+
+async def resolve_role(request: Request, hermes_session_id: str) -> AgentRole | None:
+    """The Role alone, for the health report that has nothing to scope."""
+    trusted = await resolve_trusted(request, hermes_session_id)
+    return trusted.role if trusted is not None else None
 
 
 @router.get("/health", dependencies=[Depends(require_plugin_token)])
@@ -208,7 +242,8 @@ async def get_property_information(
     payload: PropertyInformationRequest,
     hermes_session_id: str = Header(default="", alias=SESSION_HEADER),
 ) -> dict[str, object]:
-    role = await resolve_role(request, hermes_session_id)
+    trusted = await resolve_trusted(request, hermes_session_id)
+    role = trusted.role if trusted is not None else None
     logger.info(
         "Plugin tool request: get_property_information (durable=%s, role=%s, payload=%s)",
         hermes_session_id or "<none>",
@@ -224,7 +259,12 @@ async def get_property_information(
         return {"result": "forbidden"}
 
     async with request.app.state.database.session_scope() as session:
-        service = PropertyService(session, request.app.state.artifacts)
+        assert trusted is not None  # narrowed by the refusal above
+        service = PropertyService(
+            session,
+            request.app.state.artifacts,
+            organization_id=trusted.organization_id,
+        )
         result = await service.get_property_information(
             payload.reference, role, actor_id=hermes_session_id
         )
@@ -286,6 +326,7 @@ async def set_property_status(
             payload.reference,
             payload.status,
             Administrator(
+                organization_id=binding.organization_id,
                 actor_id=binding.channel_key or hermes_session_id,
                 origin_message_id=request.headers.get(ORIGIN_HEADER) or None,
             ),
@@ -328,7 +369,17 @@ async def search_inventory(
     async with request.app.state.database.session_scope() as session:
         merged = await session.merge(conversation)
         actor = Actor.product(merged.organization_id, "MaiaInventorySearch")
-        external = ExternalInventory(session, actor, request.app.state.easybroker)
+        sources = getattr(
+            request.app.state,
+            "easybroker_sources",
+            request.app.state.easybroker,
+        )
+        source = (
+            await sources.for_organization(session, actor.organization_id)
+            if hasattr(sources, "for_organization")
+            else sources
+        )
+        external = ExternalInventory(session, actor, source)
         rows = await AuthorizedInventorySearch(session, actor, external).search(
             InventorySearchCriteria(
                 municipality=payload.municipality,
@@ -390,13 +441,23 @@ async def revalidate_external_listing(
     async with request.app.state.database.session_scope() as session:
         merged = await session.merge(conversation)
         actor = Actor.product(merged.organization_id, "MaiaListingRevalidation")
-        external = ExternalInventory(session, actor, request.app.state.easybroker)
+        sources = getattr(
+            request.app.state,
+            "easybroker_sources",
+            request.app.state.easybroker,
+        )
+        source = (
+            await sources.for_organization(session, actor.organization_id)
+            if hasattr(sources, "for_organization")
+            else sources
+        )
+        external = ExternalInventory(session, actor, source)
         # Product actors do not receive the Admin projection. Resolve the
         # provider's public reference within the trusted Organization instead.
         candidate_id = await session.scalar(
             select(ExternalListingCandidate.id).where(
                 ExternalListingCandidate.organization_id == actor.organization_id,
-                ExternalListingCandidate.source == request.app.state.easybroker.source_name,
+                ExternalListingCandidate.source == source.source_name,
                 ExternalListingCandidate.source_listing_id == payload.reference,
             )
         )
@@ -420,7 +481,8 @@ async def list_properties(
     payload: NoArguments,
     hermes_session_id: str = Header(default="", alias=SESSION_HEADER),
 ) -> dict[str, object]:
-    role = await resolve_role(request, hermes_session_id)
+    trusted = await resolve_trusted(request, hermes_session_id)
+    role = trusted.role if trusted is not None else None
     logger.info(
         "Plugin tool request: list_properties (durable=%s, role=%s)",
         hermes_session_id or "<none>",
@@ -434,11 +496,12 @@ async def list_properties(
         return {"result": "forbidden"}
 
     async with request.app.state.database.session_scope() as session:
+        assert trusted is not None  # narrowed by the refusal above
         service = AdministrationService(session)
         result = (
-            await service.list_active_properties_for_sales()
+            await service.list_active_properties_for_sales(trusted.organization_id)
             if role is AgentRole.SALES
-            else await service.list_properties()
+            else await service.list_properties(trusted.organization_id)
         )
         logger.debug(
             "Plugin tool result: list_properties (durable=%s, result=%s)",
@@ -459,6 +522,38 @@ class ResolvePendingAdminWorkRequest(BaseModel):
     )
 
 
+async def _organization_calendars(
+    request: Request, session: AsyncSession, organization_id: uuid.UUID
+) -> CalendarDirectory:
+    directories = getattr(
+        request.app.state,
+        "calendar_directories",
+        request.app.state.calendars,
+    )
+    if hasattr(directories, "for_organization"):
+        return cast(
+            CalendarDirectory,
+            await directories.for_organization(session, organization_id),
+        )
+    return cast(CalendarDirectory, directories)
+
+
+async def _organization_policy(
+    request: Request, session: AsyncSession, organization_id: uuid.UUID
+) -> AppointmentPolicy:
+    policies = getattr(
+        request.app.state,
+        "appointment_policies",
+        request.app.state.appointment_policy,
+    )
+    if hasattr(policies, "for_organization"):
+        return cast(
+            AppointmentPolicy,
+            await policies.for_organization(session, organization_id),
+        )
+    return cast(AppointmentPolicy, policies)
+
+
 @router.post(
     "/tools/resolve_pending_admin_work",
     dependencies=[Depends(require_plugin_token)],
@@ -474,15 +569,21 @@ async def resolve_pending_admin_work(
     if payload.action not in ALLOWED_ACTIONS:
         return {"result": "invalid_action"}
     async with request.app.state.database.session_scope() as session:
+        policy = await _organization_policy(
+            request, session, binding.organization_id
+        )
         return await AdminWorkService(
             session,
-            request.app.state.calendars,
-            request.app.state.appointment_policy.schedule,
-            request.app.state.appointment_policy.day_of_reminder_hour,
+            await _organization_calendars(
+                request, session, binding.organization_id
+            ),
+            policy.schedule,
+            policy.day_of_reminder_hour,
         ).resolve(
             payload.reference,
             payload.action,
             Administrator(
+                organization_id=binding.organization_id,
                 actor_id=binding.channel_key or hermes_session_id,
                 origin_message_id=request.headers.get(ORIGIN_HEADER) or None,
             ),
@@ -498,15 +599,21 @@ async def list_pending_admin_work(
     payload: NoArguments,
     hermes_session_id: str = Header(default="", alias=SESSION_HEADER),
 ) -> dict[str, object]:
-    if await resolve_admin(request, hermes_session_id) is None:
+    binding = await resolve_admin(request, hermes_session_id)
+    if binding is None:
         return {"result": "forbidden"}
     async with request.app.state.database.session_scope() as session:
+        policy = await _organization_policy(
+            request, session, binding.organization_id
+        )
         return await AdminWorkService(
             session,
-            request.app.state.calendars,
-            request.app.state.appointment_policy.schedule,
-            request.app.state.appointment_policy.day_of_reminder_hour,
-        ).list_pending()
+            await _organization_calendars(
+                request, session, binding.organization_id
+            ),
+            policy.schedule,
+            policy.day_of_reminder_hour,
+        ).list_pending(binding.organization_id)
 
 
 # --- Sales appointment tools --------------------------------------------------
@@ -588,8 +695,12 @@ async def get_available_slots(
     async with request.app.state.database.session_scope() as session:
         service = AppointmentService(
             session,
-            request.app.state.calendars,
-            request.app.state.appointment_policy,
+            await _organization_calendars(
+                request, session, conversation.organization_id
+            ),
+            await _organization_policy(
+                request, session, conversation.organization_id
+            ),
         )
         result = await service.available_slots(
             conversation=await session.merge(conversation),
@@ -645,8 +756,12 @@ async def book_appointment(
     async with request.app.state.database.session_scope() as session:
         service = AppointmentService(
             session,
-            request.app.state.calendars,
-            request.app.state.appointment_policy,
+            await _organization_calendars(
+                request, session, conversation.organization_id
+            ),
+            await _organization_policy(
+                request, session, conversation.organization_id
+            ),
         )
         result = await service.book(
             conversation=await session.merge(conversation),
@@ -714,8 +829,12 @@ async def cancel_appointment(
         )
         service = AppointmentService(
             session,
-            request.app.state.calendars,
-            request.app.state.appointment_policy,
+            await _organization_calendars(
+                request, session, conversation.organization_id
+            ),
+            await _organization_policy(
+                request, session, conversation.organization_id
+            ),
         )
         result = await service.cancel(
             conversation=merged,
@@ -767,8 +886,12 @@ async def reschedule_appointment(
     async with request.app.state.database.session_scope() as session:
         service = AppointmentService(
             session,
-            request.app.state.calendars,
-            request.app.state.appointment_policy,
+            await _organization_calendars(
+                request, session, conversation.organization_id
+            ),
+            await _organization_policy(
+                request, session, conversation.organization_id
+            ),
         )
         result = await service.reschedule(
             conversation=await session.merge(conversation),

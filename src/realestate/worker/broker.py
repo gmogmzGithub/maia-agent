@@ -19,12 +19,21 @@ Two failure behaviours are deliberate:
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import UTC, datetime, timedelta
 
 from realestate.channels.telegram.client import TelegramClient
 from realestate.db.engine import Database
 from realestate.domain.availability import WeeklySchedule
 from realestate.domain.notifications import BrokerNotice, BrokerNotificationService
+from realestate.domain.commercial.actors import CommercialError
+from realestate.domain.platform.providers import (
+    OrganizationTelegramClients,
+    organization_administrator_chat_ids,
+)
+from realestate.domain.platform.registry import operating_organization_ids
+from realestate.domain.platform.runtime import OrganizationAppointmentPolicies
+from realestate.domain.appointments import AppointmentPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +50,7 @@ class BrokerNotifier:
         schedule: WeeklySchedule,
         digest_hour: int,
         reminder_minutes: int,
+        organization_id: uuid.UUID | None = None,
     ) -> None:
         self._database = database
         self._telegram = telegram
@@ -51,6 +61,7 @@ class BrokerNotifier:
         self._schedule = schedule
         self._digest_hour = digest_hour
         self._reminder_minutes = reminder_minutes
+        self._organization_id = organization_id
         self._retry_after: datetime | None = None
 
     async def tick(self) -> None:
@@ -66,6 +77,7 @@ class BrokerNotifier:
                 self._schedule,
                 digest_hour=self._digest_hour,
                 reminder_minutes=self._reminder_minutes,
+                organization_id=self._organization_id,
             )
 
             lapsed = await service.lapse_stale_reminders(now)
@@ -104,3 +116,77 @@ class BrokerNotifier:
                 len(notice.appointment_ids),
             )
         return accepted > 0
+
+
+class OrganizationBrokerNotifiers:
+    """Deliver Broker notices through each Organization's bot and policy."""
+
+    def __init__(
+        self,
+        database: Database,
+        clients: OrganizationTelegramClients,
+        policies: OrganizationAppointmentPolicies,
+        *,
+        digest_hour: int,
+        reminder_minutes: int,
+    ) -> None:
+        self._database = database
+        self._clients = clients
+        self._policies = policies
+        self._digest_hour = digest_hour
+        self._reminder_minutes = reminder_minutes
+        self._workers: dict[
+            uuid.UUID,
+            tuple[TelegramClient, frozenset[str], AppointmentPolicy, BrokerNotifier],
+        ] = {}
+
+    async def tick(self) -> None:
+        configured: list[
+            tuple[uuid.UUID, TelegramClient, frozenset[str], AppointmentPolicy]
+        ] = []
+        async with self._database.session_scope() as session:
+            for organization_id in await operating_organization_ids(session):
+                try:
+                    client = await self._clients.for_organization(
+                        session, organization_id
+                    )
+                    policy = await self._policies.for_organization(
+                        session, organization_id
+                    )
+                except CommercialError:
+                    continue
+                chat_ids = await organization_administrator_chat_ids(
+                    session, organization_id
+                )
+                configured.append((organization_id, client, chat_ids, policy))
+
+        active_ids: set[uuid.UUID] = set()
+        for organization_id, client, chat_ids, policy in configured:
+            active_ids.add(organization_id)
+            cached = self._workers.get(organization_id)
+            if (
+                cached is None
+                or cached[0] is not client
+                or cached[1] != chat_ids
+                or cached[2] != policy
+            ):
+                worker = BrokerNotifier(
+                    self._database,
+                    client,
+                    chat_ids=chat_ids,
+                    schedule=policy.schedule,
+                    digest_hour=self._digest_hour,
+                    reminder_minutes=self._reminder_minutes,
+                    organization_id=organization_id,
+                )
+                self._workers[organization_id] = (
+                    client,
+                    chat_ids,
+                    policy,
+                    worker,
+                )
+            await self._workers[organization_id][3].tick()
+
+        for organization_id in tuple(self._workers):
+            if organization_id not in active_ids:
+                self._workers.pop(organization_id, None)

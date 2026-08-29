@@ -647,7 +647,10 @@ class CatalogAdministration:
             actor, command.development_id, command.unit_model_id
         )
         existing = await self._session.scalar(
-            select(Property).where(Property.property_key == key)
+            select(Property).where(
+                Property.organization_id == actor.organization_id,
+                Property.property_key == key,
+            )
         )
         if existing is not None:
             raise InvalidTransition("Ya existe una propiedad con esa clave.")
@@ -982,6 +985,7 @@ class CatalogAdministration:
     ) -> None:
         await record_audit(
             self._session,
+            organization_id=actor.organization_id,
             actor_type=actor.actor_type,
             actor_id=actor.label,
             action=action,

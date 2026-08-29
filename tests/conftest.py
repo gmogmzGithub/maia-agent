@@ -292,6 +292,13 @@ async def provision_property_administrator(session) -> None:  # noqa: ANN001
             administrators=("developer",), advisors=(), default_advisor=None
         )
     )
+    # Stage 9: an unbound WhatsApp number, Telegram bot or hostname is refused
+    # rather than defaulted to the only Organization, so a fixture that skipped
+    # this would be asserting on that refusal (ADR-0050).
+    from tests.fixtures import commercial
+
+    await commercial.bind_channels(session)
+    await commercial.ensure_entitlements(session)
 
 
 async def reset_property_inventory(session) -> None:  # noqa: ANN001
@@ -305,6 +312,18 @@ async def reset_property_inventory(session) -> None:  # noqa: ANN001
     from sqlalchemy import text
 
     for table in (
+        "analytics.projection_runs",
+        "analytics.domain_events",
+        "analytics.analytics_outbox",
+        "analytics.funnel_aggregates",
+        "sponsorship_report_links",
+        "sponsorship_contact_attributions",
+        "sponsored_exposure_counters",
+        "sponsorship_delivery_days",
+        "sponsored_eligibility_records",
+        "sponsorship_capacity_reservations",
+        "sponsorship_quotes",
+        "sponsorship_campaigns",
         "marketing_touches",
         "campaign_audience_members",
         "development_campaigns",

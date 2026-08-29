@@ -240,7 +240,9 @@ async def _attach(
     return str(gateway), str(durable)
 
 
-async def session_for_cycle(db: AsyncSession, cycle_id: uuid.UUID) -> RoleSession:
+async def session_for_cycle(
+    db: AsyncSession, cycle_id: uuid.UUID, organization_id: uuid.UUID
+) -> RoleSession:
     """The cycle's Sales session binding, as far as it is known.
 
     No Hermes call happens here. A cycle's first turn has no durable session
@@ -249,7 +251,11 @@ async def session_for_cycle(db: AsyncSession, cycle_id: uuid.UUID) -> RoleSessio
     it. Creating a session on a throwaway connection would only have it reaped.
     """
     binding = (
-        await db.execute(select(AgentSession).where(AgentSession.cycle_id == cycle_id))
+        await db.execute(
+            select(AgentSession)
+            .where(AgentSession.organization_id == organization_id)
+            .where(AgentSession.cycle_id == cycle_id)
+        )
     ).scalar_one_or_none()
     return RoleSession(
         gateway_session_id="",
@@ -261,6 +267,7 @@ async def session_for_cycle(db: AsyncSession, cycle_id: uuid.UUID) -> RoleSessio
 async def bind_session(
     db: AsyncSession,
     *,
+    organization_id: uuid.UUID,
     role: AgentRole,
     hermes_session_id: str,
     cycle_id: uuid.UUID | None = None,
@@ -272,6 +279,11 @@ async def bind_session(
     be committed before the model gets a chance to call a tool. Every kind of
     binding — a Sales Engagement Cycle, an administrative channel — upserts
     through here, so that ordering requirement is stated once.
+
+    ``organization_id`` is required and is part of the lookup. A Hermes session
+    is the model's continuity, so a binding resolved across the boundary would
+    let one Brokerage Organization's conversation history answer another's
+    Contact — the worst leak this product has available (ADR-0050).
     """
     if (cycle_id is None) == (channel_key is None):
         raise ValueError("bind_session needs exactly one of cycle_id or channel_key")
@@ -281,7 +293,13 @@ async def bind_session(
         if cycle_id is not None
         else AgentSession.channel_key == channel_key
     )
-    binding = (await db.execute(select(AgentSession).where(key))).scalar_one_or_none()
+    binding = (
+        await db.execute(
+            select(AgentSession)
+            .where(AgentSession.organization_id == organization_id)
+            .where(key)
+        )
+    ).scalar_one_or_none()
     if binding is None:
         logger.info(
             "Binding Hermes session to product role "
@@ -293,6 +311,7 @@ async def bind_session(
         )
         db.add(
             AgentSession(
+                organization_id=organization_id,
                 hermes_session_id=hermes_session_id,
                 role=role.value,
                 cycle_id=cycle_id,
@@ -314,11 +333,16 @@ async def bind_session(
 
 
 async def bind_cycle_session(
-    db: AsyncSession, *, cycle_id: uuid.UUID, hermes_session_id: str
+    db: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    cycle_id: uuid.UUID,
+    hermes_session_id: str,
 ) -> None:
     """Bind a Sales Engagement Cycle to *hermes_session_id*."""
     await bind_session(
         db,
+        organization_id=organization_id,
         role=AgentRole.SALES,
         hermes_session_id=hermes_session_id,
         cycle_id=cycle_id,
@@ -326,22 +350,31 @@ async def bind_cycle_session(
 
 
 async def bind_channel_session(
-    db: AsyncSession, *, role: AgentRole, channel_key: str, hermes_session_id: str
+    db: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    role: AgentRole,
+    channel_key: str,
+    hermes_session_id: str,
 ) -> None:
     """Bind an administrative channel (``telegram:<chat id>``) to a session."""
     await bind_session(
         db,
+        organization_id=organization_id,
         role=role,
         hermes_session_id=hermes_session_id,
         channel_key=channel_key,
     )
 
 
-async def find_role_session(db: AsyncSession, role: AgentRole) -> RoleSession | None:
+async def find_role_session(
+    db: AsyncSession, role: AgentRole, organization_id: uuid.UUID
+) -> RoleSession | None:
     """Return the most recently bound session for *role*, if any."""
     binding = (
         await db.execute(
             select(AgentSession)
+            .where(AgentSession.organization_id == organization_id)
             .where(AgentSession.role == role.value)
             .order_by(AgentSession.created_at.desc())
             .limit(1)
@@ -539,9 +572,19 @@ async def _inject(rpc, sid: str, text: str) -> bool:  # type: ignore[no-untyped-
 
 
 async def bind_role_session(
-    db: AsyncSession, *, role: AgentRole, hermes_session_id: str
+    db: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    role: AgentRole,
+    hermes_session_id: str,
 ) -> None:
-    """Bind a cycle-less Role session (the local exercise and evaluation path)."""
+    """Bind a cycle-less Role session (the website conversation path).
+
+    ``hermes_session_id`` stays globally unique because Hermes issues it, so the
+    existence check does not need the Organization. What does need it is the row
+    this creates: a binding without one would be resolvable by any Organization's
+    tool call.
+    """
     existing = (
         await db.execute(
             select(AgentSession).where(
@@ -551,7 +594,11 @@ async def bind_role_session(
     ).scalar_one_or_none()
     if existing is None:
         db.add(
-            AgentSession(hermes_session_id=hermes_session_id, role=role.value)
+            AgentSession(
+                organization_id=organization_id,
+                hermes_session_id=hermes_session_id,
+                role=role.value,
+            )
         )
         await db.commit()
 

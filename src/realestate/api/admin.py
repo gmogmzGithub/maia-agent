@@ -329,7 +329,7 @@ async def _read_document(
 
 
 async def _render_submission(
-    request: Request, editing_key: str | None, actor_id: str
+    request: Request, editing_key: str | None, actor: Actor
 ) -> HTMLResponse | RedirectResponse:
     form = await request.form()
     values = _submitted_values(form)
@@ -358,10 +358,10 @@ async def _render_submission(
 
     async with request.app.state.database.session_scope() as session:
         try:
-            await property_writer(request, session).accept_upload(
+            await property_writer(request, session, actor).accept_upload(
                 f"{property_key}.md",
                 content,
-                actor_id,
+                actor.label,
                 actor_type="Administrator",
                 create_only=editing_key is None,
                 expected_property_key=editing_key,
@@ -383,12 +383,16 @@ async def _render_submission(
 async def inventory(
     request: Request,
     view: str = "active",
-    _actor: Actor = Depends(require_administrator),
+    actor: Actor = Depends(require_administrator),
 ) -> HTMLResponse:
     if view not in {"active", "inactive", "all"}:
         view = "active"
     async with request.app.state.database.session_scope() as session:
-        records = (await AdministrationService(session).list_properties())["properties"]
+        records = (
+            await AdministrationService(session).list_properties(
+                actor.organization_id
+            )
+        )["properties"]
     filtered = [
         row for row in records if view == "all" or row["status"].casefold() == view
     ]
@@ -446,7 +450,7 @@ async def new_property(_actor: Actor = Depends(require_administrator)) -> HTMLRe
 async def create_property(
     request: Request, actor: Actor = Depends(require_administrator)
 ) -> HTMLResponse | RedirectResponse:
-    return await _render_submission(request, None, actor.label)
+    return await _render_submission(request, None, actor)
 
 
 @router.get("/properties/{property_key}", response_class=HTMLResponse)
@@ -530,7 +534,7 @@ async def edit_property(
 async def update_property(
     request: Request, property_key: str, actor: Actor = Depends(require_administrator)
 ) -> HTMLResponse | RedirectResponse:
-    return await _render_submission(request, property_key, actor.label)
+    return await _render_submission(request, property_key, actor)
 
 
 @router.post("/properties/{property_key}/status")
@@ -544,7 +548,9 @@ async def change_status(
         result = await AdministrationService(session).set_property_status(
             property_key,
             status,
-            Administrator(actor_id=actor.label),
+            Administrator(
+                organization_id=actor.organization_id, actor_id=actor.label
+            ),
             reason,
         )
         if result["result"] in {"updated", "unchanged"}:

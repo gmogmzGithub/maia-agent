@@ -125,6 +125,9 @@ NAV: tuple[NavLink, ...] = (
     NavLink("/crm/catalogo", "Catálogo"),
     NavLink("/crm/inventario-externo", "Inventario externo"),
     NavLink("/crm/reactivacion", "Reactivación"),
+    NavLink("/crm/patrocinios", "Patrocinios"),
+    NavLink("/crm/bi", "Inteligencia"),
+    NavLink("/crm/plataforma", "Plataforma"),
 )
 
 # One stylesheet, inlined so a surface never renders unstyled while a separate

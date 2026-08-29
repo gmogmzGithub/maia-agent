@@ -16,6 +16,13 @@ TYPE_LABELS = {
     "Land": "Terreno",
     "Development": "Desarrollo",
 }
+#: Paid visibility is always labelled, in every medium (ADR-0043). The strings
+#: mirror ``realestate.domain.sponsorship.labels``; the site process has no
+#: access to Product's domain modules, so the constants are restated with the
+#: contract test in ``tests/test_sponsored_surfaces.py`` keeping them identical.
+SPONSORED_LABEL = "Patrocinada"
+SPONSORED_ARIA_LABEL = "Publicación patrocinada, visibilidad pagada"
+
 FACT_LABELS = {
     "bedrooms": "Recámaras",
     "bathrooms": "Baños",
@@ -114,7 +121,52 @@ def document(
 </html>"""
 
 
-def home(listings: list[dict[str, Any]]) -> str:
+def sponsored_section(result: dict[str, Any]) -> str:
+    """The homepage's dedicated paid section, or nothing at all.
+
+    Its own section with its own heading rather than cards mixed into the
+    editorial selection: ADR-0043 gives the homepage a dedicated sponsored
+    section, and a visitor who has to compare chips to tell paid from unpaid has
+    not really been told.
+    """
+    cards = list(result.get("cards") or [])
+    if not cards:
+        return ""
+    rendered = "".join(
+        sponsored_card(card, surface="Homepage", position=index + 1)
+        for index, card in enumerate(cards)
+    )
+    return f"""
+<section class="section-shell sponsored-section" aria-labelledby="patrocinadas">
+  <div class="section-heading">
+    <div><p class="eyebrow">{escape(SPONSORED_LABEL)}</p>
+    <h2 id="patrocinadas">Propiedades con visibilidad patrocinada</h2></div>
+  </div>
+  <p class="muted sponsored-disclosure">{escape(result.get("disclosure"))}</p>
+  <div class="listing-grid">{rendered}</div>
+</section>"""
+
+
+def sponsored_card(
+    card: dict[str, Any], *, surface: str, position: int
+) -> str:
+    """One paid card: the organic card plus a label that cannot be turned off.
+
+    The label is rendered by this function and not passed in, so a caller cannot
+    render a sponsored card without it. It is a visible chip *and* an
+    ``aria-label`` on the article, because a screen-reader user who only hears
+    the title has not been told the placement was bought.
+    """
+    return listing_card(
+        dict(card.get("listing") or {}),
+        surface=surface,
+        sponsored_exposure_id=str(card.get("exposure_id") or ""),
+        sponsored_campaign_id=str(card.get("campaign_id") or ""),
+        sponsored_position=position,
+    )
+
+
+def home(listings: list[dict[str, Any]], sponsored: dict[str, Any] | None = None) -> str:
     featured = listings[0] if listings else None
     featured_cover = (
         next(
@@ -168,16 +220,21 @@ def home(listings: list[dict[str, Any]]) -> str:
 <section class="section-shell inventory-section" aria-labelledby="seleccion">
   <div class="section-heading"><div><p class="eyebrow">Selección actual</p><h2 id="seleccion">Propiedades para explorar</h2></div><a href="/propiedades">Ver todas</a></div>
   {inventory}
-</section>"""
+</section>
+{sponsored_section(sponsored or {})}"""
 
 
 def search_page(
-    result: dict[str, Any], *, query_string: str, heading: str = "Explorar propiedades"
+    result: dict[str, Any],
+    *,
+    query_string: str,
+    heading: str = "Explorar propiedades",
+    sponsored: dict[str, Any] | None = None,
 ) -> str:
     listings = list(result.get("listings") or [])
     total = int(result.get("total") or 0)
     query = result.get("query") or {}
-    results = cards_grid(listings, surface="Search")
+    results = search_results_grid(listings, sponsored or {})
     if not results:
         results = empty_state(
             "No encontramos propiedades con esos criterios",
@@ -225,8 +282,51 @@ def cards_grid(listings: list[dict[str, Any]], *, surface: str) -> str:
     return "".join(listing_card(item, surface=surface) for item in listings)
 
 
+def search_results_grid(
+    listings: list[dict[str, Any]], sponsored: dict[str, Any]
+) -> str:
+    """Organic results in their given order, with paid slots interleaved.
+
+    The organic list is rendered in exactly the order Product returned it. A
+    sponsored card is *inserted* at the head of each group of six — it never
+    displaces, reorders or replaces an organic result, which is the whole
+    separation ADR-0043 requires. Insert positions are computed from the group
+    size so a page with fewer results simply gets fewer paid slots.
+    """
+    cards = list(sponsored.get("cards") or [])
+    if not cards:
+        return cards_grid(listings, surface="Search")
+    out: list[str] = []
+    per_group = 6
+    for index, listing in enumerate(listings):
+        if index % per_group == 0 and cards:
+            card = cards.pop(0)
+            out.append(
+                sponsored_card(
+                    card, surface="Search", position=index // per_group + 1
+                )
+            )
+        out.append(listing_card(listing, surface="Search"))
+    # Anything the groups did not consume still belongs on the page: the slot
+    # count came from Product, so dropping one here would silently under-deliver
+    # a campaign somebody paid for.
+    for offset, card in enumerate(cards):
+        out.append(
+            sponsored_card(
+                card, surface="Search", position=len(listings) // per_group + offset + 1
+            )
+        )
+    return "".join(out)
+
+
 def listing_card(
-    listing: dict[str, Any], *, surface: str, already_saved: bool = False
+    listing: dict[str, Any],
+    *,
+    surface: str,
+    already_saved: bool = False,
+    sponsored_exposure_id: str = "",
+    sponsored_campaign_id: str = "",
+    sponsored_position: int = 0,
 ) -> str:
     already_saved = already_saved or bool(listing.get("_saved"))
     cover = next((item for item in listing.get("media", []) if item.get("is_cover")), None)
@@ -235,16 +335,40 @@ def listing_card(
     facts = characteristics(listing.get("physical_facts") or {}, limit=4)
     listing_id = escape(listing.get("listing_id"))
     slug = escape(listing.get("slug"))
-    return f"""<article class="listing-card" data-analytics="ListingImpression" data-listing-id="{listing_id}" data-surface="{escape(surface)}">
-<a class="card-media" href="/propiedades/{slug}">{media}<span class="tier-mark">{escape(_tier_label(listing.get('presentation_tier')))}</span></a>
-<div class="card-body"><p class="location">{escape(listing.get('public_location') or 'Área Metropolitana de Guadalajara')}</p>
-<h3><a href="/propiedades/{slug}">{escape(listing.get('title'))}</a></h3>
+    sponsored = bool(sponsored_campaign_id and sponsored_exposure_id)
+    detail_url = f"/propiedades/{slug}"
+    if sponsored:
+        detail_url += f"?patrocinio={escape(sponsored_exposure_id)}"
+    article_attributes = (
+        f' data-sponsored-campaign="{escape(sponsored_campaign_id)}"'
+        f' data-sponsored-exposure="{escape(sponsored_exposure_id)}"'
+        f' data-sponsored-position="{sponsored_position}"'
+        f' aria-label="{escape(SPONSORED_ARIA_LABEL)}"'
+        if sponsored
+        else ""
+    )
+    label = (
+        f'<p class="sponsored-mark"><span class="tag-sponsored">'
+        f"{escape(SPONSORED_LABEL)}</span></p>"
+        if sponsored
+        else ""
+    )
+    classes = "listing-card sponsored" if sponsored else "listing-card"
+    return f"""<article class="{classes}" data-analytics="ListingImpression" data-listing-id="{listing_id}" data-surface="{escape(surface)}"{article_attributes}>
+<a class="card-media" href="{detail_url}">{media}<span class="tier-mark">{escape(_tier_label(listing.get('presentation_tier')))}</span></a>
+<div class="card-body">{label}<p class="location">{escape(listing.get('public_location') or 'Área Metropolitana de Guadalajara')}</p>
+<h3><a href="{detail_url}">{escape(listing.get('title'))}</a></h3>
 <div class="offers">{offers}</div>{facts}
 {save_form(listing_id, return_to=f'/propiedades/{slug}', already_saved=already_saved)}
 </div></article>"""
 
 
-def technical_sheet(listing: dict[str, Any], discovery: dict[str, Any]) -> str:
+def technical_sheet(
+    listing: dict[str, Any],
+    discovery: dict[str, Any],
+    *,
+    sponsored_exposure: str | None = None,
+) -> str:
     media = list(listing.get("media") or [])
     cover = next((item for item in media if item.get("is_cover")), media[0] if media else None)
     cover_html = responsive_image(cover, listing.get("title"), loading="eager", priority=True)
@@ -252,15 +376,18 @@ def technical_sheet(listing: dict[str, Any], discovery: dict[str, Any]) -> str:
     facts = facts_table(listing.get("physical_facts") or {})
     listing_id = escape(listing.get("listing_id"))
     slug = escape(listing.get("slug"))
+    sponsorship_query = (
+        f"?patrocinio={escape(sponsored_exposure)}" if sponsored_exposure else ""
+    )
     return f"""<article class="listing-detail tier-{escape(str(listing.get('presentation_tier') or 'Larevia').lower())}">
 <header class="detail-hero"><div class="detail-cover">{cover_html}</div>
 <div class="detail-intro"><p class="eyebrow">{escape(_tier_label(listing.get('presentation_tier')))}</p>
 <h1>{escape(listing.get('title'))}</h1><p class="detail-location">{escape(listing.get('public_location'))}</p>
 <div class="offers offers-large">{offers}</div>
-<div class="detail-actions">{save_form(listing_id, return_to=f'/propiedades/{slug}', already_saved=bool(listing.get('_saved')))}<a class="button button-secondary" href="/propiedades/{slug}/galeria">Abrir galería</a></div>
+<div class="detail-actions">{save_form(listing_id, return_to=f'/propiedades/{slug}{sponsorship_query}', already_saved=bool(listing.get('_saved')))}<a class="button button-secondary" href="/propiedades/{slug}/galeria{sponsorship_query}">Abrir galería</a></div>
 </div></header>
 <div class="detail-layout section-shell"><section aria-labelledby="datos"><p class="eyebrow">Ficha técnica</p><h2 id="datos">Datos autorizados</h2>{facts}</section>
-<aside class="maia-panel"><p class="eyebrow">Maia</p><h2>¿Te interesa esta propiedad?</h2><p>Conserva el contexto al continuar en el sitio o por el WhatsApp oficial.</p>{interest_actions(listing)}</aside></div>
+<aside class="maia-panel"><p class="eyebrow">Maia</p><h2>¿Te interesa esta propiedad?</h2><p>Conserva el contexto al continuar en el sitio o por el WhatsApp oficial.</p>{interest_actions(listing, sponsored_exposure=sponsored_exposure)}</aside></div>
 <section class="section-shell attribution"><h2>Publicación</h2><p>{escape(listing.get('attribution'))}</p><p class="muted">Fuente: {escape(listing.get('source_name'))}</p></section>
 </article>"""
 
@@ -283,12 +410,23 @@ def gallery(listing: dict[str, Any]) -> str:
 </article>"""
 
 
-def interest_actions(listing: dict[str, Any]) -> str:
+def interest_actions(
+    listing: dict[str, Any], *, sponsored_exposure: str | None = None
+) -> str:
     listing_id = escape(listing.get("listing_id"))
+    exposure_input = (
+        f'<input type="hidden" name="sponsored_exposure" '
+        f'value="{escape(sponsored_exposure)}">'
+        if sponsored_exposure
+        else ""
+    )
+    exposure_query = (
+        f"&patrocinio={escape(sponsored_exposure)}" if sponsored_exposure else ""
+    )
     return f"""<div class="interest-actions">
-<form action="/handoffs" method="post"><input type="hidden" name="purpose" value="ContinueWhatsApp"><input type="hidden" name="listing_id" value="{listing_id}"><input type="hidden" name="command_key" value="handoff-{uuid.uuid4()}"><button class="button button-whatsapp" type="submit">Seguir por WhatsApp</button></form>
-<a class="button button-secondary" href="/maia?listing_id={listing_id}">Continuar en el sitio</a>
-<form action="/handoffs" method="post"><input type="hidden" name="purpose" value="Appointment"><input type="hidden" name="listing_id" value="{listing_id}"><input type="hidden" name="command_key" value="appointment-{uuid.uuid4()}"><button class="text-button" type="submit">Solicitar una cita</button></form>
+<form action="/handoffs" method="post"><input type="hidden" name="purpose" value="ContinueWhatsApp"><input type="hidden" name="listing_id" value="{listing_id}">{exposure_input}<input type="hidden" name="command_key" value="handoff-{uuid.uuid4()}"><button class="button button-whatsapp" type="submit">Seguir por WhatsApp</button></form>
+<a class="button button-secondary" href="/maia?listing_id={listing_id}{exposure_query}">Continuar en el sitio</a>
+<form action="/handoffs" method="post"><input type="hidden" name="purpose" value="Appointment"><input type="hidden" name="listing_id" value="{listing_id}">{exposure_input}<input type="hidden" name="command_key" value="appointment-{uuid.uuid4()}"><button class="text-button" type="submit">Solicitar una cita</button></form>
 <p class="fine-print">La cita sólo queda confirmada después de verificarla por el WhatsApp oficial.</p>
 </div>"""
 
@@ -339,6 +477,7 @@ def conversation_page(
     conversation_id: str | None = None,
     listing_ids: list[str] | None = None,
     error: str = "",
+    sponsored_exposure: str | None = None,
 ) -> str:
     thread = "".join(
         f'<li class="message {"message-maia" if message.get("role") == "Maia" else "message-person"}"><span>{"Maia" if message.get("role") == "Maia" else "Tú"}</span><p>{escape(message.get("body"))}</p></li>'
@@ -351,12 +490,18 @@ def conversation_page(
         for item in (listing_ids or [])
     )
     error_html = f'<p class="form-error" role="alert">{escape(error)}</p>' if error else ""
+    exposure_input = (
+        f'<input type="hidden" name="sponsored_exposure" '
+        f'value="{escape(sponsored_exposure)}">'
+        if sponsored_exposure
+        else ""
+    )
     whatsapp = ""
     if conversation_id:
-        whatsapp = f"""<form action="/handoffs" method="post"><input type="hidden" name="purpose" value="ContinueWhatsApp"><input type="hidden" name="website_conversation_id" value="{escape(conversation_id)}"><input type="hidden" name="command_key" value="conversation-handoff-{uuid.uuid4()}"><button class="button button-whatsapp" type="submit">Seguir por WhatsApp</button></form>"""
+        whatsapp = f"""<form action="/handoffs" method="post"><input type="hidden" name="purpose" value="ContinueWhatsApp"><input type="hidden" name="website_conversation_id" value="{escape(conversation_id)}">{exposure_input}<input type="hidden" name="command_key" value="conversation-handoff-{uuid.uuid4()}"><button class="button button-whatsapp" type="submit">Seguir por WhatsApp</button></form>"""
     return f"""<section class="conversation-shell"><header><p class="eyebrow">Asistente de Larevia</p><h1>Conversa con Maia</h1><p>La conversación empieza anónima. Para identificarte o confirmar una cita, continúa por el WhatsApp oficial.</p>{whatsapp}</header>
 <ol class="conversation-thread" aria-label="Conversación">{thread}</ol>
-{error_html}<form class="composer" action="/maia" method="post"><label for="mensaje" class="sr-only">Mensaje para Maia</label><textarea id="mensaje" name="message" maxlength="2000" required placeholder="Ejemplo: Busco una casa en Zapopan con tres recámaras"></textarea>{contexts}<input type="hidden" name="command_key" value="message-{uuid.uuid4()}"><button class="button button-primary" type="submit">Enviar a Maia</button></form>
+{error_html}<form class="composer" action="/maia" method="post"><label for="mensaje" class="sr-only">Mensaje para Maia</label><textarea id="mensaje" name="message" maxlength="2000" required placeholder="Ejemplo: Busco una casa en Zapopan con tres recámaras"></textarea>{contexts}{exposure_input}<input type="hidden" name="command_key" value="message-{uuid.uuid4()}"><button class="button button-primary" type="submit">Enviar a Maia</button></form>
 <p class="fine-print">No escribas aquí tu teléfono ni correo. No registramos teclas, recorridos del mouse ni repetición de sesión.</p></section>"""
 
 
@@ -366,6 +511,91 @@ def unavailable_page() -> str:
 
 def handoff_page(reference: str, *, expires_at: str) -> str:
     return f"""<section class="section-shell handoff"><p class="eyebrow">Continuidad protegida</p><h1>Sigue en el WhatsApp oficial</h1><p>Envía esta referencia desde WhatsApp. No contiene tu nombre, teléfono ni conversación.</p><code>{escape(reference)}</code><p class="fine-print">La referencia vence {escape(expires_at)} y sólo puede usarse una vez.</p></section>"""
+
+
+def report_page(data: dict[str, Any], *, token: str) -> str:
+    """A buyer's structured campaign report, plus the PDF download.
+
+    Product exposes an explicit buyer-only projection rather than its internal
+    report object. The structured headline, trend and funnel fields and the PDF
+    lines all come from that same aggregate report; the fallback line renderer
+    remains for compatibility with an older Product response.
+    """
+    rendered: list[str] = []
+    structured = bool(data.get("summary"))
+    include_line = not structured
+    for line in data.get("lines") or []:
+        text = str(line.get("text") or "")
+        style = str(line.get("style") or "body")
+        if structured and style == "heading" and text == "Resultados conocidos":
+            include_line = True
+        if structured and style == "heading" and text == "Definiciones":
+            include_line = False
+        if not include_line:
+            continue
+        if not text:
+            continue
+        if style == "title":
+            rendered.append(f"<h1>{escape(text)}</h1>")
+        elif style == "heading":
+            rendered.append(f'<h2 class="report-heading">{escape(text)}</h2>')
+        else:
+            rendered.append(f'<p class="report-line">{escape(text)}</p>')
+    download = (
+        f'<a class="button button-secondary" '
+        f'href="/reportes/{escape(token)}/patrocinio.pdf">Descargar PDF</a>'
+    )
+    if not structured:
+        return f"""<section class="report-shell">
+<p class="eyebrow">{escape(data.get("label"))}</p>
+{"".join(rendered)}
+<div class="report-actions">{download}</div>
+</section>"""
+
+    def shown(value: object) -> str:
+        return "Muestra protegida" if value is None else str(value)
+
+    summary = "".join(
+        f'<div class="report-metric"><span>{escape(item.get("label"))}</span>'
+        f'<strong>{escape(shown(item.get("value")))}</strong></div>'
+        for item in data.get("summary") or []
+    )
+    status = data.get("status") or {}
+    status_block = f"""<div class="report-status">
+<div><span>Estado</span><strong>{escape(status.get("state"))}</strong></div>
+<div><span>Días pagados</span><strong>{escape(status.get("paid_days"))}</strong></div>
+<div><span>Entregados</span><strong>{escape(status.get("delivered_days"))}</strong></div>
+<div><span>Restantes</span><strong>{escape(status.get("remaining_days"))}</strong></div>
+</div>"""
+    funnel_rows = "".join(
+        f'<tr><th scope="row">{escape(item.get("label"))}</th>'
+        f'<td>{escape(shown(item.get("value")))}</td>'
+        f'<td>{escape(item.get("conversion"))}</td></tr>'
+        for item in data.get("funnel") or []
+    )
+    trend_rows = "".join(
+        f'<tr><th scope="row">{escape(str(item.get("date"))[:10])}</th>'
+        f'<td>{escape(shown(item.get("visible")))}</td>'
+        f'<td>{escape(shown(item.get("opens")))}</td>'
+        f'<td>{escape(shown(item.get("interest")))}</td></tr>'
+        for item in data.get("trend") or []
+    ) or '<tr><td colspan="4">Sin actividad registrada en el periodo.</td></tr>'
+    definitions = "".join(
+        f"<li>{escape(item)}</li>" for item in data.get("definitions") or []
+    )
+    return f"""<section class="report-shell">
+<header class="report-hero"><p class="eyebrow">{escape(data.get("label"))}</p>
+<h1>Reporte de campaña</h1><p>{escape(data.get("listing_title"))}</p>
+<p class="report-period">{escape(str(data.get("period_start"))[:10])} a {escape(str(data.get("period_end"))[:10])} · {escape(data.get("definition_version"))}</p></header>
+<section aria-labelledby="resumen"><h2 id="resumen">Cuatro cifras para empezar</h2><div class="report-metrics">{summary}</div></section>
+<section aria-labelledby="estado"><h2 id="estado">Estado</h2>{status_block}</section>
+<section aria-labelledby="tendencia"><h2 id="tendencia">Tendencia</h2><div class="report-table-wrap"><table><thead><tr><th>Fecha</th><th>Visibles</th><th>Aperturas</th><th>Interés</th></tr></thead><tbody>{trend_rows}</tbody></table></div></section>
+<section aria-labelledby="embudo"><h2 id="embudo">Embudo completo</h2><div class="report-table-wrap"><table><thead><tr><th>Paso</th><th>Volumen</th><th>Conversión anterior</th></tr></thead><tbody>{funnel_rows}</tbody></table></div></section>
+<section class="report-detail">{"".join(rendered)}</section>
+<section aria-labelledby="definiciones"><h2 id="definiciones">Cómo leerlo</h2><ul class="report-definitions">{definitions}</ul></section>
+<aside class="report-disclosure"><p>{escape(data.get("disclosure"))}</p><p>{escape(data.get("disclaimer"))}</p></aside>
+<div class="report-actions">{download}</div>
+</section>"""
 
 
 def empty_state(title: str, message: str, action: str = "") -> str:

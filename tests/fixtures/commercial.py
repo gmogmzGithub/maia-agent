@@ -150,6 +150,27 @@ async def provision_bookable_team(
 #: ``organizations`` is never cleared: migration 0012 creates the row and every
 #: scoped table points at it.
 _RESET_ORDER = (
+    # Stage 8 first: the analytics event store and the sponsorship agreements
+    # reference Listings and members that later entries remove. The seeded
+    # ``analytics.measurement_definitions`` row is deliberately absent — it is
+    # migration data, not fixture data.
+    "analytics.domain_events",
+    "analytics.analytics_outbox",
+    "analytics.funnel_aggregates",
+    "analytics.projection_runs",
+    "analytics.pseudonym_salts",
+    "harm_signals",
+    "sponsorship_report_links",
+    "sponsorship_contact_attributions",
+    "sponsored_exposure_counters",
+    "sponsorship_delivery_days",
+    "sponsored_eligibility_records",
+    "sponsorship_capacity_reservations",
+    "sponsorship_quotes",
+    "sponsorship_campaigns",
+    "sponsorship_surface_capacity",
+    "sponsorship_price_items",
+    "sponsorship_price_catalogs",
     "marketing_touches",
     "campaign_audience_members",
     "development_campaigns",
@@ -202,10 +223,118 @@ async def reset(session: AsyncSession, *, members: bool = False) -> None:
 async def organization_id(session: AsyncSession) -> uuid.UUID:
     """The Organization every commercial fixture row belongs to.
 
-    Resolved through the product's own seam rather than a second copy of the
-    query, so a suite exercises the same lookup the webhook path does.
+    The founding one, by slug. Since Stage 9 that is deliberately *not* how any
+    product path resolves an Organization — those go through a channel binding,
+    an Actor or the registry — so the fixture asks the directory's bootstrap
+    lookup directly rather than pretending to exercise a seam that no longer
+    exists (ADR-0050).
     """
     return await OrganizationDirectory(session).organization_id()
+
+
+#: The WhatsApp phone number id, Telegram bot id and public hostname the suites'
+#: fixtures use. Bound to the founding Organization by :func:`bind_channels`,
+#: because Stage 9 refuses an unbound identifier rather than defaulting to the
+#: only Organization — which is exactly the behaviour under test.
+TEST_PHONE_NUMBER_ID = "123456789012345"
+TEST_WABA_ID = "987654321098765"
+TEST_TELEGRAM_BOT_ID = "111222333"
+#: The public hostnames the suites reach Product on. ``localhost`` is the local
+#: Compose origin; ``product.test`` and ``site.test`` are what the ASGI clients
+#: send as ``Host``. All three are bound to the founding Organization, because
+#: Stage 9 answers 503 for a hostname no Organization claims — which is correct
+#: behaviour and a confusing test failure (ADR-0050).
+TEST_SITE_HOSTS = ("localhost", "product.test", "site.test")
+TEST_SITE_HOST = TEST_SITE_HOSTS[0]
+
+
+async def forget_organization(session: AsyncSession, slug: str) -> None:
+    """Remove one Organization and every row that references it.
+
+    The suites' teardown, and it cannot be a plain ``DELETE FROM organizations``:
+    the scoped tables reference the row with RESTRICT precisely so that removing
+    an Organization is a deliberate act rather than a cascade nobody counted.
+
+    Walks the scoping registry in reverse dependency order — the same order the
+    product's own deletion uses — and then removes the tables that deletion
+    deliberately preserves, because a test database has no evidence to keep.
+    """
+    from sqlalchemy import text as sql_text
+
+    from realestate.db.models import Organization
+    from realestate.domain.platform.scoping import (
+        CIRCULAR_POINTERS,
+        ScopeKind,
+        organization_scopes,
+        qualified_name,
+    )
+
+    organization_id = await session.scalar(
+        select(Organization.id).where(Organization.slug == slug)
+    )
+    if organization_id is None:
+        return
+    await session.execute(
+        sql_text(
+            "DELETE FROM organization_provisioning_runs WHERE slug = :slug"
+        ).bindparams(slug=slug)
+    )
+    for table, column in CIRCULAR_POINTERS:
+        await session.execute(
+            sql_text(
+                f"UPDATE {qualified_name(table)} SET {column} = NULL "
+                "WHERE organization_id = :org"
+            ).bindparams(org=organization_id)
+        )
+    for scope in reversed(organization_scopes()):
+        if scope.kind is ScopeKind.ORGANIZATION_ROOT:
+            continue
+        await session.execute(
+            sql_text(
+                f"DELETE FROM {qualified_name(scope.table)} "
+                "WHERE organization_id = :org"
+            ).bindparams(org=organization_id)
+        )
+    await session.execute(
+        sql_text("DELETE FROM organizations WHERE id = :org").bindparams(
+            org=organization_id
+        )
+    )
+    await session.commit()
+
+
+async def bind_channels(
+    session: AsyncSession, organization_id_value: uuid.UUID | None = None
+) -> uuid.UUID:
+    """Give the founding Organization the fixtures' channel identifiers.
+
+    Idempotent, so every fixture that needs inbound traffic to resolve can call
+    it without coordinating. Spelled once here because a suite that forgot it
+    would fail with "that channel is not assigned to any organization", which is
+    a correct refusal and a confusing test failure.
+    """
+    from realestate.db.models import ChannelBindingKind
+    from realestate.domain.platform.routing import OrganizationRouting
+
+    target = organization_id_value or await organization_id(session)
+    routing = OrganizationRouting(session)
+    for kind, external_id in (
+        (ChannelBindingKind.WHATSAPP_PHONE_NUMBER, TEST_PHONE_NUMBER_ID),
+        (ChannelBindingKind.WHATSAPP_BUSINESS_ACCOUNT, TEST_WABA_ID),
+        (ChannelBindingKind.TELEGRAM_BOT, TEST_TELEGRAM_BOT_ID),
+        *(
+            (ChannelBindingKind.PUBLIC_SITE_HOST, host)
+            for host in TEST_SITE_HOSTS
+        ),
+    ):
+        await routing.bind(
+            organization_id=target,
+            kind=kind,
+            external_id=external_id,
+            recorded_by="TestHarness",
+        )
+    await session.commit()
+    return target
 
 
 async def provision(
@@ -214,8 +343,41 @@ async def provision(
     """Reconcile the member directory and return each login's member id."""
     directory = OrganizationDirectory(session)
     await directory.reconcile(plan)
+    await bind_channels(session)
+    await ensure_entitlements(session)
     members = await directory.members(await organization_id(session))
     return {member.login: member.id for member in members}
+
+
+async def ensure_entitlements(
+    session: AsyncSession, organization_id_value: uuid.UUID | None = None
+) -> None:
+    """Give the founding Organization the base package, every add-on, top tier.
+
+    Migration 0026 seeds exactly this, and the suites re-assert it rather than
+    trusting the seed to survive: several of them exercise deletion and
+    deprovisioning, and a suite failing because an *earlier* suite removed an
+    entitlement would be reporting the wrong problem.
+
+    Idempotent: :meth:`Entitlements.grant` records nothing when an entitlement is
+    unchanged, so calling this from every provisioning helper costs one read per
+    capability and writes nothing.
+    """
+    from realestate.domain.platform.authority import PlatformOperator
+    from realestate.domain.platform.entitlements import ADD_ONS, TIERS, Entitlements
+
+    target = organization_id_value or await organization_id(session)
+    await Entitlements(session).apply_package(
+        PlatformOperator(label="TestHarness"),
+        target,
+        tier=TIERS[-1],
+        add_ons=ADD_ONS,
+        reason=(
+            "La suite otorga el paquete completo a la organización fundadora "
+            "para que un caso no falle por una capacidad que otra prueba quitó."
+        ),
+    )
+    await session.commit()
 
 
 async def actor_for(session: AsyncSession, login: str) -> Actor:
@@ -251,6 +413,7 @@ async def make_conversation(
 ) -> Conversation:
     moment = started_at or now()
     cycle = LeadEngagementCycle(
+        organization_id=lead.organization_id,
         lead_id=lead.id,
         started_at=moment,
         expires_at=moment + timedelta(days=ENGAGEMENT_CYCLE_DAYS),
@@ -261,7 +424,7 @@ async def make_conversation(
         organization_id=lead.organization_id,
         lead_id=lead.id,
         cycle_id=cycle.id,
-        phone_number_id="123456",
+        phone_number_id=TEST_PHONE_NUMBER_ID,
         created_at=moment,
     )
     session.add(conversation)
@@ -278,6 +441,7 @@ async def make_inbound(
 ) -> InboxMessage:
     moment = sent_at or now()
     row = InboxMessage(
+        organization_id=conversation.organization_id,
         conversation_id=conversation.id,
         wamid=f"wamid.{uuid.uuid4().hex}",
         from_wa_id="unknown",

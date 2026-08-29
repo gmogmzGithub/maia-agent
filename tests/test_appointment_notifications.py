@@ -90,7 +90,8 @@ async def database(tmp_path: Path):
         # authoritative calendar, and reconciliation has to happen before the
         # first inbound message because intake assigns as it opens.
         await commercial.provision_bookable_team(session)
-        await PropertyService(session, artifacts).accept_upload(
+        organization = await commercial.organization_id(session)
+        await PropertyService(session, artifacts, organization_id=organization).accept_upload(
             "casa-roble.md", CASA_ROBLE, actor_id="developer"
         )
         prop = (await session.execute(select(Property))).scalar_one()

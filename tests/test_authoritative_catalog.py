@@ -26,6 +26,7 @@ from realestate.db.models import (
     OpportunityKind,
     Organization,
     OrganizationMember,
+    OrganizationStatus,
     Property,
     UnitModel,
 )
@@ -78,7 +79,7 @@ from realestate.domain.commercial.actors import (
     NotAuthorized,
     NotFound,
 )
-from tests.conftest import DATABASE_URL, requires_postgres
+from tests.conftest import DATABASE_URL, requires_postgres, reset_property_inventory
 from tests.fixtures.commercial import (
     ADMIN_LOGIN,
     ADVISOR_LOGIN,
@@ -98,15 +99,7 @@ async def database():
     db = Database(DATABASE_URL)
     async with db.session_scope() as session:
         await reset(session)
-        for table in (
-            "listing_media",
-            "listing_offers",
-            "catalog_listings",
-            "properties",
-            "unit_models",
-            "developments",
-        ):
-            await session.execute(text(f"DELETE FROM {table}"))
+        await reset_property_inventory(session)
         await session.commit()
         await reset(session, members=True)
         await session.execute(text("DELETE FROM organizations WHERE slug <> 'larevia'"))
@@ -911,6 +904,11 @@ async def test_catalog_records_are_isolated_between_organizations(database) -> N
             provisioned_by=MemberProvisioning.ADMINISTRATOR.value,
         )
         session.add(other_member)
+        # Stage 9 refuses a login whose Organization is not operating, and a row
+        # inserted by hand is ``Provisioning`` by server default. This test is
+        # about catalog scoping, so the second Organization is put into service.
+        other_org.status = OrganizationStatus.ACTIVE.value
+        other_org.activated_at = datetime.now(tz=UTC)
         await session.commit()
         other_actor = await actor_for(session, "admin@otra.test")
         with pytest.raises(NotFound):

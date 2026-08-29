@@ -29,7 +29,6 @@ from realestate.db.models import (
     PropertyStatus,
 )
 from realestate.domain.audit import record_audit
-from realestate.domain.commercial.organization import OrganizationDirectory
 from realestate.domain.property_document import (
     PropertyDocument,
     ValidationError,
@@ -140,35 +139,39 @@ def customer_availability_message(reason: str | None) -> str:
 async def resolve_property(
     session: AsyncSession,
     reference: str | None,
-    organization_id: uuid.UUID | None = None,
+    organization_id: uuid.UUID,
 ) -> Property | None:
-    """The Property a model-supplied *reference* names, or None.
+    """The Property a model-supplied *reference* names, inside one Organization.
 
     A readable key ('casa-roble') or the exact name ('Casa Roble'), compared by
     the P-048 normalisation. This is the one place that rule lives: the
     appointment and administrative surfaces resolve the same reference the same
     way, and neither needs the ingestion service to do it.
+
+    ``organization_id`` is required since Stage 9 and used to have an optional
+    "unscoped" mode. A readable key is guessable, so an unscoped resolution let
+    a caller reach another Organization's Property by typing its name
+    (ADR-0050).
     """
     candidate = (reference or "").strip()
     if not candidate:
         return None
 
-    by_key_query = select(Property).where(Property.property_key == candidate)
-    if organization_id is not None:
-        by_key_query = by_key_query.where(
-            Property.organization_id == organization_id
+    by_key = (
+        await session.execute(
+            select(Property)
+            .where(Property.organization_id == organization_id)
+            .where(Property.property_key == candidate)
         )
-    by_key = (await session.execute(by_key_query)).scalar_one_or_none()
+    ).scalar_one_or_none()
     if by_key is not None:
         return by_key
 
-    by_name_query = select(Property).where(
-        Property.normalized_name == normalize_name(candidate)
+    by_name_query = (
+        select(Property)
+        .where(Property.organization_id == organization_id)
+        .where(Property.normalized_name == normalize_name(candidate))
     )
-    if organization_id is not None:
-        by_name_query = by_name_query.where(
-            Property.organization_id == organization_id
-        )
     matches = list(await session.scalars(by_name_query.limit(2)))
     # Similar names are evidence to investigate, never permission to merge or
     # guess a physical identity. A key remains unambiguous.
@@ -191,24 +194,28 @@ async def accepted_version(
 
 
 class PropertyService:
+    """The legacy Property Document path, scoped to one Organization.
+
+    ``organization_id`` is a constructor argument and has no default. It used to
+    be resolved inside the service from the one Organization that existed, with a
+    comment saying a selector would arrive later. This is that selector: every
+    caller now names the Organization it is acting for, because an upload surface
+    that guesses is a surface that files a second brokerage's inventory under the
+    first one's (ADR-0050).
+    """
+
     def __init__(
         self,
         session: AsyncSession,
         artifacts: ArtifactStore,
         catalog: CatalogStore | None = None,
+        *,
+        organization_id: uuid.UUID,
     ) -> None:
         self._session = session
         self._artifacts = artifacts
         self._catalog = catalog
-
-    async def _organization_id(self) -> uuid.UUID:
-        """The Organization a newly accepted Property belongs to (ADR-0019).
-
-        Deferred to the directory rather than resolved here: the upload surface
-        has no Organization selector, and when it gains one there must be a
-        single place that answers this question for every path.
-        """
-        return await OrganizationDirectory(self._session).organization_id()
+        self._organization = organization_id
 
     # -- Ingestion --------------------------------------------------------
 
@@ -294,6 +301,10 @@ class PropertyService:
             raise
 
         await self._audit(
+            # Read before the audit rather than resolved again: the acceptance
+            # transaction has already committed, and asking the directory a
+            # second time would be a second chance to name a different one.
+            organization_id=self._organization,
             actor_type=actor_type,
             actor_id=actor_id,
             action="PropertyDocumentAccepted",
@@ -309,14 +320,32 @@ class PropertyService:
         return accepted
 
     async def _by_key(self, property_key: str) -> Property | None:
+        """This Organization's Property with that key, if it has one.
+
+        Scoped since Stage 9. Unscoped, a second Organization uploading a
+        document whose key the first one already used was treated as a
+        *replacement* of the first one's Property — a cross-organization write
+        that reported success (ADR-0050).
+        """
         result = await self._session.execute(
-            select(Property).where(Property.property_key == property_key)
+            select(Property)
+            .where(Property.organization_id == self._organization)
+            .where(Property.property_key == property_key)
         )
         return result.scalar_one_or_none()
 
     async def _reject_inventory_overflow(self) -> None:
+        """The Stage 0 inventory ceiling, counted per Organization.
+
+        Counted across the whole table it would have let one brokerage's
+        inventory exhaust another's allowance.
+        """
         count = (
-            await self._session.execute(select(func.count()).select_from(Property))
+            await self._session.execute(
+                select(func.count())
+                .select_from(Property)
+                .where(Property.organization_id == self._organization)
+            )
         ).scalar_one()
         if count >= MAX_PROPERTIES:
             raise ValidationError(
@@ -336,7 +365,7 @@ class PropertyService:
         visit_address: str | None,
     ) -> AcceptedUpload:
         prop = Property(
-            organization_id=await self._organization_id(),
+            organization_id=self._organization,
             property_key=document.property_key,
             name=document.name,
             normalized_name=document.normalized_name,
@@ -442,6 +471,10 @@ class PropertyService:
         artifact_path: Path,
     ) -> PropertyDocumentVersion:
         return PropertyDocumentVersion(
+            # Read from the Property rather than resolved again: an accepted
+            # document version belongs to whichever Organization owns the
+            # Property, and the composite foreign key enforces exactly that.
+            organization_id=prop.organization_id,
             property_uuid=prop.id,
             version=number,
             checksum=checksum,
@@ -453,6 +486,7 @@ class PropertyService:
     async def _audit(
         self,
         *,
+        organization_id: uuid.UUID,
         actor_type: str,
         actor_id: str,
         action: str,
@@ -462,6 +496,7 @@ class PropertyService:
     ) -> None:
         await record_audit(
             self._session,
+            organization_id=organization_id,
             actor_type=actor_type,
             actor_id=actor_id,
             action=action,
@@ -486,6 +521,7 @@ class PropertyService:
         """
         result = await self._property_information(reference, role)
         await self._audit(
+            organization_id=self._organization,
             actor_type=role.value,
             actor_id=actor_id or "unknown-session",
             action="PropertyInformationRequested",
@@ -525,7 +561,7 @@ class PropertyService:
             )
             from realestate.domain.commercial.actors import Actor, NotFound
 
-            organization_id = await self._organization_id()
+            organization_id = self._organization
             try:
                 authorized = await CatalogProjection(
                     self._session,
@@ -576,7 +612,7 @@ class PropertyService:
 
     async def _resolve(self, reference: str) -> Property | None:
         return await resolve_property(
-            self._session, reference, await self._organization_id()
+            self._session, reference, self._organization
         )
 
     async def _accepted_version(self, prop: Property) -> PropertyDocumentVersion | None:

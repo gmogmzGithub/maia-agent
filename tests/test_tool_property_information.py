@@ -20,7 +20,14 @@ from realestate.config import get_settings
 from realestate.db.engine import Database
 from realestate.db.models import AgentRole, AgentSession, AuditEvent, Property, PropertyStatus
 from realestate.domain.properties import ArtifactStore, PropertyService
-from tests.conftest import DATABASE_URL, env, requires_postgres, reset_property_inventory
+from tests.conftest import (
+    DATABASE_URL,
+    env,
+    larevia_organization_id,
+    requires_postgres,
+    reset_property_inventory,
+)
+from tests.fixtures import commercial
 
 FIXTURES = Path(__file__).parent / "fixtures"
 V1 = (FIXTURES / "casa-roble.md").read_bytes()
@@ -42,8 +49,9 @@ async def wired(tmp_path: Path):
         await session.execute(delete(AgentSession))
         session.add_all(
             [
-                AgentSession(hermes_session_id=SALES_SESSION, role=AgentRole.SALES.value),
+                AgentSession(organization_id=await larevia_organization_id(session), hermes_session_id=SALES_SESSION, role=AgentRole.SALES.value),
                 AgentSession(
+                    organization_id=await larevia_organization_id(session),
                     hermes_session_id=ADMIN_SESSION,
                     role=AgentRole.ADMINISTRATIVE.value,
                 ),
@@ -56,7 +64,8 @@ async def wired(tmp_path: Path):
     app.state.artifacts = ArtifactStore(tmp_path / "artifacts")
 
     async with database.session_scope() as session:
-        await PropertyService(session, app.state.artifacts).accept_upload(
+        organization = await commercial.organization_id(session)
+        await PropertyService(session, app.state.artifacts, organization_id=organization).accept_upload(
             "casa-roble.md", V1, actor_id="developer"
         )
 
@@ -215,7 +224,8 @@ async def test_a_replacement_is_visible_without_restarting_anything(wired) -> No
 
     v2 = (FIXTURES / "casa-roble-v2.md").read_bytes()
     async with app.state.database.session_scope() as session:
-        await PropertyService(session, app.state.artifacts).accept_upload(
+        organization = await commercial.organization_id(session)
+        await PropertyService(session, app.state.artifacts, organization_id=organization).accept_upload(
             "casa-roble.md", v2, actor_id="developer"
         )
 

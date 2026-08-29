@@ -22,6 +22,7 @@ from realestate.db.models import (
 from realestate.domain.properties import ArtifactStore, PropertyService
 from realestate.domain.property_document import ValidationError, validate_upload
 from tests.conftest import DATABASE_URL, requires_postgres, reset_property_inventory
+from tests.fixtures import commercial
 
 FIXTURES = Path(__file__).parent / "fixtures"
 V1 = (FIXTURES / "casa-roble.md").read_bytes()
@@ -52,7 +53,11 @@ def artifacts(tmp_path: Path) -> ArtifactStore:
 @pytest.fixture
 async def service(database, artifacts):
     async with database.session_scope() as session:
-        yield PropertyService(session, artifacts)
+        yield PropertyService(
+            session,
+            artifacts,
+            organization_id=await commercial.organization_id(session),
+        )
 
 
 def renamed(source: bytes, name: str) -> bytes:
@@ -94,7 +99,11 @@ async def test_the_uuid_is_never_written_into_the_document(service, database) ->
     async with database.session_scope() as session:
         prop = (await session.execute(select(Property))).scalar_one()
         markdown = (
-            await PropertyService(session, service._artifacts).get_property_information(
+            await PropertyService(
+                session,
+                service._artifacts,
+                organization_id=await commercial.organization_id(session),
+            ).get_property_information(
                 "casa-roble", AgentRole.SALES
             )
         )["document_markdown"]
@@ -326,7 +335,14 @@ async def test_a_blank_reference_resolves_to_nothing(service, reference) -> None
 
     await service.accept_upload("casa-roble.md", V1, actor_id="developer")
 
-    assert await resolve_property(service._session, reference) is None
+    assert (
+        await resolve_property(
+            service._session,
+            reference,
+            await commercial.organization_id(service._session),
+        )
+        is None
+    )
 
 
 async def test_an_unknown_reference_is_not_found_when_inventory_is_not_empty(service) -> None:
@@ -403,7 +419,9 @@ async def test_a_property_with_no_accepted_version_is_temporarily_unavailable(
 
     async with database.session_scope() as session:
         result = await PropertyService(
-            session, service._artifacts
+            session,
+            service._artifacts,
+            organization_id=await commercial.organization_id(session),
         ).get_property_information("casa-roble", AgentRole.SALES)
 
     assert result == {"result": "temporarily_unavailable"}

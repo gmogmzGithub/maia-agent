@@ -198,6 +198,7 @@ class TemplateRegistry:
 
         await record_audit(
             self._session,
+            organization_id=actor.organization_id,
             actor_type=actor.actor_type,
             actor_id=actor.label,
             action="SynchronizeMessageTemplates",

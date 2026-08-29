@@ -42,7 +42,6 @@ from realestate.domain.commercial.opportunities import (
     OpportunityManagement,
     OriginFacts,
 )
-from realestate.domain.commercial.organization import OrganizationDirectory
 from realestate.domain.engagement.responses import engagement_origin_for_lead
 
 logger = logging.getLogger(__name__)
@@ -153,18 +152,6 @@ class CommercialIntake:
             contact_created=resolved.created,
             opportunity_created=created,
         )
-
-    async def organization_id(self) -> uuid.UUID:
-        """The Organization inbound work belongs to.
-
-        The webhook carries no Organization: Meta knows a phone number, not a
-        brokerage. Answered by
-        :meth:`~realestate.domain.commercial.organization.OrganizationDirectory.organization_id`,
-        which is the single place that mapping will land — not restated here,
-        because two copies of "which Organization is this" is how a later fix
-        gets applied to one path and silently missed on the other.
-        """
-        return await OrganizationDirectory(self._session).organization_id()
 
     async def opportunity_for_conversation(
         self, conversation: Conversation

@@ -206,6 +206,7 @@ class MediaAdministration:
             self._session.add(row)
             await record_audit(
                 self._session,
+                organization_id=actor.organization_id,
                 actor_type=actor.actor_type,
                 actor_id=actor.label,
                 action="AddListingMedia",
@@ -293,6 +294,7 @@ class MediaAdministration:
             row.is_cover = row.id == command.cover_id
         await record_audit(
             self._session,
+            organization_id=actor.organization_id,
             actor_type=actor.actor_type,
             actor_id=actor.label,
             action="ArrangeListingMedia",
@@ -334,6 +336,7 @@ class MediaAdministration:
             row.is_cover = False
             await record_audit(
                 self._session,
+                organization_id=actor.organization_id,
                 actor_type=actor.actor_type,
                 actor_id=actor.label,
                 action="RevokeListingMedia",

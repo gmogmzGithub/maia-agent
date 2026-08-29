@@ -148,6 +148,113 @@ administrative pause/cancel establishes a causal no-new-delivery boundary.
 Real execution remains disabled by configuration until the legal, consent,
 provider and operational gates are explicitly accepted.
 
+## Measurement and Paid Visibility
+
+Stage 8 adds two things that had to arrive together, and one boundary that keeps
+them apart.
+
+Measurement is its own pipeline. `AnalyticsEvents.record` validates against a
+closed, versioned taxonomy, replaces raw session and subject identifiers with
+salted digests, and writes to `analytics.analytics_outbox` — a durable queue that
+is deliberately *not* `outbox_messages`. A stuck measurement row must never share
+a queue, a retry budget or a failure mode with a message a customer is waiting
+for. `AnalyticsProjection.refresh` then consumes in sequence order, inserts
+idempotently, and **recomputes** each period it touched rather than incrementing
+it. That last choice is what makes the pass safe to re-run, safe to replay from
+zero, and correct for a late event: an event arriving today for last Tuesday
+rebuilds last Tuesday instead of landing on today or being dropped for being old.
+
+Every threshold a reported number depends on is stored under a version in
+`analytics.measurement_definitions`, not compiled in. Serving is Product's own
+fact, recorded server-side as the response is built. Visibility is a browser
+observation whose *threshold* Product applies, so a modified client cannot
+manufacture a Visible Impression. Invalid traffic — bots, internal use, synthetic
+fixtures, implausible rates — is stored, classified and reported as excluded
+volume rather than deleted, because a metric that silently drops rows and one that
+never had them look identical to the reader.
+
+The analytics schema has no foreign key to a Contact and no attribute anywhere in
+the taxonomy that free text would fit in. Session and subject references use
+separate salts per purpose, so holding both tables does not let anybody confirm
+that an anonymous session belongs to a known Contact.
+
+Paid visibility sits on top of that measurement and touches nothing else.
+`SponsoredEligibility` re-uses the same `PublicShare` decision the unpaid site
+gets and adds only what money introduces: a written commercial clearance standing
+in for the still-Pending SAN-065, one sponsored position per confirmed Property,
+and the campaign's own state and remaining paid days. `SponsoredDelivery` returns
+paid slots as their own list; the organic list arrives already ordered by
+`PublicCatalog`, which imports nothing from sponsorship at all. That absence is
+asserted by a test, because "payment does not influence relevance" is only
+credible if the ranking code cannot reach the money code even by accident.
+
+Two capacity ceilings are kept apart. The delivery ratio bounds what one page
+shows; the sales ceiling bounds how many campaigns may hold a surface over the
+same days. Respecting only the first is how a product sells twenty concurrent
+campaigns and delivers each buyer a twentieth of what they expected. Reservations
+are taken under a per-surface lock, and a paid day is consumed by being
+*delivered* rather than by passing on a calendar — so a Listing withdrawn for a
+week returns that week instead of producing an apology.
+
+Reporting is one computation exposed at two audiences. Two implementations would
+eventually disagree, and a buyer noticing that their report and the
+Administrator's do not add up is not recoverable. The buyer's half travels by an
+expiring, revocable, read-only link stored only as a digest, with a PDF built from
+the same line list as the page.
+
+## The Managed Platform
+
+Stage 9 turns one brokerage's product into a service several brokerages are on,
+and almost all of it is one property: **no operation reaches across
+Organizations.** The mechanisms are in `domain/platform/`, and each of them exists
+because the failure it prevents is silent.
+
+The foundation is not a module — it is the schema. Every table holding a
+Brokerage Organization's data names it in an `organization_id` column, with a
+deferred composite foreign key so the column and its parent cannot disagree, and
+every business key that was globally unique is unique per Organization instead.
+`domain/platform/scoping.py` writes down which table is which, with a stated
+reason for each of the four that are deliberately platform-wide, and three
+independent mechanisms read that table rather than restating it: the export, the
+deletion, and the isolation matrix. A table missing from it fails a test.
+
+| Seam | The only way to |
+|---|---|
+| `OrganizationRouting.resolve` | decide which Organization an inbound number, bot or hostname belongs to — and refuse an unbound one |
+| `OrganizationProvisioning.provision` / `.deprovision` | bring an Organization into existence, or take it out, resumably and reversibly |
+| `OrganizationConfiguration.record` | state how an Organization operates, as a version somebody explained |
+| `IntegrationCredentials.resolve` | reach a provider as one Organization, never as the platform and never as another |
+| `Entitlements.evaluate` / `.require` | decide whether an Organization may do something, and say why not |
+| `SupportAccess.grant` / `.revoke` | let an internal engineer read a customer's records, temporarily and visibly |
+| `OrganizationImport.plan` / `.apply` / `.roll_back` | bring an Organization's existing records in, dry-run first |
+| `OrganizationDataLifecycle.export` / `.delete` | hand over or remove everything an Organization owns |
+| `PlatformUsage.refresh` / `.read` | count what the platform measures about an Organization |
+| `operating_organizations` | ask which Organizations a background pass should act for |
+
+Two authorities, deliberately of different *types* rather than two values of one
+flag. An `Actor` is a caller inside one Organization and is what every commercial,
+catalog, conversation and analytics surface takes. A `PlatformOperator` is an
+internal operator of the service; it provisions, configures, entitles and
+measures, and it is refused by every surface that reads a customer's records.
+Neither can be constructed by a domain module — one comes from a member row, the
+other from a dedicated credential plus a mandatory operator name.
+
+That split is what replaces the superadmin. To read a customer's records an
+internal engineer takes a support grant, which creates an *ordinary* read-only
+member row inside one Organization — so every existing authorization check applies
+unchanged, because there is no second code path with weaker rules — expiring
+within eight hours, checked at login resolution rather than by a worker, and
+listed on that Organization's own `/crm/plataforma` page with the reason on it.
+
+Credentials are the other place the boundary has to hold, and there the failure
+mode is a *success*: an Organization with no token of its own silently using the
+platform's would send its messages from somebody else's number, into somebody
+else's Meta account. So a credential is never inherited. Product stores a
+*reference* — the name of the place the value lives — and resolution consults only
+the asking Organization's own, with one bounded exception: the process environment
+answers for the single founding Organization named in configuration, compared by
+id, and for nobody else.
+
 ## Human Operation, Team and Visits
 
 Stage 3 adds the part of the operation that has people in it. Three separations
@@ -237,6 +344,15 @@ Denied outbound decisions and an active Do Not Contact are shown to the operator
 with the reason. Showing them is the point — an operator who cannot see why a
 message did not go out concludes the system is broken.
 
+Stage 8 adds `/crm/bi` and `/crm/patrocinios`, both Administrator-only. The
+data-quality panel is on the same page as the results deliberately: a coverage
+number next to "42 percent of outcomes are unrecorded" is a number somebody will
+question, and on a separate tab it is a number somebody will quote. The
+sponsorship surface shows capacity next to the sale, so an Administrator selling a
+fourth concurrent campaign sees the refusal coming rather than discovering it at
+reservation — and while no price catalog is published it says the first price
+requires pilot data instead of offering an empty field somebody would fill in.
+
 The CRM does now send, and only through the same gate. An Advisor who holds a
 Conversation may reply on the Brokerage Organization's own channel (ADR-0029),
 and that message passes `OutboundMessaging.request` exactly as Maia's does:
@@ -271,9 +387,18 @@ containers. Product reaches PostgreSQL through the private Compose network.
 Only Product port 8080 is published to the host.
 
 Runtime configuration lives in one ignored `.env`. Docker volumes retain
-PostgreSQL data, Hermes profile state, and accepted Property Documents. No
-local Python virtual environment or sibling Hermes checkout is part of the
-operator workflow.
+PostgreSQL data, Hermes profile state, accepted Property Documents, Listing media
+and per-Organization export artifacts. No local Python virtual environment or
+sibling Hermes checkout is part of the operator workflow.
+
+Since Stage 9 that `.env` describes exactly one Brokerage Organization — the
+founding one, named by `PLATFORM_BOOTSTRAP_ORGANIZATION_SLUG` — and startup binds
+its channels and names its existing credentials as references, idempotently,
+without moving a secret. Every other Organization reads its own versioned
+configuration and its own secret references, or is refused. Telegram workers
+poll one verified bot per active Organization inside Product. The remaining
+single-Organization topology limit is the `site` container, which serves one
+public origin.
 
 Optional integrations require their normal provider credentials:
 

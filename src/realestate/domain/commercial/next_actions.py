@@ -221,6 +221,7 @@ class NextActions:
             open_exception.cleared_at = moment
         await record_audit(
             self._session,
+            organization_id=actor.organization_id,
             actor_type=actor.actor_type,
             actor_id=actor.label,
             action="ScheduleNextAction",
@@ -325,6 +326,7 @@ class NextActions:
             )
         await record_audit(
             self._session,
+            organization_id=actor.organization_id,
             actor_type=actor.actor_type,
             actor_id=actor.label,
             action="CompleteNextAction",
@@ -362,6 +364,7 @@ class NextActions:
         pending.status = NextActionStatus.CANCELLED.value
         await record_audit(
             self._session,
+            organization_id=actor.organization_id,
             actor_type=actor.actor_type,
             actor_id=actor.label,
             action="CancelNextAction",

@@ -27,7 +27,7 @@ from realestate.domain.external_inventory.types import (
     SourcePage,
 )
 from realestate.worker.external_inventory import ExternalInventoryCleanupWorker
-from tests.conftest import DATABASE_URL, requires_postgres
+from tests.conftest import DATABASE_URL, requires_postgres, reset_property_inventory
 from tests.fixtures.commercial import ADMIN_LOGIN, actor_for, provision, reset
 from tests.fixtures.external_inventory import FakeInventorySource, easybroker_property
 from tests.fixtures.public_site import publish_listing
@@ -48,15 +48,7 @@ async def database():
         ):
             await session.execute(text(f"DELETE FROM {table_name}"))
         await reset(session)
-        for table_name in (
-            "listing_media",
-            "listing_offers",
-            "catalog_listings",
-            "properties",
-            "unit_models",
-            "developments",
-        ):
-            await session.execute(text(f"DELETE FROM {table_name}"))
+        await reset_property_inventory(session)
         await reset(session, members=True)
         await provision(session)
     yield database

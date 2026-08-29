@@ -69,7 +69,9 @@ async def a_cycle(database) -> uuid.UUID:
         session.add(lead)
         await session.flush()
         cycle = LeadEngagementCycle(
-            lead_id=lead.id, expires_at=datetime.now(tz=UTC) + timedelta(days=30)
+            organization_id=lead.organization_id,
+            lead_id=lead.id,
+            expires_at=datetime.now(tz=UTC) + timedelta(days=30),
         )
         session.add(cycle)
         await session.commit()
@@ -91,7 +93,7 @@ async def test_a_cycle_with_no_session_yet_resolves_to_an_empty_durable_id(
     cycle_id = await a_cycle(database)
 
     async with database.session_scope() as session:
-        found = await session_for_cycle(session, cycle_id)
+        found = await session_for_cycle(session, cycle_id, await larevia_organization_id(session))
 
     assert found.hermes_session_id == ""
     assert found.role is AgentRole.SALES
@@ -103,10 +105,15 @@ async def test_a_cycle_with_no_session_yet_resolves_to_an_empty_durable_id(
 async def test_a_bound_cycle_resolves_to_its_durable_session(database) -> None:
     cycle_id = await a_cycle(database)
     async with database.session_scope() as session:
-        await bind_cycle_session(session, cycle_id=cycle_id, hermes_session_id="durable-1")
+        await bind_cycle_session(
+            session,
+            organization_id=await larevia_organization_id(session),
+            cycle_id=cycle_id,
+            hermes_session_id="durable-1",
+        )
 
     async with database.session_scope() as session:
-        found = await session_for_cycle(session, cycle_id)
+        found = await session_for_cycle(session, cycle_id, await larevia_organization_id(session))
 
     assert found.hermes_session_id == "durable-1"
     assert found.role is AgentRole.SALES
@@ -122,8 +129,18 @@ async def test_re_binding_a_cycle_repoints_the_row_rather_than_adding_one(
     cycle_id = await a_cycle(database)
 
     async with database.session_scope() as session:
-        await bind_cycle_session(session, cycle_id=cycle_id, hermes_session_id="durable-1")
-        await bind_cycle_session(session, cycle_id=cycle_id, hermes_session_id="durable-2")
+        await bind_cycle_session(
+            session,
+            organization_id=await larevia_organization_id(session),
+            cycle_id=cycle_id,
+            hermes_session_id="durable-1",
+        )
+        await bind_cycle_session(
+            session,
+            organization_id=await larevia_organization_id(session),
+            cycle_id=cycle_id,
+            hermes_session_id="durable-2",
+        )
 
     rows = await bindings(database)
     assert len(rows) == 1
@@ -136,12 +153,14 @@ async def test_re_binding_a_channel_repoints_the_row_rather_than_adding_one(
     async with database.session_scope() as session:
         await bind_channel_session(
             session,
+            organization_id=await larevia_organization_id(session),
             role=AgentRole.ADMINISTRATIVE,
             channel_key="telegram:12345",
             hermes_session_id="durable-a",
         )
         await bind_channel_session(
             session,
+            organization_id=await larevia_organization_id(session),
             role=AgentRole.ADMINISTRATIVE,
             channel_key="telegram:12345",
             hermes_session_id="durable-b",
@@ -159,6 +178,7 @@ async def test_a_channel_binding_carries_the_administrative_role(database) -> No
     async with database.session_scope() as session:
         await bind_channel_session(
             session,
+            organization_id=await larevia_organization_id(session),
             role=AgentRole.ADMINISTRATIVE,
             channel_key="telegram:12345",
             hermes_session_id="durable-a",
@@ -173,6 +193,7 @@ async def test_two_administrators_get_two_separate_sessions(database) -> None:
         for chat, durable in (("telegram:1", "durable-1"), ("telegram:2", "durable-2")):
             await bind_channel_session(
                 session,
+                organization_id=await larevia_organization_id(session),
                 role=AgentRole.ADMINISTRATIVE,
                 channel_key=chat,
                 hermes_session_id=durable,
@@ -193,6 +214,7 @@ async def test_a_binding_needs_exactly_one_key(
         with pytest.raises(ValueError, match="exactly one of cycle_id or channel_key"):
             await bind_session(
                 session,
+                organization_id=await larevia_organization_id(session),
                 role=AgentRole.SALES,
                 hermes_session_id="durable-1",
                 cycle_id=cycle_id,
@@ -205,7 +227,7 @@ async def test_a_binding_needs_exactly_one_key(
 
 async def test_no_session_for_a_role_is_none_not_an_error(database) -> None:
     async with database.session_scope() as session:
-        assert await find_role_session(session, AgentRole.ADMINISTRATIVE) is None
+        assert await find_role_session(session, AgentRole.ADMINISTRATIVE, await larevia_organization_id(session)) is None
 
 
 async def test_the_most_recently_created_session_for_a_role_wins(database) -> None:
@@ -213,6 +235,7 @@ async def test_the_most_recently_created_session_for_a_role_wins(database) -> No
     async with database.session_scope() as session:
         session.add(
             AgentSession(
+                organization_id=await larevia_organization_id(session),
                 hermes_session_id="older",
                 role=AgentRole.SALES.value,
                 created_at=datetime.now(tz=UTC) - timedelta(hours=1),
@@ -220,6 +243,7 @@ async def test_the_most_recently_created_session_for_a_role_wins(database) -> No
         )
         session.add(
             AgentSession(
+                organization_id=await larevia_organization_id(session),
                 hermes_session_id="newer",
                 role=AgentRole.SALES.value,
                 created_at=datetime.now(tz=UTC),
@@ -228,7 +252,7 @@ async def test_the_most_recently_created_session_for_a_role_wins(database) -> No
         await session.commit()
 
     async with database.session_scope() as session:
-        found = await find_role_session(session, AgentRole.SALES)
+        found = await find_role_session(session, AgentRole.SALES, await larevia_organization_id(session))
 
     assert found is not None
     assert found.hermes_session_id == "newer"
@@ -237,12 +261,12 @@ async def test_the_most_recently_created_session_for_a_role_wins(database) -> No
 async def test_a_role_lookup_never_returns_another_roles_session(database) -> None:
     async with database.session_scope() as session:
         session.add(
-            AgentSession(hermes_session_id="sales-1", role=AgentRole.SALES.value)
+            AgentSession(organization_id=await larevia_organization_id(session), hermes_session_id="sales-1", role=AgentRole.SALES.value)
         )
         await session.commit()
 
     async with database.session_scope() as session:
-        assert await find_role_session(session, AgentRole.ADMINISTRATIVE) is None
+        assert await find_role_session(session, AgentRole.ADMINISTRATIVE, await larevia_organization_id(session)) is None
 
 
 async def test_an_absent_gateway_handle_reads_as_empty_not_none(database) -> None:
@@ -250,12 +274,12 @@ async def test_an_absent_gateway_handle_reads_as_empty_not_none(database) -> Non
     # treat "" as "attach fresh", and None would break that comparison.
     async with database.session_scope() as session:
         session.add(
-            AgentSession(hermes_session_id="sales-1", role=AgentRole.SALES.value)
+            AgentSession(organization_id=await larevia_organization_id(session), hermes_session_id="sales-1", role=AgentRole.SALES.value)
         )
         await session.commit()
 
     async with database.session_scope() as session:
-        found = await find_role_session(session, AgentRole.SALES)
+        found = await find_role_session(session, AgentRole.SALES, await larevia_organization_id(session))
 
     assert found is not None
     assert found.gateway_session_id == ""
@@ -267,12 +291,18 @@ async def test_an_absent_gateway_handle_reads_as_empty_not_none(database) -> Non
 async def test_a_cycle_less_role_session_is_recorded_once(database) -> None:
     async with database.session_scope() as session:
         await bind_role_session(
-            session, role=AgentRole.SALES, hermes_session_id="durable-1"
+            session,
+            organization_id=await larevia_organization_id(session),
+            role=AgentRole.SALES,
+            hermes_session_id="durable-1",
         )
         # Idempotent: the exercise script binds on every turn, and
         # ``hermes_session_id`` is unique, so a second insert would fail.
         await bind_role_session(
-            session, role=AgentRole.SALES, hermes_session_id="durable-1"
+            session,
+            organization_id=await larevia_organization_id(session),
+            role=AgentRole.SALES,
+            hermes_session_id="durable-1",
         )
 
     rows = await bindings(database)

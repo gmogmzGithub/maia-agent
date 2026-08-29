@@ -12,6 +12,7 @@ from realestate.db.models import Organization
 from realestate.domain.commercial.actors import Actor
 from realestate.domain.external_inventory.inventory import ExternalInventory
 from realestate.domain.external_inventory.ports import InventorySource
+from realestate.domain.platform.providers import OrganizationEasyBrokerAdapters
 
 
 class ExternalInventoryCleanupWorker:
@@ -20,7 +21,7 @@ class ExternalInventoryCleanupWorker:
     def __init__(
         self,
         database: Database,
-        source: InventorySource,
+        source: InventorySource | OrganizationEasyBrokerAdapters,
         *,
         interval_seconds: float = 300,
     ) -> None:
@@ -39,7 +40,10 @@ class ExternalInventoryCleanupWorker:
             organization_ids = tuple(await session.scalars(select(Organization.id)))
             for organization_id in organization_ids:
                 actor = Actor.product(organization_id, "ExternalInventoryCleanup")
+                source = self._source
+                if isinstance(source, OrganizationEasyBrokerAdapters):
+                    source = await source.for_organization(session, organization_id)
                 deleted += await ExternalInventory(
-                    session, actor, self._source
+                    session, actor, source
                 ).purge_due(at=at)
         return deleted

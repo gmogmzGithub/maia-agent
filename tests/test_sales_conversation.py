@@ -37,6 +37,7 @@ from realestate.hermes.sessions import (
     submit_prompt,
 )
 from tests.conftest import requires_hermes, reset_property_inventory
+from tests.fixtures import commercial
 
 FIXTURES = Path(__file__).parent / "fixtures"
 V1 = (FIXTURES / "casa-roble.md").read_bytes()
@@ -78,7 +79,8 @@ async def sales():
         await session.execute(delete(AgentSession))
         await session.commit()
     async with database.session_scope() as session:
-        await PropertyService(session, artifacts).accept_upload(
+        organization = await commercial.organization_id(session)
+        await PropertyService(session, artifacts, organization_id=organization).accept_upload(
             "casa-roble.md", V1, actor_id="developer"
         )
 
@@ -317,7 +319,8 @@ async def test_the_agent_does_not_volunteer_another_property(sales, tmp_path) ->
         .encode("utf-8")
     )
     async with database.session_scope() as db:
-        await PropertyService(db, ArtifactStore(tmp_path)).accept_upload(
+        organization = await commercial.organization_id(db)
+        await PropertyService(db, ArtifactStore(tmp_path), organization_id=organization).accept_upload(
             "casa-encino.md", other, actor_id="developer"
         )
 

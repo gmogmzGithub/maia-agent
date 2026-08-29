@@ -52,6 +52,7 @@ async def wired_external_search():
         conversation = (await session.execute(select(Conversation))).scalar_one()
         session.add(
             AgentSession(
+                organization_id=conversation.organization_id,
                 hermes_session_id=SALES_SESSION,
                 role=AgentRole.SALES.value,
                 cycle_id=conversation.cycle_id,

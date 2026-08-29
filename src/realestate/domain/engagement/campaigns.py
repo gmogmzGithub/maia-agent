@@ -10,7 +10,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from realestate.domain.clock import utc_now
+from realestate.domain.platform.entitlements import Entitlements
 from realestate.db.models import (
+    Capability,
     CampaignAudienceMember,
     ConsentCategory,
     Development,
@@ -99,6 +101,9 @@ class Campaigns:
         self, command: PlanCampaign, *, at: datetime | None = None
     ) -> CampaignPlan:
         self._actor.require_administrator()
+        await Entitlements(self._session).require(
+            self._actor, Capability.DEVELOPMENT_CAMPAIGNS
+        )
         moment = at or utc_now()
         development = await self._session.get(Development, command.development_id)
         if development is None:
@@ -315,6 +320,7 @@ class Campaigns:
     ) -> None:
         await record_audit(
             self._session,
+            organization_id=self._actor.organization_id,
             actor_type=self._actor.actor_type,
             actor_id=self._actor.label,
             action=action,

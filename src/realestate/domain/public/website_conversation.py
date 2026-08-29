@@ -56,6 +56,9 @@ class ConversationMessageView:
 @dataclass(frozen=True)
 class WebsiteTurn:
     conversation_id: uuid.UUID
+    #: Whose website this is. The responder binds a Hermes session with it, so a
+    #: turn cannot attach the model's continuity to the wrong Organization.
+    organization_id: uuid.UUID
     hermes_session_id: str | None
     message: str
     history: tuple[ConversationMessageView, ...]
@@ -78,6 +81,7 @@ class WebsiteCommand:
     command_key: str
     conversation_token: str | None = None
     listing_ids: tuple[uuid.UUID, ...] = ()
+    sponsorship_campaign_id: uuid.UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -117,6 +121,7 @@ class WebsiteConversation:
                 organization_id=self._actor.organization_id,
                 access_token_hash=token_hash(issued),
                 listing_context=[],
+                sponsorship_campaign_id=command.sponsorship_campaign_id,
                 status=WebsiteConversationStatus.OPEN.value,
                 created_at=at,
                 last_activity_at=at,
@@ -125,6 +130,11 @@ class WebsiteConversation:
             await self._session.flush()
         elif row.status == WebsiteConversationStatus.CLOSED.value:
             raise ValueError("Esta conversación terminó. Inicia una nueva.")
+        elif (
+            row.sponsorship_campaign_id is None
+            and command.sponsorship_campaign_id is not None
+        ):
+            row.sponsorship_campaign_id = command.sponsorship_campaign_id
 
         replay = await self._replay(row.id, command.command_key)
         if replay is not None:
@@ -152,6 +162,7 @@ class WebsiteConversation:
         reply = await self._responder.respond(
             WebsiteTurn(
                 conversation_id=row.id,
+                organization_id=row.organization_id,
                 hermes_session_id=row.hermes_session_id,
                 message=text,
                 history=history,
@@ -171,6 +182,7 @@ class WebsiteConversation:
         self._session.add_all(
             [
                 WebsiteMessage(
+                    organization_id=row.organization_id,
                     conversation_id=row.id,
                     command_key=command.command_key,
                     role=WebsiteMessageRole.CUSTOMER.value,
@@ -179,6 +191,7 @@ class WebsiteConversation:
                     content_expires_at=expires,
                 ),
                 WebsiteMessage(
+                    organization_id=row.organization_id,
                     conversation_id=row.id,
                     command_key=f"{command.command_key}:maia",
                     role=WebsiteMessageRole.MAIA.value,

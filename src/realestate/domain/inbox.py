@@ -40,6 +40,7 @@ from realestate.channels.whatsapp.payload import InboundMessage
 from realestate.db.models import (
     ENGAGEMENT_CYCLE_DAYS,
     MAIA_MAY_REPLY,
+    ChannelBindingKind,
     Conversation,
     ConversationHandlingState,
     InboxGroup,
@@ -55,6 +56,7 @@ from realestate.domain.engagement.responses import record_engagement_reply
 from realestate.domain.commercial.actors import Actor, CommercialError
 from realestate.domain.commercial.routing import InboundRouting
 from realestate.domain.outbound import detect_opt_out, record_explicit_opt_out
+from realestate.domain.platform.routing import OrganizationRouting
 from realestate.domain.public.handoff import ChannelHandoff, extract_handoff_reference
 
 logger = logging.getLogger(__name__)
@@ -143,6 +145,10 @@ class ClaimedGroup:
 class InboxService:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+        # Held rather than built per message: one webhook body carries several
+        # messages that all arrived on the same phone number id, and the routing
+        # lookup is memoised per instance.
+        self._routing = OrganizationRouting(session)
 
     # -- Acceptance (API path) --------------------------------------------
 
@@ -152,10 +158,26 @@ class InboxService:
         A duplicate Meta delivery resolves to the existing record and creates no
         second Inbox row, no second Conversation, and no second engagement
         cycle.
+
+        Which Organization the message belongs to is decided *first*, from the
+        WhatsApp phone number id it arrived on, by
+        :class:`~realestate.domain.platform.routing.OrganizationRouting`. An
+        unbound number is refused rather than defaulted: filing one brokerage's
+        customer under another's Contacts is a failure the customer discovers,
+        and no amount of later correction unsends the reply (ADR-0050).
         """
+        routed = await self._routing.resolve(
+            ChannelBindingKind.WHATSAPP_PHONE_NUMBER, message.phone_number_id
+        )
+        organization_id = routed.organization_id
         existing = (
             await self._session.execute(
-                select(InboxMessage).where(InboxMessage.wamid == message.wamid)
+                select(InboxMessage)
+                # Scoped: the identifier is unique per Organization, and a
+                # lookup across the whole table could resolve a replayed body to
+                # somebody else's Conversation.
+                .where(InboxMessage.organization_id == organization_id)
+                .where(InboxMessage.wamid == message.wamid)
             )
         ).scalar_one_or_none()
         if existing is not None:
@@ -178,12 +200,12 @@ class InboxService:
             )
 
         intake = CommercialIntake(self._session)
-        organization_id = await intake.organization_id()
         lead = await self._lead(message, organization_id)
         cycle, cycle_created = await self._current_cycle(lead)
         conversation = await self._conversation(lead, cycle, message.phone_number_id)
 
         row = InboxMessage(
+            organization_id=organization_id,
             conversation_id=conversation.id,
             wamid=message.wamid,
             from_wa_id=message.from_wa_id,
@@ -209,12 +231,14 @@ class InboxService:
             if phrase is not None:
                 await record_explicit_opt_out(
                     self._session,
+                    organization_id=organization_id,
                     lead_id=lead.id,
                     phrase=phrase,
                     source_inbox_id=row.id,
                 )
                 await record_audit(
                     self._session,
+                    organization_id=lead.organization_id,
                     actor_type="Contact",
                     actor_id=lead.wa_id,
                     action="RecordExplicitOptOut",
@@ -331,6 +355,7 @@ class InboxService:
             return latest, False
 
         cycle = LeadEngagementCycle(
+            organization_id=lead.organization_id,
             lead_id=lead.id,
             started_at=now,
             expires_at=now + timedelta(days=ENGAGEMENT_CYCLE_DAYS),
@@ -407,7 +432,22 @@ class InboxService:
         coordination convention.
         """
         now = _now()
+        # ``no_autoflush`` on purpose: this read exists only to learn the
+        # Organization, and letting it flush whatever the caller has pending
+        # would move a write earlier in the transaction than the caller intended
+        # — which is exactly the kind of reordering that turns a concurrent claim
+        # into a ``StaleDataError`` instead of the clean ``None`` this method
+        # promises.
+        with self._session.no_autoflush:
+            organization_id: uuid.UUID | None = await self._session.scalar(
+                select(Conversation.organization_id).where(
+                    Conversation.id == conversation_id
+                )
+            )
+        if organization_id is None:
+            return None
         group = InboxGroup(
+            organization_id=organization_id,
             conversation_id=conversation_id,
             status=InboxGroupStatus.PROCESSING.value,
             claim_token=uuid.uuid4(),

@@ -99,7 +99,8 @@ async def wired(tmp_path: Path):
         # authoritative calendar, and reconciliation has to happen before the
         # first inbound message because intake assigns as it opens.
         await commercial.provision_bookable_team(session)
-        await PropertyService(session, app.state.artifacts).accept_upload(
+        organization = await commercial.organization_id(session)
+        await PropertyService(session, app.state.artifacts, organization_id=organization).accept_upload(
             "casa-roble.md", V1, actor_id="developer"
         )
         message = parse_webhook(
@@ -112,15 +113,18 @@ async def wired(tmp_path: Path):
         session.add_all(
             [
                 AgentSession(
+                    organization_id=conversation.organization_id,
                     hermes_session_id=SALES_SESSION,
                     role=AgentRole.SALES.value,
                     cycle_id=conversation.cycle_id,
                 ),
                 AgentSession(
+                    organization_id=conversation.organization_id,
                     hermes_session_id=UNBOUND_SALES_SESSION,
                     role=AgentRole.SALES.value,
                 ),
                 AgentSession(
+                    organization_id=conversation.organization_id,
                     hermes_session_id=ADMIN_SESSION,
                     role=AgentRole.ADMINISTRATIVE.value,
                     channel_key="telegram:1",

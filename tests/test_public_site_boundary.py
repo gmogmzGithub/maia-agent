@@ -8,12 +8,13 @@ from decimal import Decimal
 import httpx
 import pytest
 from httpx import ASGITransport
-from sqlalchemy import text
+from sqlalchemy import func, select
 
 from realestate.app import create_app
 from realestate.config import Settings
 from realestate.db.engine import Database
-from tests.conftest import DATABASE_URL, requires_postgres
+from realestate.db.models import AnalyticsEventName, AnalyticsOutboxEntry
+from tests.conftest import DATABASE_URL, requires_postgres, reset_property_inventory
 from tests.fixtures.commercial import ADMIN_LOGIN, actor_for, provision, reset
 from tests.fixtures.media import InMemoryMediaStorage
 from tests.fixtures.public_site import publish_listing
@@ -36,15 +37,7 @@ async def wired():
     storage = InMemoryMediaStorage()
     async with database.session_scope() as session:
         await reset(session)
-        for table in (
-            "listing_media",
-            "listing_offers",
-            "catalog_listings",
-            "properties",
-            "unit_models",
-            "developments",
-        ):
-            await session.execute(text(f"DELETE FROM {table}"))
+        await reset_property_inventory(session)
         await session.commit()
         await reset(session, members=True)
         await provision(session)
@@ -135,9 +128,7 @@ async def test_internal_contract_exercises_every_product_owned_operation(wired) 
             **authorization,
             "X-Collection-Token": collection_token,
         }
-        current = await client.get(
-            "/internal/public-site/saved", headers=saved_headers
-        )
+        current = await client.get("/internal/public-site/saved", headers=saved_headers)
         shared = await client.post(
             "/internal/public-site/saved",
             headers=saved_headers,
@@ -216,7 +207,9 @@ async def test_internal_contract_exercises_every_product_owned_operation(wired) 
 
     assert invalid_price.status_code == 422
     assert invalid_operation.status_code == 422
-    assert detail.status_code == 200 and detail.json()["listing"]["slug"] == listing.slug
+    assert (
+        detail.status_code == 200 and detail.json()["listing"]["slug"] == listing.slug
+    )
     assert missing_detail.status_code == 404
     assert missing_media.status_code == 404
     assert empty.json()["items"] == []
@@ -230,13 +223,67 @@ async def test_internal_contract_exercises_every_product_owned_operation(wired) 
     assert handoff.status_code == 200 and handoff.json()["token"].startswith("LAR-")
     assert replayed_handoff.json()["replayed"] is True
     assert event.status_code == 202 and event.json()["recorded"] is True
-    assert replayed_event.status_code == 202 and replayed_event.json()["recorded"] is False
+    assert (
+        replayed_event.status_code == 202 and replayed_event.json()["recorded"] is False
+    )
     assert invalid_event.status_code == 422
     assert discovery.status_code == 200
     assert missing_discovery.status_code == 404
 
 
-async def test_host_proxy_forwards_only_public_headers_and_never_product_auth(wired) -> None:
+async def test_product_records_one_maia_start_per_created_conversation(wired) -> None:
+    app, listing = wired
+    authorization = {
+        "Authorization": "Bearer site-contract-token",
+        "X-Session-Reference": "raw-browser-session-must-not-be-stored",
+    }
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://product.test"
+    ) as client:
+        first = await client.post(
+            "/internal/public-site/conversation",
+            headers=authorization,
+            json={
+                "message": "Mi correo es persona@example.com",
+                "command_key": "boundary-start-once-first",
+                "listing_ids": [str(listing.listing_id)],
+            },
+        )
+        token = first.json()["conversation_token"]
+        second = await client.post(
+            "/internal/public-site/conversation",
+            headers={**authorization, "X-Conversation-Token": token},
+            json={
+                "message": "Mi teléfono es 5551234567",
+                "command_key": "boundary-start-once-second",
+                "listing_ids": [str(listing.listing_id)],
+            },
+        )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    async with app.state.database.session_scope() as session:
+        events = list(
+            await session.scalars(
+                select(AnalyticsOutboxEntry).where(
+                    AnalyticsOutboxEntry.event_name
+                    == AnalyticsEventName.MAIA_STARTED.value
+                )
+            )
+        )
+        assert len(events) == 1
+        assert events[0].payload["listing_id"] == str(listing.listing_id)
+        assert events[0].event_key.startswith("public:website-conversation-started:")
+        assert "raw-browser-session-must-not-be-stored" not in events[0].event_key
+        assert (
+            await session.scalar(select(func.count()).select_from(AnalyticsOutboxEntry))
+            == 1
+        )
+
+
+async def test_host_proxy_forwards_only_public_headers_and_never_product_auth(
+    wired,
+) -> None:
     app, _listing = wired
     captured: list[httpx.Request] = []
 
@@ -278,7 +325,9 @@ async def test_host_proxy_forwards_only_public_headers_and_never_product_auth(wi
     assert captured[0].headers["cookie"] == "larevia_saved=sc-browser"
 
 
-async def test_public_proxy_fails_honestly_when_site_process_is_unavailable(wired) -> None:
+async def test_public_proxy_fails_honestly_when_site_process_is_unavailable(
+    wired,
+) -> None:
     app, _listing = wired
 
     def unavailable(request: httpx.Request) -> httpx.Response:

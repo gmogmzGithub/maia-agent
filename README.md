@@ -41,8 +41,43 @@ authorization, persistence, delivery, retries, and business authority.
 - Explainable, Administrator-reviewed reactivation and Development-campaign
   planning with explicit audiences, provider-observed templates, delivery-time
   consent and stop checks, and real dispatch disabled by default.
+- A versioned domain-event taxonomy behind a durable analytics Outbox, projected
+  into a separate pseudonymous PostgreSQL schema by a pass that is safe to replay
+  and rebuilds a period rather than incrementing a counter, so a late event is
+  correct instead of lost.
+- Business intelligence that treats not knowing as reportable: `Sin registrar` is
+  never a zero and never a loss, a ratio with no denominator says so, and invalid
+  traffic is stored, classified and reported as excluded volume.
+- A manually administered `Patrocinada` offer where payment buys a labelled
+  position and provably not relevance — the module that orders public results
+  imports nothing from the modules that handle money — with caps, deficit-based
+  rotation, capacity that cannot be oversold, and paused days that are preserved
+  rather than spent.
+- A price catalog that refuses to publish a first price without a written
+  reference to measured pilot traffic, seven-day quotes that preserve their
+  catalog version, and discounts that require a recorded reason.
+- Buyer reporting delivered by expiring, revocable, read-only link and an
+  exportable PDF, carrying aggregate delivery, disclosed comparables and explicitly
+  non-causal language — and no contact identity, phone number or conversation.
+- Organizational isolation carried by the schema rather than by discipline: every
+  table holding a Brokerage Organization's data names it with a composite foreign
+  key that makes the column and its parent agree, every business key that was
+  globally unique is unique per Organization, a written scoping table classifies
+  all 91 tables, and a test refuses one nobody classified.
+- A managed platform where a second Brokerage Organization is provisioned by a
+  resumable, reversible run and cannot answer a customer until the last step
+  finishes — with versioned configuration documents that refuse to hold a
+  credential, per-Organization secret *references* that store a name and a
+  fingerprint rather than a value, and an inbound number, bot or hostname that is
+  refused when unbound instead of defaulting to the founding brokerage.
+- Temporary, explained, expiring and counted internal support access in place of a
+  superadmin — an ordinary read-only member row inside one Organization, listed on
+  that customer's own page — plus per-Organization export that names every column
+  it withholds and deletion that refuses a live retention hold outright.
 - A standalone Hermes plugin that exposes typed product operations without
-  giving the agent direct database or Calendar credentials.
+  giving the agent direct database or Calendar credentials — and deliberately no
+  new tool for the platform: provisioning, entitlements, credentials, support
+  access and deletion are not things a conversation should be able to reach.
 - Recovery-oriented tests around persistence, sessions, tools, workers,
   webhooks, and channel clients.
 
@@ -113,13 +148,44 @@ test-covered locally:
 - a Mexican-Spanish reactivation surface with explainable inventory matches,
   PII-safe campaign previews, bounded execution and auditable outcomes, while
   real Marketing dispatch remains `Denied` pending accepted external gates;
+- versioned, idempotent analytics events, a durable analytics Outbox, a
+  replayable projection into a separate pseudonymous schema, and an internal
+  Mexican-Spanish BI dashboard reporting Follow-up Coverage, response time,
+  qualification, attendance, outcome completeness, harm signals and invalid
+  traffic — with `Sin registrar` kept distinct from zero;
+- a manually administered sponsorship lifecycle with a versioned price catalog,
+  seven-day quotes, capacity that cannot be oversold, labelled placements that
+  never influence organic ordering, and expiring read-only buyer reports with an
+  exportable PDF;
+- complete organizational isolation: every table holding a Brokerage
+  Organization's data names it, every business key is unique per Organization,
+  and every inbound identifier — WhatsApp number, Telegram bot, public hostname —
+  resolves through an explicit channel binding whose absence is a refusal rather
+  than a default to the founding brokerage;
+- a managed platform for a second Brokerage Organization: resumable and
+  reversible provisioning, versioned configuration documents, per-Organization
+  secret *references* that never store a credential, append-only entitlements
+  with a base package and Advisor-seat tiers, measured monthly usage, dry-run
+  initial import with per-record findings and rollback, and per-Organization
+  export and deletion bounded by recorded retention holds;
+- temporary, explained, expiring and counted internal support access instead of
+  a superadmin, visible to the customer's own Administrator;
 - Docker Compose packaging for a single-host local topology.
 
 Not claimed yet:
 
 - production deployment;
-- multi-tenant operation;
+- a real external brokerage onboarded; the platform is implemented and its entry
+  condition — knowing a candidate inmobiliaria's real needs — is not met;
+- any price, invoice or charging for the packaging structure that exists;
+- measured capacity for any number of Organizations;
 - paid lead acquisition;
+- a first sponsorship price, which stays unset until the pilot supplies the
+  traffic data that would justify it;
+- a data warehouse, ad auctions, pay-per-click billing, invoicing, or any
+  movement of money;
+- an agreed analytics retention period, which remains an explicit privacy and
+  legal decision;
 - proactive follow-up delivery, which stays refused until real consent capture
   and approved WhatsApp templates exist;
 - legal/privacy readiness for real customer data;
@@ -219,4 +285,13 @@ manual acceptance path. The [Stage 6 external-inventory guide](docs/external-inv
 documents the EasyBroker adapter boundary, mapping, revalidation, cleanup, test
 levels, and activation gates. The [Stage 7 engagement guide](docs/reactivation-campaigns.md)
 documents reviewed reactivation, explicit Development audiences, consent and
-template evidence, execution limits, and why real dispatch remains denied.
+template evidence, execution limits, and why real dispatch remains denied. The
+[Stage 8 BI and sponsorship guide](docs/bi-and-sponsorship.md) documents the event
+dictionary, the versioned measurement definitions and their exact borders, the
+projection and its invalid-traffic reporting, the privacy boundary, the paid
+delivery rules, pricing and quoting, the two report audiences, and the commercial
+decisions that remain open. The [Stage 9 managed-platform guide](docs/managed-platform.md)
+documents the isolation threat model, the scoping table, provisioning,
+configuration, entitlements, credentials, support access, the data lifecycle,
+what each provider does and does not allow us to separate, and the operating
+limits — with the five operational runbooks in [docs/runbooks](docs/runbooks).

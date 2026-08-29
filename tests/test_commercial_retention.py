@@ -78,6 +78,7 @@ async def _aged_thread(session, *, wa_id="5213312345678"):  # noqa: ANN001, ANN2
     )
     session.add(
         OutboxMessage(
+            organization_id=conversation.organization_id,
             conversation_id=conversation.id,
             idempotency_key=f"out:{conversation.id}",
             to_wa_id=wa_id,
@@ -91,6 +92,7 @@ async def _aged_thread(session, *, wa_id="5213312345678"):  # noqa: ANN001, ANN2
     )
     session.add(
         AgentSession(
+            organization_id=conversation.organization_id,
             hermes_session_id=f"hermes-{conversation.cycle_id}",
             role=AgentRole.SALES.value,
             cycle_id=conversation.cycle_id,
@@ -98,6 +100,7 @@ async def _aged_thread(session, *, wa_id="5213312345678"):  # noqa: ANN001, ANN2
     )
     session.add(
         ConsentRecord(
+            organization_id=lead.organization_id,
             lead_id=lead.id,
             category=ConsentCategory.MARKETING.value,
             state=ConsentState.REVOKED.value,
@@ -107,6 +110,7 @@ async def _aged_thread(session, *, wa_id="5213312345678"):  # noqa: ANN001, ANN2
     )
     session.add(
         SuppressionRecord(
+            organization_id=lead.organization_id,
             lead_id=lead.id,
             scope="BusinessInitiated",
             reason="ExplicitOptOut",
@@ -332,6 +336,7 @@ async def test_a_recent_outbound_keeps_the_thread_active(wired) -> None:
         )
         session.add(
             OutboxMessage(
+                organization_id=conversation.organization_id,
                 conversation_id=conversation.id,
                 idempotency_key="recent",
                 to_wa_id="5213312345678",

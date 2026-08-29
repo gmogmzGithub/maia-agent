@@ -303,6 +303,7 @@ class PropertyNeeds:
                 need.became_stale_at = None
                 await record_audit(
                     self._session,
+                    organization_id=actor.organization_id,
                     actor_type=actor.actor_type,
                     actor_id=actor.label,
                     action="ReconfirmPropertyNeed",
@@ -318,6 +319,7 @@ class PropertyNeeds:
             # the audit trail outlives the retention rules for personal data.
             await record_audit(
                 self._session,
+                organization_id=actor.organization_id,
                 actor_type=actor.actor_type,
                 actor_id=actor.label,
                 action="RecordPropertyNeedCriteria",
@@ -445,12 +447,14 @@ class PropertyNeeds:
                 became_stale_at=moment,
                 updated_at=moment,
             )
-            .returning(PropertyNeed.id)
+            .returning(PropertyNeed.id, PropertyNeed.organization_id)
         )
-        stale_ids = [row[0] for row in result]
-        for need_id in stale_ids:
+        stale = [(row[0], row[1]) for row in result]
+        stale_ids = [need_id for need_id, _ in stale]
+        for need_id, organization_id in stale:
             await record_audit(
                 self._session,
+                organization_id=organization_id,
                 actor_type="Product",
                 actor_id="PropertyNeeds",
                 action="MarkPropertyNeedStale",

@@ -833,7 +833,11 @@ async def test_reconciling_a_reschedule_releases_and_links_the_original(
         ).resolve(
             replacement.reference,
             "Confirm",
-            Administrator("telegram:admin", "update:reschedule"),
+            Administrator(
+                organization_id=built.admin.organization_id,
+                actor_id="telegram:admin",
+                origin_message_id="update:reschedule",
+            ),
         )
 
     assert result["result"] == "resolved"
@@ -874,7 +878,11 @@ async def test_reconciling_a_booking_completes_the_appointment_handoff(
         ).resolve(
             row.reference,
             "Confirm",
-            Administrator("telegram:admin", "update:booking"),
+            Administrator(
+                organization_id=built.admin.organization_id,
+                actor_id="telegram:admin",
+                origin_message_id="update:booking",
+            ),
         )
 
     assert result["result"] == "resolved"

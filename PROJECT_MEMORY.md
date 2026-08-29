@@ -765,12 +765,56 @@ WhatsApp handoffs are diagnostic funnel measures, not the final success metric.
 
 ## Current Stage
 
-Local Stage 7 reviewed reactivation and Development-campaign planning on top of
-the Stage 6 external-inventory boundary and Stage 4 authoritative catalog.
-Product proposes explainable work from confirmed demand, keeps every audience
-explicit and bounded, and routes accepted attempts through the existing outbound
-eligibility gate. Real Marketing dispatch remains `Denied`; legal, consent,
-provider, operational and real-customer acceptance remain explicitly unclaimed.
+Local Stage 9 turns the product into a managed platform on which a second
+Brokerage Organization can operate — accompanied — without reaching Larevia's
+data, credentials, conversations, configuration, inventory or analytics, using the
+same product and the same modules.
+
+The bulk of the stage is isolation. Revisions 0012 to 0015 had scoped the
+commercial roots; what they had not reached was the operational layer beneath them
+— Inbox, Outbox, delivery callbacks, consent, suppression, availability snapshots,
+Hermes session bindings, the audit trail — each of which was reachable only through
+a join, and each of which was one forgotten join away from answering with another
+brokerage's work. Every such table now names its Organization with a composite
+foreign key that makes the column and its parent agree, every business key that
+was globally unique is unique per Organization instead, and every inbound
+identifier resolves through an explicit channel binding whose absence is a refusal
+rather than a default to the founding Organization. A written scoping table
+classifies all 91 tables, and a test refuses an unclassified one.
+
+On that foundation the stage adds what a managed service needs: resumable and
+individually reversible provisioning, versioned configuration documents that
+cannot carry a credential, per-Organization secret *references* that never store
+one, append-only entitlements with a base package and Advisor-seat tiers and no
+prices, measured monthly usage, a dry-run-first initial import with per-record
+findings and rollback by stored identifier, per-Organization export and deletion
+bounded by recorded retention holds, and temporary, explained, expiring and
+counted internal support access in place of a superadmin.
+
+No external inmobiliaria has been onboarded. The stage's own entry condition —
+Larevia demonstrably operating *and* the real needs of at least one candidate
+external brokerage — is half met: the platform is implemented against the
+operating model Larevia proved, and the second half is not. Nothing is priced,
+nothing is charged, and no capacity claim is made for any number of Organizations.
+
+Stage 8 remains as it was: measurement and one sellable paid-visibility offer on top of
+the Stage 7 engagement boundary. Product emits a versioned, idempotent domain-event
+taxonomy through a durable analytics Outbox, projects it into a separate
+pseudonymous PostgreSQL schema, and reports its own operation with "nobody
+recorded it" as a first-class answer. On that basis it sells a manually
+administered `Patrocinada` campaign whose placements are labelled, capped,
+equitably rotated and provably unable to influence organic relevance. The first
+price is deliberately unset: publishing one requires a written reference to
+measured pilot traffic. No money moves, no warehouse exists, and analytics
+retention remains an unresolved privacy and legal decision.
+
+Stage 7 remains as it was: reviewed reactivation and Development-campaign planning
+on top of the Stage 6 external-inventory boundary and Stage 4 authoritative
+catalog. Product proposes explainable work from confirmed demand, keeps every
+audience explicit and bounded, and routes accepted attempts through the existing
+outbound eligibility gate. Real Marketing dispatch remains `Denied`; legal,
+consent, provider, operational and real-customer acceptance remain explicitly
+unclaimed.
 
 Implemented locally:
 
@@ -939,6 +983,176 @@ Implemented locally:
   explicit Development audiences, limits and PII-safe results;
 - `MARKETING_OUTBOUND_ACTIVATED=false` as the default and current real-activation
   gate; fixture approvals and consent records verify contracts only.
+- a closed, additive `analytics-events-v1` domain-event taxonomy where every
+  event declares its schema version and its allowed attributes, and an attribute
+  that is not numeric, boolean or enumerated is refused rather than stored — so
+  no phone number, message or search phrase has a column it would fit in;
+- a durable `analytics.analytics_outbox`, deliberately separate from
+  `outbox_messages`, so a stuck measurement row never shares a queue, a retry
+  budget or a failure mode with a message somebody is waiting for;
+- `AnalyticsProjection.refresh`, which consumes in sequence order, leaves rows
+  `Pending` until the transaction that stores their event commits, inserts
+  idempotently, and *recomputes* each touched period rather than incrementing it
+  — so a restart repeats a batch, a replay from zero rebuilds the identical
+  store, and a late event corrects its own period instead of landing on today;
+- `analytics.measurement_definitions` seeded with `measurement-v1`: 50 percent
+  for 1000 continuous milliseconds for a Visible Impression, five photographs or
+  30 percent of a gallery for Significant Gallery Exploration, the eleven-step
+  funnel, 7- and 90-day attribution windows, one sponsored result per six visible
+  ones, two on the homepage, and three paid Visible Impressions per session per
+  day — all inclusive at the border and all read back so a historic report stays
+  reproducible;
+- Served Impression separated from Visible Impression: serving is Product's own
+  fact recorded server-side as the response is built, while visibility is a
+  browser measurement whose *threshold* Product applies, so a modified client
+  cannot manufacture one;
+- invalid traffic stored, classified and reported rather than deleted — bot, then
+  test, then internal, then implausible rate, in that fixed precedence — with
+  duplicate emissions counted on the Outbox row rather than silently dropped;
+- pseudonymisation with a separate salt per purpose, generated once per
+  Organization into the analytics schema rather than read from configuration, so
+  a session reference and a subject reference cannot be joined to link an
+  anonymous session to a known Contact;
+- an operational scorecard where `Sin registrar` is never zero and never a loss,
+  a ratio with no denominator reads `No calculable`, and Follow-up Coverage is
+  read from the one existing implementation rather than recomputed;
+- Administrator-recorded Harm Signals for the SAN-079 stop conditions, with
+  written evidence, idempotent on their command key;
+- `SponsoredEligibility.evaluate`, which reuses the same `PublicShare` decision
+  the unpaid site gets and adds only what money introduces: a written commercial
+  clearance standing in for the still-Pending SAN-065, one sponsored position per
+  confirmed physical Property, and the campaign's own state and remaining days —
+  with daily and per-exposure refusals recorded so a buyer's question has an
+  answer months later;
+- `SponsoredDelivery.select`, which returns paid slots as their own list and
+  leaves the organic ordering untouched: `PublicCatalog` imports nothing from
+  sponsorship and a test asserts that absence, so payment cannot buy relevance
+  even by accident;
+- deficit-based rotation (`delivered_days / paid_days` ascending), a durable
+  per-session daily cap, a skip for a Listing already visible organically on the
+  page, and an empty slot rather than a substitution when a Listing is withdrawn
+  mid-render;
+- `Patrocinada` rendered as a visible chip, an `aria-label` on the article and a
+  non-colour border on every paid exposure, with `Destacada` reserved for unpaid
+  editorial selection and absent from every sponsorship module;
+- an Administrator-managed versioned price catalog that cannot be published
+  without a written reference to pilot traffic — enforced by the module and by a
+  check constraint — with exactly one published version at a time;
+- `SponsorshipQuoting.quote`: seven-day validity, the catalog version and amounts
+  preserved on the row, a discount refused without a recorded reason, and no
+  capacity held until the quote is accepted;
+- two independent ceilings kept apart — the delivery ratio bounds what a page
+  shows, the sales ceiling bounds how many campaigns may hold a surface over the
+  same days — with reservations taken under a per-surface lock and peak overlap
+  deciding, so consecutive campaigns do not compete and concurrent acceptances
+  cannot oversell;
+- a campaign lifecycle where a paid day is consumed by being *delivered*, so a
+  Listing withdrawn for a week returns that week; automatic pause with recorded
+  reasons, automatic resume, completion with no successor, and no auto-renewal;
+- external collection state recorded as an observation: Product issues no
+  invoice, charges nothing and moves no money;
+- `SponsorshipReporting.generate`, one computation at two audiences, so the buyer
+  report and the Administrator report cannot disagree about the same month;
+- comparables grouped by operation, municipality, property type, Commercial Price
+  Band, Presentation Tier and surface, with the subject campaign excluded, period
+  and sample size disclosed, and `Estimación inicial sin historial suficiente`
+  below three comparable campaigns;
+- attribution reported inside the declared 7- and 90-day windows, never
+  overwriting first Opportunity Origin and never described as lift, with the
+  non-causal statement on every buyer surface;
+- expiring, revocable, read-only buyer links stored only as a `sha256` digest,
+  where expiry, revocation and an unknown token give the same refusal, and an
+  exportable PDF written by a small in-repository module rather than a new
+  dependency;
+- one opaque, HttpOnly, one-day site cookie used for exactly one thing — the
+  per-session cap — pseudonymised before anything derived from it is stored, and
+  explicitly not an advertising identifier;
+- Mexican-Spanish `/crm/bi` and `/crm/patrocinios` surfaces, both
+  Administrator-only, with the data-quality panel on the same page as the results
+  so a coverage number always appears next to how much of it is unrecorded.
+- `organization_id` on every table that holds a Brokerage Organization's data,
+  including the operational layer that previously reached it only through a join —
+  Inbox, Outbox, delivery callbacks, consent, suppression, outbound decisions,
+  availability snapshots, Hermes session bindings, appointment reminders, saved
+  items, website messages, engagement cycles, follow-ups, admin messages, channel
+  cursors and the audit trail — each with a composite foreign key so the column
+  and its parent cannot disagree;
+- per-Organization business keys where they used to be global: Property Key,
+  Property normalized name, appointment reference, `wamid`, Outbox idempotency
+  key, outbound-decision key, Telegram `update_id`, website command key, gallery
+  and technical-sheet paths, and the analytics event keys — so a second
+  Organization no longer discovers another's inventory from a constraint
+  violation;
+- `realestate.domain.platform.scoping`, a written classification of every table as
+  one Organization's data or as deliberately platform-wide with a stated reason,
+  read by the export, by deletion and by the isolation matrix, with a test that
+  refuses an unclassified table and a deletion order derived from the schema
+  rather than hand-maintained;
+- `OrganizationRouting.resolve`, the mapping ADR-0019 named as a future seam:
+  WhatsApp phone number, WhatsApp Business Account, Telegram bot and public
+  hostname each claimed by exactly one Organization, globally unique while active,
+  and an unbound identifier refused and logged rather than defaulted — the webhook
+  counts it `unroutable` instead of answering;
+- `OrganizationProvisioning.provision` / `deprovision`: seven named steps
+  committed individually, an Organization created `Provisioning` and activated only
+  in the last one, resume from the first incomplete step on the same command key,
+  rollback that retires bindings, revokes references and deactivates members while
+  keeping the configuration and entitlement history that explains what happened,
+  and a login another Organization holds refused *by name* before anything is
+  written;
+- `OrganizationConfiguration.record`: one immutable checksummed document per
+  version with a required written reason, no new version for an identical
+  document, an allowlist of sections, and recursive refusal of any key whose name
+  looks like a credential's home — because the danger is
+  `channels.whatsapp.access_token`, not a top-level `token`;
+- `IntegrationCredentials.resolve`: a credential is never inherited. The
+  Organization's own `Active` reference, then its own `Rotating` one, then the
+  process environment *only* for the founding Organization named in
+  configuration, then a named refusal. Rotation appends and proves the change with
+  a fingerprint, and Product never claims the provider accepts the value;
+- `Entitlements.evaluate`: fourteen named capabilities, two of them bounded,
+  append-only with a source and an author, a capability with no recorded
+  entitlement refused rather than permitted, unsold add-ons recorded `Disabled`
+  rather than omitted, and three Advisor-seat tiers with monthly conversation
+  allowances and no prices;
+- five real enforcement seams, each in the module that performs the work rather
+  than a surface that could be bypassed: the Advisor seat ceiling before an
+  `AddMember` row is claimed, collaborator-inventory synchronisation, reactivation
+  discovery, Development-campaign planning and sponsorship quoting — while the
+  base-package capabilities and the monthly conversation allowance are reported
+  and not enforced, with the reason written down;
+- support access as an ordinary read-only, unassignable Advisor member row inside
+  one Organization from an expiring grant with a written reason and a use count —
+  refused at login resolution the moment it lapses, deactivated by a sweep, and
+  listed on the customer's own `/crm/plataforma` page. No account reads every
+  Organization;
+- `OrganizationDataLifecycle.export` / `delete`: an artifact with per-table row
+  counts and every withheld column named — salts, credential fingerprints, live
+  token digests and model session handles — and a deletion that takes a scope,
+  refuses outright when a retention hold is live, and never removes the evidence
+  that it ran;
+- `OrganizationImport.plan` / `apply` / `roll_back`: the same code path with a
+  mode, an apply that requires a dry run over the identical source checksum, one
+  finding per record carrying the source's own reference, only unreviewed physical
+  Properties created, and rollback by stored identifier that leaves a referenced
+  record in place and reports it;
+- eight monthly usage measures per Organization, recomputed rather than
+  incremented, with model turns counted as settled Inbox groups rather than
+  messages;
+- per-Organization background work: the analytics pass, the sponsorship day
+  accounting and quote expiry run once per operating Organization with their own
+  Actor; content expiry and Property Need staleness carry each row's Organization
+  into its audit event; the platform worker expires support grants and refreshes
+  usage on their own cadences;
+- a `/platform` JSON surface authenticated by its own credential *and* a mandatory
+  operator-name header, refusing every mutation without a written reason, plus a
+  read-only Mexican-Spanish `/crm/plataforma` panel where an Organization's own
+  Administrator sees their configuration version, plan, integration references,
+  channels, measured usage and every support access anybody was granted into their
+  records;
+- a startup bootstrap that binds the founding Organization's channels and names
+  its existing credentials as references, idempotently, without moving a single
+  secret and without being able to touch any other Organization.
 
 Not yet proven or claimed:
 
@@ -949,11 +1163,98 @@ Not yet proven or claimed:
 - live approved WhatsApp Marketing templates, legitimate marketing-consent
   capture, accepted numeric policy, account quality/capacity proof and proactive
   delivery;
-- multi-tenant operation;
+- a real external brokerage onboarded, or its real needs known;
+- any price, invoice or charge for the packaging structure that now exists;
+- measured capacity for any number of Organizations;
 - horizontal scaling;
+- a real sponsorship sale, a measured pilot, or any published price;
 - self-managed multi-brokerage onboarding, billing, round-robin assignment, load
   scoring, automatic commissions, live EasyBroker activation, paid acquisition,
   and the data warehouse — all deliberately later stages.
+
+## Known Stage 9 Limitations
+
+- **No external inmobiliaria has been onboarded.** The stage's own entry
+  condition was Larevia demonstrably operating *and* the real needs of at least
+  one candidate external brokerage. The second half is unmet, so the shape of
+  onboarding, support, packaging and configuration is derived from the operating
+  model Larevia proved and will move when a real customer disagrees with it.
+- Nothing is priced and nothing is charged. The packaging structure — base
+  package, Advisor-seat tiers, integration add-ons, measured usage — exists so the
+  product can enforce and report it; charging is a separate decision that has not
+  been authorised (ADR-0053).
+- Seat tiers (3 / 10 / 25 Advisors) and monthly conversation allowances
+  (1 000 / 5 000 / 15 000) are conservative Product hypotheses chosen to be
+  enforceable, not measurements.
+- **The monthly conversation allowance is reported, not enforced.** The outbound
+  eligibility gate is the single path to a customer (ADR-0045) and giving it a
+  second reason to refuse is its own decision. What is enforced is the Advisor
+  seat ceiling and the four add-ons.
+- Where a ceiling *is* enforced it is compared against the last hourly usage
+  refresh rather than a live count, so a customer just over the line may be
+  reading a stale number. The surface reporting it says so.
+- **The login namespace is platform-wide.** HTTP Basic carries no Organization, so
+  a username identifies one member row across the whole installation.
+  Provisioning refuses a taken login by name rather than attaching it to the wrong
+  brokerage, but the collision itself discloses that some other Organization holds
+  it. A per-Organization login namespace needs a different authentication scheme.
+- **Telegram is separated per Organization.** Product resolves one token reference
+  and active `TelegramBotId` binding per Organization, verifies they name the same
+  bot, and gives that worker only the Organization's active Administrator chat ids.
+  Missing or mismatched configuration fails closed.
+- **One public-site process per public origin.** The site tells Product which
+  hostname it serves; two brands means two site processes today.
+- Google Calendar separates per Advisor calendar, but the service account is one
+  credential per reference. An Organization wanting its own records its own
+  reference; nothing forces it to.
+- Meta's account health, quality rating and messaging limits belong to whoever
+  owns the WABA and cannot be separated by us.
+- **A platform operator can grant themselves support access to any
+  Organization.** Bounded to read-only, expiring within eight hours, named,
+  counted and visible on the customer's own page — but real, and stated rather
+  than implied (ADR-0054).
+- **Only bounded local load has been measured.** The isolation matrix accepts
+  100 synthetic inquiries across two Organizations with concurrency ten and a
+  broad 30-second regression guard. It catches contention and scope regressions;
+  no production throughput or latency claim is made.
+- Analytics retention remains unresolved (ADR-0044). Deletion can now remove
+  analytics rows on request, which is not an expiry policy.
+- Provisioning reports whether a credential *reference resolves*, never whether
+  the provider accepts the value. Only the provider knows that, and the runbook
+  makes verifying it a separate manual step.
+- Deliberately absent: a marketplace, self-service signup, self-service billing, a
+  dedicated server per customer, cross-organization model training, identifiable
+  cross-organization benchmarks, and any geographic expansion.
+
+## Known Stage 8 Limitations
+
+- The first sponsorship price is not set and no catalog ships published. SAN-062
+  needs pilot clients, a defensible introductory price and conditions that allow
+  learning without giving the service away indefinitely. Until then quoting is
+  refused with that reason rather than offering an empty field.
+- SAN-065 is Pending: which defects of file, price, availability, photography or
+  owner relationship block accepting money is Santiago's to enumerate. Product
+  requires a written Administrator clearance in the meantime. That records
+  authority; it does not substitute for the rule.
+- SAN-059, SAN-061, SAN-063, SAN-064, SAN-066 and SAN-067 also remain Pending —
+  the likely buyer, the package shape, what a quote needs to close, whether
+  buyers will demand zone or period exclusivity, which figures convince, and when
+  renewal should be recommended.
+- Capacity defaults to two concurrent campaigns per surface, and the
+  measured-exposure forecast reports insufficient history below seven measured
+  days. Both are conservative Product choices, not measurements.
+- Analytics retention is unresolved. Event-level and aggregate retention is an
+  explicit privacy and legal decision (ADR-0044) and nothing in Stage 8 expires
+  an analytics row.
+- Browser acceptance remains manual. There is no browser automation in this
+  repository, so the visibility observer, the gallery-depth reporting and the
+  rendered contrast of the label are asserted at the contract and template level
+  only.
+- The reported numbers are all from synthetic fixtures. No real traffic, no real
+  buyer and no real campaign has been measured.
+- Auctions, pay-per-click billing, auto-renewal, payments, invoicing, tax
+  accounting, advertising profiles, session replay, cross-organization benchmarks
+  and a data warehouse are all deliberately absent.
 
 ## Known Stage 7 Limitations
 
@@ -1130,8 +1431,57 @@ private repository.
   hold does not survive it. Revision 0012's downgrade likewise drops the
   Contacts it derived; the Leads they came from are untouched.
 
+## Points For Codex — Stage 9 Close
+
+These are decisions the implementation deliberately did not take, phrased so a
+"no" is as usable as a "yes".
+
+1. **The entry condition is half met.** The stage was to begin after Larevia
+   demonstrably operates *and* the real needs of at least one candidate external
+   inmobiliaria are known. The platform is built against the model Larevia proved;
+   no candidate has been interviewed. Does Stage 9 close on the implementation, or
+   stay open until a candidate's needs are on paper and reconciled against what
+   was built?
+2. **Pricing and charging.** The packaging structure exists and enforces itself.
+   Nothing is priced and no money moves. Charging is a separate authorisation
+   (ADR-0053) — is it in scope next, or does it wait for a signed customer?
+3. **Seat tiers and the conversation allowance** (3/10/25 Advisors,
+   1 000/5 000/15 000 conversations) are round numbers chosen to be enforceable.
+   Confirm, replace with measured ones, or drop the ceilings until a customer
+   argues about them.
+4. **The platform-wide login namespace.** HTTP Basic carries no Organization, so a
+   username identifies one member row across the whole installation. Provisioning
+   refuses a taken login by name, but the collision discloses that somebody else
+   holds it. Accept, or is a per-Organization authentication scheme the next
+   stage's work?
+5. **One public-site process per Organization.** Telegram now polls separate bots
+   inside Product, but each branded public origin still needs its own `site`
+   process. Accept that deployment shape for the accompanied onboarding, or put
+   hostname dispatch inside one site process?
+6. **Support access remains grantable by any platform operator** to any
+   Organization — bounded, expiring, counted and visible to the customer, but
+   real. Is that the promise to make in writing, or does a customer-approval step
+   belong in front of it?
+7. **Analytics retention is still unresolved** (ADR-0044). Deletion can now remove
+   analytics rows on request; an expiry policy is a different decision and is
+   still owed.
+8. **Only local contention has been measured.** The 100-inquiry rehearsal is a
+   regression guard, not a deployment benchmark. What target environment and
+   workload must be measured before a real second customer?
+9. **Deprovisioning retains data by default.** Removal is a separate, separately
+   authorised request bounded by retention holds. Confirm that default, and
+   confirm who inside Maia may authorise a deletion.
+10. **Roadmap.** With the platform in place and no external customer onboarded,
+    the next work is either the pilot Stage 8 left unmeasured, or the first
+    accompanied onboarding. Codex decides which, and whether the current roadmap
+    closes here.
+
 ## Open Next Work
 
+- Interview at least one candidate external inmobiliaria and reconcile their real
+  needs against what Stage 9 built, before onboarding anybody.
+- Rehearse an onboarding end to end against `docs/runbooks/organization-onboarding.md`
+  with synthetic data, and correct the runbook from what actually happened.
 - Rename Python package and plugin identifiers from the original
   `realestate`/`realestate-hermes-plugin` naming to Maia-specific names if the
   project moves beyond this port.

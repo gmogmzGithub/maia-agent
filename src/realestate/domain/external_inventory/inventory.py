@@ -10,6 +10,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from realestate.db.models import (
+    Capability,
     ExternalCandidateState,
     ExternalInventoryScope,
     ExternalListingCandidate,
@@ -20,6 +21,7 @@ from realestate.db.models import (
     ListingAvailability,
 )
 from realestate.domain.audit import record_audit
+from realestate.domain.platform.entitlements import Entitlements
 from realestate.domain.commercial.actors import Actor, NotFound
 from realestate.domain.external_inventory.mapping import (
     SOURCE,
@@ -179,6 +181,9 @@ class ExternalInventory:
         max_pages: int = 100,
     ) -> SyncResult:
         self._actor.require_administrator()
+        await Entitlements(self._session).require(
+            self._actor, Capability.EXTERNAL_INVENTORY
+        )
         health = await self._health(lock=True)
         health.credential_configured = self._source.credential_configured
         health.mls_access_confirmed = self._source.mls_access_confirmed
@@ -200,6 +205,7 @@ class ExternalInventory:
             )
             await record_audit(
                 self._session,
+                organization_id=self._actor.organization_id,
                 actor_type=self._actor.actor_type,
                 actor_id=self._actor.label,
                 action="ExternalInventorySynchronizationDenied",
@@ -295,6 +301,7 @@ class ExternalInventory:
             health.rate_limited_until = at + timedelta(seconds=error.retry_after_seconds)
         await record_audit(
             self._session,
+            organization_id=self._actor.organization_id,
             actor_type=self._actor.actor_type,
             actor_id=self._actor.label,
             action="ExternalInventorySynchronized",
@@ -349,6 +356,7 @@ class ExternalInventory:
         row = await self.refresh_for_use(source_listing_id, at=at)
         await record_audit(
             self._session,
+            organization_id=self._actor.organization_id,
             actor_type=self._actor.actor_type,
             actor_id=self._actor.label,
             action="ExternalListingRefreshed",
@@ -444,6 +452,7 @@ class ExternalInventory:
         row.updated_at = at
         await record_audit(
             self._session,
+            organization_id=self._actor.organization_id,
             actor_type=self._actor.actor_type,
             actor_id=self._actor.label,
             action="ExternalListingEvidenceConfirmed",
@@ -507,6 +516,7 @@ class ExternalInventory:
             }
             await record_audit(
                 self._session,
+                organization_id=self._actor.organization_id,
                 actor_type=self._actor.actor_type,
                 actor_id=self._actor.label,
                 action="ExternalListingCacheDeleted",
@@ -687,6 +697,7 @@ class ExternalInventory:
         row.mapping_issues = list(dict.fromkeys([*row.mapping_issues, reason]))
         await record_audit(
             self._session,
+            organization_id=self._actor.organization_id,
             actor_type=self._actor.actor_type,
             actor_id=self._actor.label,
             action="ExternalListingWithdrawn",

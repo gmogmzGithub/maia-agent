@@ -29,6 +29,7 @@ from sqlalchemy import (
     Index,
     Integer,
     Numeric,
+    Sequence as SqlSequence,
     String,
     Text,
     UniqueConstraint,
@@ -222,19 +223,86 @@ def _uuid_pk() -> Mapped[uuid.UUID]:
     return mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
 
+def _organization_fk(*, ondelete: str, primary_key: bool = False) -> Mapped[uuid.UUID]:
+    """The Organization this row belongs to. Required, on nearly every table.
+
+    ADR-0019 put commercial data under a Brokerage Organization explicitly rather
+    than an implicit global account, and ADR-0050 made the column mandatory: a
+    row that cannot name its Organization cannot be exported to them, deleted for
+    them, or kept away from anybody else, and a query that forgets to scope it
+    reads somebody else's operation.
+
+    Declared here rather than repeated on each table so the parts that must not
+    vary — the type, the target, and ``nullable=False`` — are written once, and
+    ``ondelete`` is the one decision left at the call site. It has no default on
+    purpose: ``CASCADE`` for rows that are only meaningful inside one Organization
+    and should leave with it, ``RESTRICT`` for the ones an offboarding run must
+    dispose of deliberately, such as a Property or an audit trail. Guessing
+    either would be a silent data-retention decision.
+    """
+    return mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete=ondelete),
+        nullable=False,
+        primary_key=primary_key,
+    )
+
+
+def _optional_organization_fk(*, ondelete: str) -> Mapped[uuid.UUID | None]:
+    """The rare nullable variant, for a row that can outlive its Organization.
+
+    Two tables only: platform-level history, whose ``actor_type='Platform'`` rows
+    are about the installation rather than any one Organization, and an
+    offboarding run, which must still be readable after the Organization it
+    removed is gone. Separate from :func:`_organization_fk` rather than a flag on
+    it, so nullability cannot be reached by passing an argument — the point of
+    ADR-0050 is that scoping is not optional, and the exceptions are countable.
+    """
+    return mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organizations.id", ondelete=ondelete),
+        nullable=True,
+    )
+
+
+def _org_scoped_fk(
+    child_column: str, parent_table: str, *, name: str
+) -> ForeignKeyConstraint:
+    """A composite foreign key that carries ``organization_id`` into the parent.
+
+    The point of the pair rather than a plain ``ForeignKey`` on the child column:
+    it makes it structurally impossible for a row to reference a parent in a
+    *different* Organization. A single-column reference would happily let one
+    brokerage's Followup point at another's Conversation (ADR-0050).
+
+    ``DEFERRABLE INITIALLY DEFERRED`` is load-bearing and therefore not a
+    parameter. Parent and child are frequently inserted in the same flush, and a
+    constraint checked immediately would reject the pair on insertion order
+    alone. A future table that omitted it would reintroduce exactly that bug, so
+    there is no way to omit it.
+    """
+    return ForeignKeyConstraint(
+        ["organization_id", child_column],
+        [f"{parent_table}.organization_id", f"{parent_table}.id"],
+        name=name,
+        deferrable=True,
+        initially="DEFERRED",
+    )
+
+
 class Property(Base):
     __tablename__ = "properties"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     # ADR-0019: commercial data belongs to a Brokerage Organization explicitly
     # rather than to an implicit global account.
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organizations.id", ondelete="RESTRICT"),
-        nullable=False,
-    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="RESTRICT")
     # The readable immutable Property Key from the Markdown (P-048).
-    property_key: Mapped[str] = mapped_column(String(120), unique=True, nullable=False)
+    # Unique *within* the Organization since Stage 9. It was globally unique,
+    # which meant a second Organization could not use the same readable key and
+    # discovered that fact from a constraint violation naming somebody else's
+    # inventory (ADR-0050).
+    property_key: Mapped[str] = mapped_column(String(120), nullable=False)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     # Case-, whitespace- and diacritic-insensitive form; unique across Stage 0.
     normalized_name: Mapped[str] = mapped_column(String(200), nullable=False)
@@ -314,6 +382,9 @@ class Property(Base):
             "facts_review_state IN ('Pending', 'Approved', 'NeedsReview')",
             name="ck_properties_facts_review",
         ),
+        UniqueConstraint(
+            "organization_id", "property_key", name="uq_properties_org_key"
+        ),
         Index("ix_properties_normalized_name", "organization_id", "normalized_name"),
     )
 
@@ -328,6 +399,11 @@ class PropertyDocumentVersion(Base):
     __tablename__ = "property_document_versions"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
+    # Stage 9: the Organization this row belongs to, carried explicitly rather
+    # than reached through a join, so a query that forgets the parent cannot
+    # answer with another Organization's work (ADR-0050). The composite foreign
+    # key below makes the two agree.
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="RESTRICT")
     property_uuid: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("properties.id", ondelete="CASCADE"),
@@ -347,6 +423,11 @@ class PropertyDocumentVersion(Base):
 
     __table_args__ = (
         UniqueConstraint("property_uuid", "version", name="uq_property_version"),
+        _org_scoped_fk(
+            "property_uuid",
+            "properties",
+            name="fk_document_versions_org_property",
+        ),
         Index("ix_property_document_versions_property", "property_uuid"),
     )
 
@@ -357,6 +438,15 @@ class AuditEvent(Base):
     __tablename__ = "audit_events"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
+    # Which Organization's history this belongs to. Nullable for exactly one
+    # kind of row: an action about the platform itself — provisioning a new
+    # Organization, granting support access — which happens before or above any
+    # single Organization. Every other row must name one, and the check
+    # constraint below is what keeps "above any Organization" from becoming a
+    # convenient way to write unscoped history (ADR-0050).
+    organization_id: Mapped[uuid.UUID | None] = _optional_organization_fk(
+        ondelete="RESTRICT"
+    )
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -367,7 +457,14 @@ class AuditEvent(Base):
     subject_id: Mapped[str] = mapped_column(String(200), nullable=False)
     details: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
 
-    __table_args__ = (Index("ix_audit_events_subject", "subject_type", "subject_id"),)
+    __table_args__ = (
+        CheckConstraint(
+            "organization_id IS NOT NULL OR actor_type = 'Platform'",
+            name="ck_audit_events_scope",
+        ),
+        Index("ix_audit_events_subject", "subject_type", "subject_id"),
+        Index("ix_audit_events_organization", "organization_id", "occurred_at"),
+    )
 
 
 class Lead(Base):
@@ -382,11 +479,7 @@ class Lead(Base):
     id: Mapped[uuid.UUID] = _uuid_pk()
     # ADR-0019: commercial data belongs to a Brokerage Organization explicitly
     # rather than to an implicit global account.
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organizations.id", ondelete="RESTRICT"),
-        nullable=False,
-    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="RESTRICT")
     # The Lead's WhatsApp id as Meta reports it (digits, no '+').
     wa_id: Mapped[str] = mapped_column(String(32), nullable=False)
     profile_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
@@ -417,6 +510,11 @@ class LeadEngagementCycle(Base):
     __tablename__ = "lead_engagement_cycles"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
+    # Stage 9: the Organization this row belongs to, carried explicitly rather
+    # than reached through a join, so a query that forgets the parent cannot
+    # answer with another Organization's work (ADR-0050). The composite foreign
+    # key below makes the two agree.
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="RESTRICT")
     lead_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("leads.id", ondelete="CASCADE"), nullable=False
     )
@@ -432,6 +530,8 @@ class LeadEngagementCycle(Base):
 
     # The follow-up sweep asks for live cycles on every poll interval.
     __table_args__ = (
+        _org_scoped_fk("lead_id", "leads", name="fk_cycles_org_lead"),
+        UniqueConstraint("organization_id", "id", name="uq_cycles_org_id"),
         Index("ix_lead_engagement_cycles_active", "expires_at", "started_at"),
     )
 
@@ -451,11 +551,7 @@ class Conversation(Base):
     id: Mapped[uuid.UUID] = _uuid_pk()
     # ADR-0019: commercial data belongs to a Brokerage Organization explicitly
     # rather than to an implicit global account.
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organizations.id", ondelete="RESTRICT"),
-        nullable=False,
-    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="RESTRICT")
     lead_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("leads.id", ondelete="CASCADE"), nullable=False
     )
@@ -478,7 +574,26 @@ class Conversation(Base):
 
     # PostgreSQL does not index a foreign key on its own, and the gate's
     # service-window lookup joins through this column on every request.
-    __table_args__ = (Index("ix_conversations_lead", "lead_id"),)
+    __table_args__ = (
+        _org_scoped_fk("lead_id", "leads", name="fk_conversations_org_lead"),
+        _org_scoped_fk(
+            "property_uuid", "properties", name="fk_conversations_org_property"
+        ),
+        ForeignKeyConstraint(
+            ["lead_id", "cycle_id"],
+            ["lead_engagement_cycles.lead_id", "lead_engagement_cycles.id"],
+            name="fk_conversations_lead_cycle",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        UniqueConstraint("organization_id", "id", name="uq_conversations_org_id"),
+        UniqueConstraint(
+            "organization_id", "id", "lead_id", name="uq_conversations_org_id_lead"
+        ),
+        UniqueConstraint("lead_id", "id", name="uq_conversations_lead_id"),
+        UniqueConstraint("cycle_id", "id", name="uq_conversations_cycle_id"),
+        Index("ix_conversations_lead", "lead_id"),
+    )
 
 
 class LeadFollowUpStatus(str, enum.Enum):
@@ -506,6 +621,11 @@ class LeadFollowUp(Base):
     __tablename__ = "lead_followups"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
+    # Stage 9: the Organization this row belongs to, carried explicitly rather
+    # than reached through a join, so a query that forgets the parent cannot
+    # answer with another Organization's work (ADR-0050). The composite foreign
+    # key below makes the two agree.
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="RESTRICT")
     cycle_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("lead_engagement_cycles.id", ondelete="CASCADE"),
@@ -551,7 +671,21 @@ class LeadFollowUp(Base):
             name="ck_lead_followups_status",
         ),
         UniqueConstraint(
-            "cycle_id", "day_number", "channel", name="uq_lead_followup_cycle_day"
+            "organization_id",
+            "cycle_id",
+            "day_number",
+            "channel",
+            name="uq_lead_followup_cycle_day",
+        ),
+        _org_scoped_fk(
+            "cycle_id",
+            "lead_engagement_cycles",
+            name="fk_followups_org_cycle",
+        ),
+        _org_scoped_fk(
+            "conversation_id",
+            "conversations",
+            name="fk_followups_org_conversation",
         ),
         Index("ix_lead_followups_due", "status", "due_at"),
     )
@@ -577,13 +711,21 @@ class InboxMessage(Base):
     __tablename__ = "inbox_messages"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
+    # Stage 9: the Organization this row belongs to, carried explicitly rather
+    # than reached through a join, so a query that forgets the parent cannot
+    # answer with another Organization's work (ADR-0050). The composite foreign
+    # key below makes the two agree.
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="RESTRICT")
     conversation_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("conversations.id", ondelete="CASCADE"),
         nullable=False,
     )
     # Meta's message identifier — the idempotency key for duplicate webhooks.
-    wamid: Mapped[str] = mapped_column(String(200), unique=True, nullable=False)
+    # Unique per Organization since Stage 9: the duplicate lookup used to read
+    # the whole table, so a body replayed against the wrong number could resolve
+    # to another Organization's Conversation (ADR-0050).
+    wamid: Mapped[str] = mapped_column(String(200), nullable=False)
     from_wa_id: Mapped[str] = mapped_column(String(32), nullable=False)
     message_type: Mapped[str] = mapped_column(String(40), nullable=False)
     text: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -618,6 +760,13 @@ class InboxMessage(Base):
             "status IN ('Pending', 'Processing', 'Processed', 'Failed')",
             name="ck_inbox_messages_status",
         ),
+        UniqueConstraint("organization_id", "wamid", name="uq_inbox_org_wamid"),
+        _org_scoped_fk(
+            "conversation_id",
+            "conversations",
+            name="fk_inbox_org_conversation",
+        ),
+        UniqueConstraint("organization_id", "id", name="uq_inbox_org_id"),
         # The claim query: pending messages of one Conversation in arrival order.
         Index("ix_inbox_messages_lane", "conversation_id", "status", "sent_at"),
         # The retention sweep looks for conversations that still have content.
@@ -655,6 +804,11 @@ class InboxGroup(Base):
     __tablename__ = "inbox_groups"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
+    # Stage 9: the Organization this row belongs to, carried explicitly rather
+    # than reached through a join, so a query that forgets the parent cannot
+    # answer with another Organization's work (ADR-0050). The composite foreign
+    # key below makes the two agree.
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="RESTRICT")
     conversation_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("conversations.id", ondelete="CASCADE"),
@@ -683,6 +837,11 @@ class InboxGroup(Base):
         CheckConstraint(
             "status IN ('Processing', 'Settled', 'Failed')",
             name="ck_inbox_groups_status",
+        ),
+        _org_scoped_fk(
+            "conversation_id",
+            "conversations",
+            name="fk_inbox_groups_org_conversation",
         ),
         # At most one active Inbox group per Conversation (P-028, P-037). The
         # database enforces the lane rather than trusting worker coordination.
@@ -716,6 +875,11 @@ class OutboxMessage(Base):
     __tablename__ = "outbox_messages"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
+    # Stage 9: the Organization this row belongs to, carried explicitly rather
+    # than reached through a join, so a query that forgets the parent cannot
+    # answer with another Organization's work (ADR-0050). The composite foreign
+    # key below makes the two agree.
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="RESTRICT")
     conversation_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("conversations.id", ondelete="CASCADE"),
@@ -724,10 +888,11 @@ class OutboxMessage(Base):
     inbox_group_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("inbox_groups.id"), nullable=True
     )
-    # Idempotency: at most one Outbox row per (group, kind).
-    idempotency_key: Mapped[str] = mapped_column(
-        String(200), unique=True, nullable=False
-    )
+    # Idempotency: at most one Outbox row per (Organization, group, kind). The
+    # Organization is part of it since Stage 9 — two Organizations minting the
+    # same key would otherwise have one of them refuse to enqueue a reply the
+    # other already sent (ADR-0050).
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
     to_wa_id: Mapped[str] = mapped_column(String(32), nullable=False)
     kind: Mapped[str] = mapped_column(String(40), nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
@@ -760,6 +925,15 @@ class OutboxMessage(Base):
             "status IN ('Pending', 'Sending', 'Sent', 'Failed', 'DeliveryUnknown')",
             name="ck_outbox_messages_status",
         ),
+        UniqueConstraint(
+            "organization_id", "idempotency_key", name="uq_outbox_org_idempotency"
+        ),
+        UniqueConstraint("organization_id", "id", name="uq_outbox_org_id"),
+        _org_scoped_fk(
+            "conversation_id",
+            "conversations",
+            name="fk_outbox_org_conversation",
+        ),
         Index("ix_outbox_due", "status", "next_attempt_at"),
         # The eligibility gate's "did we write last?" lookup (ADR-0045).
         Index(
@@ -779,6 +953,11 @@ class DeliveryStatus(Base):
     __tablename__ = "delivery_statuses"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
+    # Stage 9: the Organization this row belongs to, carried explicitly rather
+    # than reached through a join, so a query that forgets the parent cannot
+    # answer with another Organization's work (ADR-0050). The composite foreign
+    # key below makes the two agree.
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="RESTRICT")
     outbox_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("outbox_messages.id", ondelete="CASCADE"),
@@ -796,8 +975,20 @@ class DeliveryStatus(Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "provider_message_id", "status", name="uq_delivery_status_event"
+            "organization_id",
+            "provider_message_id",
+            "status",
+            name="uq_delivery_status_event",
         ),
+        # MATCH SIMPLE: a status that arrived before its Outbox row is known
+        # keeps ``outbox_id`` NULL and the pair is simply not checked, which is
+        # the behaviour wanted here.
+        _org_scoped_fk(
+            "outbox_id",
+            "outbox_messages",
+            name="fk_delivery_statuses_org_outbox",
+        ),
+        Index("ix_delivery_statuses_outbox", "organization_id", "outbox_id"),
     )
 
 
@@ -846,6 +1037,11 @@ class ConsentRecord(Base):
     __tablename__ = "consent_records"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
+    # Stage 9: the Organization this row belongs to, carried explicitly rather
+    # than reached through a join, so a query that forgets the parent cannot
+    # answer with another Organization's work (ADR-0050). The composite foreign
+    # key below makes the two agree.
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="RESTRICT")
     lead_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("leads.id", ondelete="CASCADE"), nullable=False
     )
@@ -879,6 +1075,7 @@ class ConsentRecord(Base):
         CheckConstraint(
             "state IN ('Granted', 'Revoked')", name="ck_consent_records_state"
         ),
+        _org_scoped_fk("lead_id", "leads", name="fk_consent_records_org_lead"),
         Index(
             "ix_consent_records_current",
             "lead_id",
@@ -901,6 +1098,11 @@ class SuppressionRecord(Base):
     __tablename__ = "suppression_records"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
+    # Stage 9: the Organization this row belongs to, carried explicitly rather
+    # than reached through a join, so a query that forgets the parent cannot
+    # answer with another Organization's work (ADR-0050). The composite foreign
+    # key below makes the two agree.
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="RESTRICT")
     lead_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("leads.id", ondelete="CASCADE"), nullable=False
     )
@@ -927,6 +1129,7 @@ class SuppressionRecord(Base):
         CheckConstraint(
             "scope IN ('BusinessInitiated', 'All')", name="ck_suppression_records_scope"
         ),
+        _org_scoped_fk("lead_id", "leads", name="fk_suppression_records_org_lead"),
         # At most one *active* suppression per Lead and channel, which makes
         # recording an opt-out idempotent under concurrent webhook deliveries.
         Index(
@@ -951,6 +1154,11 @@ class OutboundDecision(Base):
     __tablename__ = "outbound_decisions"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
+    # Stage 9: the Organization this row belongs to, carried explicitly rather
+    # than reached through a join, so a query that forgets the parent cannot
+    # answer with another Organization's work (ADR-0050). The composite foreign
+    # key below makes the two agree.
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="RESTRICT")
     conversation_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("conversations.id", ondelete="CASCADE"),
@@ -1006,8 +1214,14 @@ class OutboundDecision(Base):
         # At most one *allowed* decision per intent key, mirroring the Outbox's
         # own uniqueness. Denials repeat freely: refusing the same intent twice
         # is history, not a conflict.
+        _org_scoped_fk(
+            "conversation_id",
+            "conversations",
+            name="fk_outbound_decisions_org_conversation",
+        ),
         Index(
             "uq_outbound_decision_queued",
+            "organization_id",
             "idempotency_key",
             unique=True,
             postgresql_where=sql_text("outcome = 'Queued'"),
@@ -1039,7 +1253,11 @@ class AdminMessage(Base):
     __tablename__ = "admin_messages"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    update_id: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False)
+    # Stage 9: which Organization's administrative channel this update arrived
+    # on. Telegram numbers updates per bot, and each Organization has its own
+    # bot, so the identifier is only unique inside one (ADR-0050).
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="RESTRICT")
+    update_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     chat_id: Mapped[str] = mapped_column(String(40), nullable=False)
     from_user_id: Mapped[str] = mapped_column(String(40), nullable=False)
     from_username: Mapped[str | None] = mapped_column(String(120), nullable=True)
@@ -1059,6 +1277,12 @@ class AdminMessage(Base):
     )
     raw_update: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
 
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id", "update_id", name="uq_admin_messages_org_update"
+        ),
+    )
+
 
 class ChannelCursor(Base):
     """Where a polled channel has read up to.
@@ -1070,6 +1294,13 @@ class ChannelCursor(Base):
 
     __tablename__ = "channel_cursors"
 
+    # Part of the primary key since Stage 9. One cursor per Organization and
+    # channel: two Organizations polling their own Telegram bots share a channel
+    # *name* and nothing else, and a single row would have made each one retire
+    # the other's backlog (ADR-0050).
+    organization_id: Mapped[uuid.UUID] = _organization_fk(
+        ondelete="CASCADE", primary_key=True
+    )
     channel: Mapped[str] = mapped_column(String(40), primary_key=True)
     cursor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     updated_at: Mapped[datetime] = mapped_column(
@@ -1126,6 +1357,11 @@ class AvailabilitySnapshot(Base):
     __tablename__ = "availability_snapshots"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
+    # Stage 9: the Organization this row belongs to, carried explicitly rather
+    # than reached through a join, so a query that forgets the parent cannot
+    # answer with another Organization's work (ADR-0050). The composite foreign
+    # key below makes the two agree.
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="RESTRICT")
     conversation_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("conversations.id", ondelete="CASCADE"),
@@ -1159,8 +1395,17 @@ class AvailabilitySnapshot(Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "conversation_id", "property_uuid", name="uq_snapshot_conversation_property"
+            "organization_id",
+            "conversation_id",
+            "property_uuid",
+            name="uq_snapshot_conversation_property",
         ),
+        _org_scoped_fk(
+            "conversation_id",
+            "conversations",
+            name="fk_snapshots_org_conversation",
+        ),
+        _org_scoped_fk("property_uuid", "properties", name="fk_snapshots_org_property"),
     )
 
 
@@ -1178,13 +1423,12 @@ class Appointment(Base):
     id: Mapped[uuid.UUID] = _uuid_pk()
     # ADR-0019: commercial data belongs to a Brokerage Organization explicitly
     # rather than to an implicit global account.
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organizations.id", ondelete="RESTRICT"),
-        nullable=False,
-    )
-    # The readable reference used in Administrative alerts and tools.
-    reference: Mapped[str] = mapped_column(String(40), unique=True, nullable=False)
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="RESTRICT")
+    # The readable reference used in Administrative alerts and tools. Unique
+    # per Organization since Stage 9: a short readable string is guessable, and
+    # a global namespace let one Organization's reference collide with — or
+    # resolve to — another's visit (ADR-0050).
+    reference: Mapped[str] = mapped_column(String(40), nullable=False)
     idempotency_key: Mapped[str] = mapped_column(
         String(300), unique=True, nullable=False
     )
@@ -1349,6 +1593,10 @@ class Appointment(Base):
             "reschedule_invitation_authorized IS FALSE OR attendance = 'Missed'",
             name="ck_appointments_reschedule_invitation",
         ),
+        UniqueConstraint(
+            "organization_id", "reference", name="uq_appointments_org_reference"
+        ),
+        UniqueConstraint("organization_id", "id", name="uq_appointments_org_id"),
         Index("ix_appointments_upcoming", "status", "starts_at"),
         Index("ix_appointments_advisor", "advisor_id", "starts_at"),
         # Availability asks for one calendar over a window as two inequalities,
@@ -1390,6 +1638,14 @@ class AgentSession(Base):
     __tablename__ = "agent_sessions"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
+    # Stage 9: which Organization's conversation this session serves. Hermes
+    # sessions are the model's continuity, so a session resolved across the
+    # boundary would let one Organization's history answer another's Contact —
+    # the single worst leak available in this product (ADR-0050).
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    # Hermes issues this identifier, so its namespace is the runtime's and stays
+    # globally unique. What Stage 9 changes is that resolving it also requires
+    # the Organization to match.
     hermes_session_id: Mapped[str] = mapped_column(
         String(120), unique=True, nullable=False
     )
@@ -1406,9 +1662,9 @@ class AgentSession(Base):
     )
     # For an Administrative session, the Telegram chat it serves. One persistent
     # session per administrator, separate from every Sales session (ADR-0001).
-    channel_key: Mapped[str | None] = mapped_column(
-        String(120), nullable=True, unique=True
-    )
+    # Unique per Organization: two Organizations may legitimately have a chat id
+    # collide, and one silently adopting the other's session is not acceptable.
+    channel_key: Mapped[str | None] = mapped_column(String(120), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -1416,6 +1672,14 @@ class AgentSession(Base):
     __table_args__ = (
         CheckConstraint(
             "role IN ('Sales', 'Administrative')", name="ck_agent_sessions_role"
+        ),
+        UniqueConstraint(
+            "organization_id", "channel_key", name="uq_agent_sessions_org_channel"
+        ),
+        _org_scoped_fk(
+            "cycle_id",
+            "lead_engagement_cycles",
+            name="fk_agent_sessions_org_cycle",
         ),
     )
 
@@ -1465,16 +1729,22 @@ class MemberRole(str, enum.Enum):
 
 
 class MemberProvisioning(str, enum.Enum):
-    """Who owns a member row: configuration, or an Administrator.
+    """Who owns a member row: configuration, an Administrator, or a support grant.
 
     Startup reconciliation deactivates a login that has left the configuration.
     Once an Administrator can add Advisors through the team surface, applying
     that rule to *every* row would delete the team on the next restart, so the
     provenance is stored (ADR-0047).
+
+    ``Support`` is Stage 9's addition and carries a second meaning: it is the one
+    provenance permitted to hold an Advisor row that cannot own Opportunities,
+    so a temporary internal engineer passes every ordinary authorization check
+    without ever being assignable (ADR-0054).
     """
 
     CONFIGURATION = "Configuration"
     ADMINISTRATOR = "Administrator"
+    SUPPORT = "Support"
 
 
 class ChannelIdentityTrust(str, enum.Enum):
@@ -1666,13 +1936,44 @@ class OpportunityExceptionReason(str, enum.Enum):
     ADMIN_REVIEW = "AdminReview"
 
 
+# Declared here rather than with the rest of the Stage 9 platform enums at the
+# bottom of this module, because ``Organization.status`` needs it as a column
+# default and a module is read top to bottom.
+class OrganizationStatus(str, enum.Enum):
+    """Where an Organization stands in its managed lifecycle.
+
+    ``Provisioning`` is not a usable state: it means a provisioning run has
+    created rows but has not finished, so the operation must not accept a
+    webhook or a login yet. Deprovisioning is equally explicit, because the
+    alternative — deleting the row — would destroy the audit trail that says
+    what happened to the data.
+    """
+
+    PROVISIONING = "Provisioning"
+    ACTIVE = "Active"
+    SUSPENDED = "Suspended"
+    DEPROVISIONING = "Deprovisioning"
+    DEPROVISIONED = "Deprovisioned"
+
+
 class Organization(Base):
     """The Brokerage Organization that owns commercial data (ADR-0019).
 
-    One row exists in Stage 2 and that is deliberate: ADR-0018 builds the
-    brokerage before the platform. What matters is that every commercial record
-    names it explicitly, so a second organization is a data question rather
-    than a rewrite of every query.
+    Stage 2 created one row deliberately: ADR-0018 builds the brokerage before
+    the platform, and what mattered then was that every commercial record named
+    it explicitly so a second Organization would be a data question rather than
+    a rewrite of every query.
+
+    Stage 9 is that second Organization. The row now also carries a *lifecycle*,
+    because a managed platform has to distinguish "being created", "operating",
+    "paused" and "gone" — and because deleting the row was never an option: the
+    audit trail that explains what happened to an Organization's data has to
+    outlive the Organization.
+
+    Everything an operator can change about how the Organization behaves lives
+    in :class:`OrganizationConfigurationVersion`, not here. This table is
+    identity and lifecycle only, so a column added for convenience cannot become
+    an unversioned setting nobody can date (ADR-0051).
     """
 
     __tablename__ = "organizations"
@@ -1680,8 +1981,42 @@ class Organization(Base):
     id: Mapped[uuid.UUID] = _uuid_pk()
     slug: Mapped[str] = mapped_column(String(60), unique=True, nullable=False)
     display_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    # ``Provisioning`` is also the *server* default, so a row inserted by
+    # anything other than the provisioning module — a migration, a fixture, a
+    # psql session during an incident — is created not-operating rather than
+    # rejected. Failing closed is the whole point: an Organization that exists
+    # by accident must not answer a customer.
+    status: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        default=OrganizationStatus.PROVISIONING.value,
+        server_default=sql_text(f"'{OrganizationStatus.PROVISIONING.value}'"),
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    activated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    suspended_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    deprovisioned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('Provisioning', 'Active', 'Suspended', "
+            "'Deprovisioning', 'Deprovisioned')",
+            name="ck_organizations_status",
+        ),
+        # Active means usable, and usable means somebody said when. Without this
+        # a half-finished provisioning run could leave a row that looks ready.
+        CheckConstraint(
+            "status <> 'Active' OR activated_at IS NOT NULL",
+            name="ck_organizations_activated",
+        ),
     )
 
 
@@ -1698,11 +2033,7 @@ class OrganizationMember(Base):
     __tablename__ = "organization_members"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False,
-    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
     login: Mapped[str] = mapped_column(String(120), nullable=False)
     display_name: Mapped[str] = mapped_column(String(200), nullable=False)
     role: Mapped[str] = mapped_column(String(30), nullable=False)
@@ -1744,12 +2075,20 @@ class OrganizationMember(Base):
             name="ck_organization_members_role",
         ),
         CheckConstraint(
-            "provisioned_by IN ('Configuration', 'Administrator')",
+            "provisioned_by IN ('Configuration', 'Administrator', 'Support')",
             name="ck_organization_members_provisioned_by",
         ),
-        # An Advisor who cannot own Opportunities is not an Advisor.
+        # An Advisor who cannot own Opportunities is not an Advisor — with one
+        # named exception since Stage 9. A support engineer holding a temporary
+        # grant is given an Advisor row so every existing authorization check
+        # applies unchanged, and is deliberately *not* assignable: the
+        # deterministic assignment rule must never route a real Opportunity to
+        # Maia's support desk. The exception is confined to ``Support``
+        # provenance, so it cannot become a way to create an unassignable
+        # Advisor by accident (ADR-0054).
         CheckConstraint(
-            "role <> 'RealEstateAdvisor' OR advises IS TRUE",
+            "role <> 'RealEstateAdvisor' OR advises IS TRUE "
+            "OR provisioned_by = 'Support'",
             name="ck_organization_members_advisor_advises",
         ),
         CheckConstraint(
@@ -1779,11 +2118,7 @@ class Contact(Base):
     __tablename__ = "contacts"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False,
-    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
     # The best name Product actually knows. A WhatsApp profile name is a claim
     # by the sender, so it is stored as a display hint and never as legal
     # identity. NULL is a legitimate value: an anonymous inquiry has no name.
@@ -1795,7 +2130,10 @@ class Contact(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    __table_args__ = (Index("ix_contacts_org", "organization_id", "created_at"),)
+    __table_args__ = (
+        UniqueConstraint("organization_id", "id", name="uq_contacts_org_id"),
+        Index("ix_contacts_org", "organization_id", "created_at"),
+    )
 
 
 class ContactChannelIdentity(Base):
@@ -1816,11 +2154,7 @@ class ContactChannelIdentity(Base):
     __tablename__ = "contact_channel_identities"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False,
-    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
     contact_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("contacts.id", ondelete="CASCADE"),
@@ -1872,11 +2206,7 @@ class PropertyNeed(Base):
     __tablename__ = "property_needs"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False,
-    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
     contact_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("contacts.id", ondelete="CASCADE"),
@@ -1931,11 +2261,7 @@ class PropertyNeedCriterion(Base):
     __tablename__ = "property_need_criteria"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False,
-    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
     property_need_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("property_needs.id", ondelete="CASCADE"),
@@ -1995,11 +2321,7 @@ class Opportunity(Base):
     __tablename__ = "opportunities"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False,
-    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
     contact_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("contacts.id", ondelete="CASCADE"),
@@ -2104,11 +2426,7 @@ class CommercialTransaction(Base):
     __tablename__ = "commercial_transactions"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False,
-    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
     opportunity_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("opportunities.id", ondelete="RESTRICT"),
@@ -2166,11 +2484,7 @@ class OpportunityOrigin(Base):
     __tablename__ = "opportunity_origins"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False,
-    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
     opportunity_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("opportunities.id", ondelete="CASCADE"),
@@ -2225,11 +2539,7 @@ class OpportunityStageTransition(Base):
     __tablename__ = "opportunity_stage_transitions"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False,
-    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
     opportunity_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("opportunities.id", ondelete="CASCADE"),
@@ -2263,11 +2573,7 @@ class OpportunityAssignment(Base):
     __tablename__ = "opportunity_assignments"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False,
-    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
     opportunity_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("opportunities.id", ondelete="CASCADE"),
@@ -2315,11 +2621,7 @@ class AssignmentQueueEntry(Base):
     __tablename__ = "assignment_queue_entries"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False,
-    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
     opportunity_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("opportunities.id", ondelete="CASCADE"),
@@ -2364,11 +2666,7 @@ class NextAction(Base):
     __tablename__ = "next_actions"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False,
-    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
     opportunity_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("opportunities.id", ondelete="CASCADE"),
@@ -2446,11 +2744,7 @@ class OpportunityException(Base):
     __tablename__ = "opportunity_exceptions"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False,
-    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
     opportunity_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("opportunities.id", ondelete="CASCADE"),
@@ -2494,11 +2788,7 @@ class CommercialCommandReceipt(Base):
     __tablename__ = "commercial_command_receipts"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False,
-    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
     command_key: Mapped[str] = mapped_column(String(200), nullable=False)
     operation: Mapped[str] = mapped_column(String(80), nullable=False)
     subject_type: Mapped[str] = mapped_column(String(80), nullable=False)
@@ -2652,11 +2942,7 @@ class AdvisorAbsence(Base):
     __tablename__ = "advisor_absences"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False,
-    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
     advisor_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("organization_members.id", ondelete="RESTRICT"),
@@ -2715,11 +3001,7 @@ class PropertyExpert(Base):
     __tablename__ = "property_experts"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False,
-    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
     property_uuid: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("properties.id", ondelete="CASCADE"),
@@ -2782,11 +3064,7 @@ class ConversationHandlingState(Base):
     __tablename__ = "conversation_handling"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False,
-    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
     conversation_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("conversations.id", ondelete="CASCADE"),
@@ -2835,11 +3113,7 @@ class HumanHandoffRequest(Base):
     __tablename__ = "human_handoff_requests"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False,
-    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
     conversation_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("conversations.id", ondelete="CASCADE"),
@@ -2931,11 +3205,7 @@ class InternalAlert(Base):
     __tablename__ = "internal_alerts"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False,
-    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
     kind: Mapped[str] = mapped_column(String(40), nullable=False)
     #: NULL means every Organization Administrator.
     recipient_member_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -2999,6 +3269,11 @@ class AppointmentReminder(Base):
     __tablename__ = "appointment_reminders"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
+    # Stage 9: the Organization this row belongs to, carried explicitly rather
+    # than reached through a join, so a query that forgets the parent cannot
+    # answer with another Organization's work (ADR-0050). The composite foreign
+    # key below makes the two agree.
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="RESTRICT")
     appointment_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("appointments.id", ondelete="CASCADE"),
@@ -3019,7 +3294,17 @@ class AppointmentReminder(Base):
 
     __table_args__ = (
         CheckConstraint("kind IN ('DayBefore', 'DayOf')", name="ck_reminder_kind"),
-        UniqueConstraint("appointment_id", "kind", name="uq_reminder_appointment_kind"),
+        UniqueConstraint(
+            "organization_id",
+            "appointment_id",
+            "kind",
+            name="uq_reminder_appointment_kind",
+        ),
+        _org_scoped_fk(
+            "appointment_id",
+            "appointments",
+            name="fk_reminders_org_appointment",
+        ),
         Index("ix_reminders_due", "settled_at", "due_at"),
     )
 
@@ -3038,11 +3323,7 @@ class Development(Base):
     __tablename__ = "developments"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False,
-    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
     development_key: Mapped[str] = mapped_column(String(120), nullable=False)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     facts: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
@@ -3182,10 +3463,13 @@ class CatalogListing(Base):
         DateTime(timezone=True), nullable=True
     )
     presentation_policy_version: Mapped[str] = mapped_column(String(60), nullable=False)
-    gallery_path: Mapped[str] = mapped_column(String(240), nullable=False, unique=True)
-    technical_sheet_path: Mapped[str] = mapped_column(
-        String(240), nullable=False, unique=True
-    )
+    # Public URL paths, unique *per Organization* since Stage 9. They were
+    # globally unique, which served no routing purpose — the public site resolves
+    # a Listing by ``listing_key`` inside the Organization its hostname is bound
+    # to — and did stop a second brokerage from publishing a Property whose slug
+    # the first one had already used (ADR-0050).
+    gallery_path: Mapped[str] = mapped_column(String(240), nullable=False)
+    technical_sheet_path: Mapped[str] = mapped_column(String(240), nullable=False)
     legacy_document_version_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("property_document_versions.id", ondelete="SET NULL"),
@@ -3262,6 +3546,14 @@ class CatalogListing(Base):
         ),
         UniqueConstraint(
             "organization_id", "listing_key", name="uq_catalog_listings_org_key"
+        ),
+        UniqueConstraint(
+            "organization_id", "gallery_path", name="uq_catalog_listings_gallery_path"
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "technical_sheet_path",
+            name="uq_catalog_listings_sheet_path",
         ),
         UniqueConstraint("organization_id", "id", name="uq_catalog_listings_org_id"),
         Index(
@@ -3436,9 +3728,7 @@ class SavedCollection(Base):
     __tablename__ = "saved_collections"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
-    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
     access_token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     protected_contact_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("contacts.id", ondelete="RESTRICT"), nullable=True
@@ -3477,6 +3767,9 @@ class SavedCollection(Base):
                 "AND merged_into_id IS NULL"
             ),
         ),
+        UniqueConstraint(
+            "organization_id", "id", name="uq_saved_collections_org_id"
+        ),
         Index("ix_saved_collections_expiry", "expires_at"),
     )
 
@@ -3485,6 +3778,9 @@ class SavedCollectionItem(Base):
     __tablename__ = "saved_collection_items"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
+    # Stage 9: carried explicitly so a query that forgets the parent cannot
+    # answer with another Organization's work (ADR-0050).
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="RESTRICT")
     collection_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("saved_collections.id", ondelete="CASCADE"), nullable=False
     )
@@ -3499,7 +3795,22 @@ class SavedCollectionItem(Base):
     )
 
     __table_args__ = (
-        UniqueConstraint("collection_id", "listing_id", name="uq_saved_collection_item"),
+        UniqueConstraint(
+            "organization_id",
+            "collection_id",
+            "listing_id",
+            name="uq_saved_collection_item",
+        ),
+        _org_scoped_fk(
+            "collection_id",
+            "saved_collections",
+            name="fk_saved_items_org_collection",
+        ),
+        _org_scoped_fk(
+            "listing_id",
+            "catalog_listings",
+            name="fk_saved_items_org_listing",
+        ),
         Index("ix_saved_collection_items_collection", "collection_id", "saved_at"),
     )
 
@@ -3510,9 +3821,7 @@ class SharedSelection(Base):
     __tablename__ = "shared_selections"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
-    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
     collection_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("saved_collections.id", ondelete="CASCADE"), nullable=False
     )
@@ -3535,13 +3844,15 @@ class WebsiteConversation(Base):
     __tablename__ = "website_conversations"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
-    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
     access_token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     hermes_session_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
     verified_contact_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("contacts.id", ondelete="RESTRICT"), nullable=True
+    )
+    sponsorship_campaign_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=True,
     )
     listing_context: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
     status: Mapped[str] = mapped_column(
@@ -3564,6 +3875,14 @@ class WebsiteConversation(Base):
             "(verified_contact_id IS NOT NULL AND status IN ('Verified', 'Closed'))",
             name="ck_website_conversations_verified_contact",
         ),
+        UniqueConstraint(
+            "organization_id", "id", name="uq_website_conversations_org_id"
+        ),
+        _org_scoped_fk(
+            "sponsorship_campaign_id",
+            "sponsorship_campaigns",
+            name="fk_website_conversations_org_sponsorship",
+        ),
         Index("ix_website_conversations_activity", "last_activity_at"),
     )
 
@@ -3572,10 +3891,13 @@ class WebsiteMessage(Base):
     __tablename__ = "website_messages"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
+    # Stage 9: carried explicitly so a query that forgets the parent cannot
+    # answer with another Organization's work (ADR-0050).
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="RESTRICT")
     conversation_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("website_conversations.id", ondelete="CASCADE"), nullable=False
     )
-    command_key: Mapped[str] = mapped_column(String(200), unique=True, nullable=False)
+    command_key: Mapped[str] = mapped_column(String(200), nullable=False)
     role: Mapped[str] = mapped_column(String(20), nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -3588,6 +3910,14 @@ class WebsiteMessage(Base):
 
     __table_args__ = (
         CheckConstraint("role IN ('Customer', 'Maia', 'System')", name="ck_website_messages_role"),
+        UniqueConstraint(
+            "organization_id", "command_key", name="uq_website_messages_org_command"
+        ),
+        _org_scoped_fk(
+            "conversation_id",
+            "website_conversations",
+            name="fk_website_messages_org_conversation",
+        ),
         Index("ix_website_messages_thread", "conversation_id", "created_at"),
         Index(
             "ix_website_messages_expiry",
@@ -3603,9 +3933,7 @@ class ChannelHandoff(Base):
     __tablename__ = "channel_handoffs"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
-    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     purpose: Mapped[str] = mapped_column(String(40), nullable=False)
     website_conversation_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -3616,6 +3944,10 @@ class ChannelHandoff(Base):
     )
     listing_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("catalog_listings.id", ondelete="RESTRICT"), nullable=True
+    )
+    sponsorship_campaign_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=True,
     )
     expected_contact_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("contacts.id", ondelete="RESTRICT"), nullable=True
@@ -3643,6 +3975,12 @@ class ChannelHandoff(Base):
             "OR listing_id IS NOT NULL",
             name="ck_channel_handoffs_context",
         ),
+        UniqueConstraint("organization_id", "id", name="uq_channel_handoffs_org_id"),
+        _org_scoped_fk(
+            "sponsorship_campaign_id",
+            "sponsorship_campaigns",
+            name="fk_channel_handoffs_org_sponsorship",
+        ),
         Index("ix_channel_handoffs_expiry", "expires_at"),
     )
 
@@ -3653,10 +3991,11 @@ class PublicAnalyticsEvent(Base):
     __tablename__ = "public_analytics_events"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
-    )
-    event_key: Mapped[str] = mapped_column(String(200), unique=True, nullable=False)
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    # Unique per Organization since Stage 9. Event keys are built from product
+    # identifiers, so two Organizations can legitimately mint the same string;
+    # a global namespace made one of them silently lose the event (ADR-0050).
+    event_key: Mapped[str] = mapped_column(String(200), nullable=False)
     name: Mapped[str] = mapped_column(String(40), nullable=False)
     listing_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("catalog_listings.id", ondelete="RESTRICT"), nullable=True
@@ -3680,6 +4019,9 @@ class PublicAnalyticsEvent(Base):
             "('Larevia', 'Premium', 'SuperPremium')",
             name="ck_public_analytics_tier",
         ),
+        UniqueConstraint(
+            "organization_id", "event_key", name="uq_public_analytics_org_event"
+        ),
         Index("ix_public_analytics_funnel", "organization_id", "occurred_at", "name"),
     )
 
@@ -3690,11 +4032,7 @@ class ExternalListingCandidate(Base):
     __tablename__ = "external_listing_candidates"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False,
-    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
     source: Mapped[str] = mapped_column(String(40), nullable=False)
     source_listing_id: Mapped[str] = mapped_column(String(120), nullable=False)
     source_scope: Mapped[str] = mapped_column(String(20), nullable=False)
@@ -3880,11 +4218,7 @@ class InventorySourceHealthRecord(Base):
     __tablename__ = "inventory_source_health"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False,
-    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
     source: Mapped[str] = mapped_column(String(40), nullable=False)
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default=InventorySourceStatus.NEVER_SYNCED.value
@@ -3989,11 +4323,7 @@ class ApprovedMessageTemplate(Base):
     __tablename__ = "approved_message_templates"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False,
-    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
     waba_id: Mapped[str] = mapped_column(String(80), nullable=False)
     provider_template_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
     template_name: Mapped[str] = mapped_column(String(120), nullable=False)
@@ -4051,11 +4381,7 @@ class ReactivationCandidate(Base):
     __tablename__ = "reactivation_candidates"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False,
-    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
     property_need_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("property_needs.id", ondelete="CASCADE"),
@@ -4149,11 +4475,7 @@ class DevelopmentCampaign(Base):
     __tablename__ = "development_campaigns"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False,
-    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
     development_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("developments.id", ondelete="RESTRICT"),
@@ -4236,11 +4558,7 @@ class CampaignAudienceMember(Base):
         ForeignKey("development_campaigns.id", ondelete="CASCADE"),
         nullable=False,
     )
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False,
-    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
     property_need_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("property_needs.id", ondelete="CASCADE"),
@@ -4299,11 +4617,7 @@ class MarketingTouch(Base):
     __tablename__ = "marketing_touches"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
-    organization_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("organizations.id", ondelete="CASCADE"),
-        nullable=False,
-    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
     contact_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("contacts.id", ondelete="CASCADE"),
@@ -4344,5 +4658,1799 @@ class MarketingTouch(Base):
             "organization_id",
             "contact_id",
             "recorded_at",
+        ),
+    )
+
+
+# --- Stage 8: analytics taxonomy and sponsorship ---------------------------
+#
+# Two families of tables arrive together because they answer one question from
+# opposite ends. The ``analytics`` PostgreSQL schema holds pseudonymous
+# measurement; the sponsorship tables in the product schema hold the commercial
+# agreement that measurement is sold against. They are deliberately separate
+# schemas: an analytics query must not be able to reach a Contact, and a
+# commercial query must not be able to reach raw behaviour (ADR-0044).
+ANALYTICS_SCHEMA = "analytics"
+
+#: The PostgreSQL sequence that orders analytics emission. Declared once, at
+#: module level, because ``AnalyticsEvents.record`` reads the next value
+#: explicitly: a sequence default on a non-primary-key column is inlined into
+#: the INSERT without RETURNING, so the row would come back with the attribute
+#: unloaded and reading it inside the async worker raises ``MissingGreenlet``
+#: instead of returning a number.
+ANALYTICS_OUTBOX_SEQUENCE = SqlSequence(
+    "analytics_outbox_sequence", schema=ANALYTICS_SCHEMA
+)
+
+
+class AnalyticsEventName(str, enum.Enum):
+    """The versioned domain-event taxonomy.
+
+    Additive only. A name is never repurposed and never deleted, because a
+    historic report reproduced from stored definitions has to keep meaning what
+    it meant when it was generated.
+    """
+
+    SPONSORED_SERVED_IMPRESSION = "SponsoredServedImpression"
+    SPONSORED_VISIBLE_IMPRESSION = "SponsoredVisibleImpression"
+    LISTING_OPENED = "ListingOpened"
+    GALLERY_OPENED = "GalleryOpened"
+    GALLERY_DEPTH_REACHED = "GalleryDepthReached"
+    SIGNIFICANT_GALLERY_EXPLORATION = "SignificantGalleryExploration"
+    LISTING_SAVED = "ListingSaved"
+    SELECTION_SHARED = "SelectionShared"
+    MAIA_STARTED = "MaiaStarted"
+    WHATSAPP_HANDOFF = "WhatsAppHandoff"
+    APPOINTMENT_REQUESTED = "AppointmentRequested"
+    APPOINTMENT_VERIFIED = "AppointmentVerified"
+    APPOINTMENT_ATTENDED = "AppointmentAttended"
+    OPPORTUNITY_OUTCOME_KNOWN = "OpportunityOutcomeKnown"
+    FIRST_RESPONSE_RECORDED = "FirstResponseRecorded"
+    OPPORTUNITY_QUALIFIED = "OpportunityQualified"
+    HARM_SIGNAL_RECORDED = "HarmSignalRecorded"
+
+
+class AnalyticsOutboxStatus(str, enum.Enum):
+    """Where one enqueued analytics event is in its durable hand-off."""
+
+    PENDING = "Pending"
+    PROJECTED = "Projected"
+    REJECTED = "Rejected"
+
+
+class TrafficClass(str, enum.Enum):
+    """Why an event does or does not count toward a reported metric.
+
+    Everything is stored. Only ``Valid`` is aggregated, and the remainder is
+    reported as excluded volume rather than quietly discarded: an unexplained
+    gap between raw and reported numbers is how measurement loses its
+    credibility.
+    """
+
+    VALID = "Valid"
+    BOT = "Bot"
+    INTERNAL = "Internal"
+    TEST = "Test"
+    IMPLAUSIBLE = "Implausible"
+
+
+class SponsoredSurface(str, enum.Enum):
+    """A defined public discovery surface a Sponsored Placement may occupy."""
+
+    SEARCH = "Search"
+    HOMEPAGE = "Homepage"
+
+
+class SponsorshipCampaignStatus(str, enum.Enum):
+    """The accepted campaign states (ADR-0043)."""
+
+    DRAFT = "Draft"
+    QUOTED = "Quoted"
+    RESERVED = "Reserved"
+    SCHEDULED = "Scheduled"
+    ACTIVE = "Active"
+    PAUSED = "Paused"
+    COMPLETED = "Completed"
+    CANCELLED = "Cancelled"
+
+
+class SponsorshipQuoteStatus(str, enum.Enum):
+    """A quote's own lifecycle. Issuing one never reserves capacity."""
+
+    ISSUED = "Issued"
+    EXPIRED = "Expired"
+    RESERVED = "Reserved"
+    CANCELLED = "Cancelled"
+
+
+class PriceCatalogStatus(str, enum.Enum):
+    """An Administrator-managed price catalog version."""
+
+    DRAFT = "Draft"
+    PUBLISHED = "Published"
+    RETIRED = "Retired"
+
+
+class CollectionState(str, enum.Enum):
+    """Externally recorded collection state. Product moves no money."""
+
+    NOT_INVOICED = "NotInvoiced"
+    AWAITING_PAYMENT = "AwaitingPayment"
+    COLLECTED = "Collected"
+    WAIVED = "Waived"
+    UNCOLLECTIBLE = "Uncollectible"
+
+
+class ReportAudience(str, enum.Enum):
+    """Who a generated sponsorship report is for."""
+
+    BUYER = "Buyer"
+    ADMINISTRATOR = "Administrator"
+
+
+class HarmSignalKind(str, enum.Enum):
+    """The pilot's stop-condition signals (SAN-079)."""
+
+    WRONG_INFORMATION = "WrongInformation"
+    COMPLAINT = "Complaint"
+    UNTIMELY_MESSAGE = "UntimelyMessage"
+    ASSIGNMENT_FAILURE = "AssignmentFailure"
+    INCORRECT_APPOINTMENT = "IncorrectAppointment"
+    OPERATIONAL_OVERLOAD = "OperationalOverload"
+
+
+class PseudonymSalt(Base):
+    """A per-Organization, per-purpose salt. Never leaves the database.
+
+    Pseudonymisation needs a stable key so the same anonymous session maps to
+    the same reference twice, and a secret one so the mapping cannot be
+    reversed by anybody holding the analytics rows. Generating it here rather
+    than reading it from configuration means no deployment can accidentally run
+    with an empty or shared salt.
+    """
+
+    __tablename__ = "pseudonym_salts"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    purpose: Mapped[str] = mapped_column(String(30), nullable=False)
+    salt: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("organization_id", "purpose", name="uq_pseudonym_salt_purpose"),
+        {"schema": ANALYTICS_SCHEMA},
+    )
+
+
+class MeasurementDefinition(Base):
+    """One frozen version of every counting rule a report may depend on.
+
+    Stored rather than compiled in, because ADR-0044 requires a report issued in
+    March to still reproduce in September after the visibility threshold moved.
+    """
+
+    __tablename__ = "measurement_definitions"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    version: Mapped[str] = mapped_column(String(40), nullable=False, unique=True)
+    definition: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    effective_from: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    retired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = ({"schema": ANALYTICS_SCHEMA},)
+
+
+class AnalyticsOutboxEntry(Base):
+    """The durable analytics Outbox: emission separated from projection.
+
+    Deliberately not ``outbox_messages``. That table is the customer-facing
+    delivery contract and a stuck analytics row must never share a queue, a
+    retry budget or a failure mode with a message somebody is waiting for.
+    """
+
+    __tablename__ = "analytics_outbox"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    # A PostgreSQL sequence, not the primary key. Emission order is what
+    # ``AnalyticsProjection`` replays and resumes from, and a UUID cannot be
+    # ordered; sharing the key with the identity would also mean a gap-free
+    # counter nobody needs.
+    sequence: Mapped[int] = mapped_column(
+        BigInteger, ANALYTICS_OUTBOX_SEQUENCE, nullable=False, unique=True
+    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    # One projection of a raw event per Organization and definition version.
+    # Replaying under a new frozen definition must materialize a second row;
+    # replaying the same definition remains idempotent.
+    event_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    event_name: Mapped[str] = mapped_column(String(60), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    taxonomy_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=AnalyticsOutboxStatus.PENDING.value
+    )
+    duplicate_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    enqueued_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    projected_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('Pending', 'Projected', 'Rejected')",
+            name="ck_analytics_outbox_status",
+        ),
+        UniqueConstraint(
+            "organization_id", "event_key", name="uq_analytics_outbox_org_event"
+        ),
+        Index("ix_analytics_outbox_drain", "status", "sequence"),
+        {"schema": ANALYTICS_SCHEMA},
+    )
+
+
+class AnalyticsDomainEvent(Base):
+    """One immutable pseudonymous event record.
+
+    No Contact id, no phone number, no message text, no free-text attribute.
+    ``subject_reference`` and ``session_reference`` are salted digests, so a
+    funnel can be followed without anybody being identified from these rows.
+    """
+
+    __tablename__ = "domain_events"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    # Unique per Organization since Stage 9, not globally: an event key is built
+    # from product identifiers, so two Organizations can legitimately mint the
+    # same string and a shared namespace made one of them lose the event.
+    event_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    event_name: Mapped[str] = mapped_column(String(60), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    taxonomy_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    definition_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    traffic_class: Mapped[str] = mapped_column(String(20), nullable=False)
+    exclusion_reason: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    subject_reference: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    session_reference: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    listing_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    campaign_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    surface: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    placement_position: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    sponsored: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    attributes: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    projected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "traffic_class IN ('Valid', 'Bot', 'Internal', 'Test', 'Implausible')",
+            name="ck_domain_events_traffic_class",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "event_key",
+            "definition_version",
+            name="uq_domain_events_org_event_definition",
+        ),
+        Index("ix_domain_events_funnel", "organization_id", "occurred_at", "event_name"),
+        Index("ix_domain_events_campaign", "campaign_id", "event_name", "occurred_at"),
+        Index("ix_domain_events_sequence", "sequence"),
+        {"schema": ANALYTICS_SCHEMA},
+    )
+
+
+class AnalyticsProjectionRun(Base):
+    """What one projection pass consumed, and what it had to fold back in."""
+
+    __tablename__ = "projection_runs"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    definition_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    from_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    last_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    projected_events: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    late_events: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    excluded_events: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    rebuilt_periods: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    ran_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        Index(
+            "ix_projection_runs_org_version",
+            "organization_id",
+            "definition_version",
+            "ran_at",
+        ),
+        {"schema": ANALYTICS_SCHEMA},
+    )
+
+
+class AnalyticsFunnelAggregate(Base):
+    """One versioned daily aggregate cell. Recomputed, never incremented.
+
+    Recomputation is what makes a late event correct instead of lost: the pass
+    rebuilds every period an arriving event belongs to rather than adding to a
+    counter that has already been reported.
+    """
+
+    __tablename__ = "funnel_aggregates"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    definition_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    period_start: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    grain: Mapped[str] = mapped_column(String(10), nullable=False, default="day")
+    campaign_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    listing_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    surface: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    sponsored: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    counts: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    excluded_counts: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    refreshed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "definition_version",
+            "organization_id",
+            "grain",
+            "period_start",
+            "campaign_id",
+            "listing_id",
+            "surface",
+            "sponsored",
+            name="uq_funnel_aggregate_cell",
+        ),
+        Index(
+            "ix_funnel_aggregates_read",
+            "definition_version",
+            "organization_id",
+            "period_start",
+        ),
+        {"schema": ANALYTICS_SCHEMA},
+    )
+
+
+class SponsorshipPriceCatalog(Base):
+    """An Administrator-managed, versioned price catalog.
+
+    ``pilot_evidence`` is required to publish. ADR-0043 says the first price
+    follows measured pilot traffic, and a nullable note nobody has to fill in
+    would let an invented number become the published price on the first day.
+    """
+
+    __tablename__ = "sponsorship_price_catalogs"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    version: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=PriceCatalogStatus.DRAFT.value
+    )
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="MXN")
+    pilot_evidence: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    retired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('Draft', 'Published', 'Retired')",
+            name="ck_price_catalog_status",
+        ),
+        CheckConstraint(
+            "status <> 'Published' OR (pilot_evidence IS NOT NULL "
+            "AND length(btrim(pilot_evidence)) > 0)",
+            name="ck_price_catalog_pilot_evidence",
+        ),
+        UniqueConstraint("organization_id", "version", name="uq_price_catalog_version"),
+        UniqueConstraint("organization_id", "id", name="uq_price_catalog_org_id"),
+    )
+
+
+class SponsorshipPriceItem(Base):
+    """One priced package inside one catalog version."""
+
+    __tablename__ = "sponsorship_price_items"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    # Stage 9: carried explicitly so a query that forgets the parent cannot
+    # answer with another Organization's work (ADR-0050).
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="RESTRICT")
+    catalog_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sponsorship_price_catalogs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    package: Mapped[str] = mapped_column(String(20), nullable=False)
+    duration_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "package IN ('Search', 'Homepage', 'Both')",
+            name="ck_price_item_package",
+        ),
+        CheckConstraint(
+            "duration_days > 0 AND amount >= 0", name="ck_price_item_amounts"
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "catalog_id",
+            "package",
+            "duration_days",
+            name="uq_price_item_package",
+        ),
+        _org_scoped_fk(
+            "catalog_id",
+            "sponsorship_price_catalogs",
+            name="fk_price_items_org_catalog",
+        ),
+    )
+
+
+class SponsorshipSurfaceCapacity(Base):
+    """How many sponsored slots per day one surface may sell.
+
+    An explicit Administrator number rather than a derived one. The delivery
+    ratios in ADR-0043 bound what a *page* shows; what may be *sold* also
+    depends on measured traffic, and until the pilot supplies it the honest
+    answer is a small number somebody chose on purpose.
+    """
+
+    __tablename__ = "sponsorship_surface_capacity"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    surface: Mapped[str] = mapped_column(String(20), nullable=False)
+    concurrent_campaigns: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "surface IN ('Search', 'Homepage')", name="ck_surface_capacity_surface"
+        ),
+        CheckConstraint(
+            "concurrent_campaigns >= 0", name="ck_surface_capacity_positive"
+        ),
+        UniqueConstraint(
+            "organization_id", "surface", name="uq_surface_capacity_surface"
+        ),
+    )
+
+
+class SponsorshipCampaign(Base):
+    """One bounded commercial agreement over one eligible source Listing."""
+
+    __tablename__ = "sponsorship_campaigns"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    listing_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("catalog_listings.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    buyer_kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    buyer_label: Mapped[str] = mapped_column(String(160), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=SponsorshipCampaignStatus.DRAFT.value
+    )
+    package: Mapped[str] = mapped_column(String(20), nullable=False)
+    paid_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    delivered_days: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    starts_on: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    price_amount: Mapped[Decimal | None] = mapped_column(
+        Numeric(12, 2), nullable=True
+    )
+    price_currency: Mapped[str] = mapped_column(String(3), nullable=False, default="MXN")
+    catalog_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sponsorship_price_catalogs.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    collection_state: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=CollectionState.NOT_INVOICED.value
+    )
+    collection_reference: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    commercial_clearance: Mapped[str | None] = mapped_column(Text, nullable=True)
+    paused_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    paused_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    activated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    cancelled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('Draft', 'Quoted', 'Reserved', 'Scheduled', 'Active', "
+            "'Paused', 'Completed', 'Cancelled')",
+            name="ck_sponsorship_campaign_status",
+        ),
+        CheckConstraint(
+            "package IN ('Search', 'Homepage', 'Both')",
+            name="ck_sponsorship_campaign_package",
+        ),
+        CheckConstraint(
+            "buyer_kind IN ('Owner', 'Developer', 'Collaborator')",
+            name="ck_sponsorship_campaign_buyer_kind",
+        ),
+        CheckConstraint(
+            "collection_state IN ('NotInvoiced', 'AwaitingPayment', 'Collected', "
+            "'Waived', 'Uncollectible')",
+            name="ck_sponsorship_campaign_collection",
+        ),
+        CheckConstraint(
+            "paid_days > 0 AND delivered_days >= 0 AND delivered_days <= paid_days",
+            name="ck_sponsorship_campaign_days",
+        ),
+        UniqueConstraint(
+            "organization_id", "id", name="uq_sponsorship_campaigns_org_id"
+        ),
+        Index(
+            "ix_sponsorship_campaigns_work", "organization_id", "status", "created_at"
+        ),
+    )
+
+
+class SponsorshipQuote(Base):
+    """A seven-day priced offer that preserves its catalog version."""
+
+    __tablename__ = "sponsorship_quotes"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    campaign_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=False,
+    )
+    catalog_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sponsorship_price_catalogs.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    catalog_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    package: Mapped[str] = mapped_column(String(20), nullable=False)
+    duration_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    list_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    discount_amount: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), nullable=False, default=Decimal("0")
+    )
+    discount_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    total_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="MXN")
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=SponsorshipQuoteStatus.ISSUED.value
+    )
+    issued_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    issued_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    reserved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    command_key: Mapped[str] = mapped_column(String(200), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('Issued', 'Expired', 'Reserved', 'Cancelled')",
+            name="ck_sponsorship_quote_status",
+        ),
+        CheckConstraint(
+            "discount_amount >= 0 AND list_amount >= 0 AND total_amount >= 0 "
+            "AND total_amount = list_amount - discount_amount",
+            name="ck_sponsorship_quote_amounts",
+        ),
+        CheckConstraint(
+            "discount_amount = 0 OR (discount_reason IS NOT NULL "
+            "AND length(btrim(discount_reason)) > 0)",
+            name="ck_sponsorship_quote_discount_reason",
+        ),
+        UniqueConstraint(
+            "organization_id", "command_key", name="uq_sponsorship_quote_command"
+        ),
+        Index("ix_sponsorship_quotes_campaign", "campaign_id", "issued_at"),
+    )
+
+
+class SponsorshipCapacityReservation(Base):
+    """One campaign's hold on one surface for a date range.
+
+    Created when a quote is accepted, never when it is issued: ADR-0043 says a
+    quote expires without reserving capacity, and the whole point of a separate
+    row is that an unaccepted offer cannot make the surface look sold out.
+    """
+
+    __tablename__ = "sponsorship_capacity_reservations"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    campaign_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sponsorship_campaigns.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    surface: Mapped[str] = mapped_column(String(20), nullable=False)
+    starts_on: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ends_on: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    released_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "surface IN ('Search', 'Homepage')", name="ck_capacity_reservation_surface"
+        ),
+        CheckConstraint("ends_on > starts_on", name="ck_capacity_reservation_range"),
+        UniqueConstraint(
+            "campaign_id", "surface", name="uq_capacity_reservation_campaign_surface"
+        ),
+        Index(
+            "ix_capacity_reservation_window",
+            "organization_id",
+            "surface",
+            "starts_on",
+            "ends_on",
+        ),
+    )
+
+
+class SponsoredEligibilityRecord(Base):
+    """Every recorded daily or per-exposure eligibility decision.
+
+    Kept because a paused campaign has to be explainable months later: the buyer
+    asks why five days were not delivered, and "the Listing lost its authority
+    evidence on the 12th" is an answer only a stored decision can give.
+    """
+
+    __tablename__ = "sponsored_eligibility_records"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    campaign_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sponsorship_campaigns.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    scope: Mapped[str] = mapped_column(String(20), nullable=False)
+    surface: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    eligible: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    reasons: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    service_date: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    decided_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint("scope IN ('Daily', 'Exposure')", name="ck_eligibility_scope"),
+        UniqueConstraint(
+            "campaign_id", "scope", "service_date", name="uq_eligibility_daily"
+        ),
+        Index("ix_eligibility_records_campaign", "campaign_id", "decided_at"),
+    )
+
+
+class SponsorshipDeliveryDay(Base):
+    """One service date, and whether it consumed a paid day."""
+
+    __tablename__ = "sponsorship_delivery_days"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    # Stage 9: carried explicitly so a query that forgets the parent cannot
+    # answer with another Organization's work (ADR-0050).
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="RESTRICT")
+    campaign_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sponsorship_campaigns.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    service_date: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    counted: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    reason: Mapped[str] = mapped_column(String(60), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id", "campaign_id", "service_date", name="uq_delivery_day"
+        ),
+        _org_scoped_fk(
+            "campaign_id",
+            "sponsorship_campaigns",
+            name="fk_delivery_days_org_campaign",
+        ),
+    )
+
+
+class SponsorshipContactAttribution(Base):
+    """A verified contact reached through one sponsored website handoff.
+
+    This is separate from ``OpportunityOrigin``: a later sponsored interaction
+    must never overwrite the Opportunity's first known commercial provenance.
+    """
+
+    __tablename__ = "sponsorship_contact_attributions"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    campaign_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sponsorship_campaigns.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    contact_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=False,
+    )
+    handoff_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        nullable=False,
+    )
+    engaged_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "handoff_id",
+            name="uq_sponsorship_contact_attribution_handoff",
+        ),
+        _org_scoped_fk(
+            "campaign_id",
+            "sponsorship_campaigns",
+            name="fk_sponsorship_contact_attributions_org_campaign",
+        ),
+        _org_scoped_fk(
+            "contact_id",
+            "contacts",
+            name="fk_sponsorship_contact_attributions_org_contact",
+        ),
+        _org_scoped_fk(
+            "handoff_id",
+            "channel_handoffs",
+            name="fk_sponsorship_contact_attributions_org_handoff",
+        ),
+        Index(
+            "ix_sponsorship_contact_attribution",
+            "organization_id",
+            "contact_id",
+            "engaged_at",
+        ),
+    )
+
+
+class SponsoredExposureCounter(Base):
+    """The per-session daily Visible Impression cap, counted durably.
+
+    A counter rather than a scan over the analytics events: the cap is a
+    delivery decision made before the page renders, and delivery must not
+    depend on the projection having already run.
+    """
+
+    __tablename__ = "sponsored_exposure_counters"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    listing_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("catalog_listings.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    session_reference: Mapped[str] = mapped_column(String(64), nullable=False)
+    service_date: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    visible_impressions: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "listing_id",
+            "session_reference",
+            "service_date",
+            name="uq_sponsored_exposure_counter",
+        ),
+    )
+
+
+class SponsorshipReportLink(Base):
+    """A revocable expiring read-only buyer link. Never a CRM account.
+
+    Only the digest is stored, for the same reason a password is not: an
+    operator reading the table must not be able to reconstruct a live link into
+    somebody's campaign report.
+    """
+
+    __tablename__ = "sponsorship_report_links"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    campaign_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sponsorship_campaigns.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    token_digest: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    definition_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_viewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    views: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        CheckConstraint("expires_at > created_at", name="ck_report_link_expiry"),
+        Index("ix_report_links_campaign", "campaign_id", "created_at"),
+    )
+
+
+class HarmSignal(Base):
+    """One recorded pilot harm signal (SAN-079).
+
+    A separate table rather than a column on the Opportunity: several of these
+    have no Opportunity at all — an untimely message, an operational overload —
+    and the pilot's stop condition needs to count them anyway.
+    """
+
+    __tablename__ = "harm_signals"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    kind: Mapped[str] = mapped_column(String(30), nullable=False)
+    opportunity_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("opportunities.id", ondelete="SET NULL"), nullable=True
+    )
+    recorded_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    evidence: Mapped[str] = mapped_column(Text, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    command_key: Mapped[str] = mapped_column(String(200), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('WrongInformation', 'Complaint', 'UntimelyMessage', "
+            "'AssignmentFailure', 'IncorrectAppointment', 'OperationalOverload')",
+            name="ck_harm_signal_kind",
+        ),
+        UniqueConstraint(
+            "organization_id", "command_key", name="uq_harm_signal_command"
+        ),
+        Index("ix_harm_signals_period", "organization_id", "occurred_at", "kind"),
+    )
+
+
+# ==========================================================================
+# Stage 9 — the managed multi-organization platform (ADR-0050 … ADR-0055)
+#
+# Everything above this line describes one Brokerage Organization's work. This
+# section describes the platform that operates several of them, and it is built
+# around four separations:
+#
+# * **identity and lifecycle** live on ``organizations``, while everything an
+#   operator can change about how an Organization behaves lives in a *versioned
+#   configuration document* — so "what is Larevia's booking window today" and
+#   "what was it in March" are the same question asked twice (ADR-0051);
+# * a **secret reference** is a name, never a value. Product stores where a
+#   credential can be found and a fingerprint of what it found last time; the
+#   material itself never reaches a table, a log, an export or a screen
+#   (ADR-0052);
+# * an **entitlement** is what an Organization has bought the right to use. It
+#   is append-only and superseded rather than edited, because a capability that
+#   silently changed cannot explain a refusal an operator saw yesterday
+#   (ADR-0053);
+# * **support access** is a grant with a named reason and an expiry, held by one
+#   real login inside one Organization. There is no invisible superadmin and no
+#   authority that spans Organizations (ADR-0054).
+# ==========================================================================
+
+
+class IntegrationProvider(str, enum.Enum):
+    """The external systems an Organization can hold its own access to."""
+
+    META_WHATSAPP = "MetaWhatsApp"
+    META_BUSINESS = "MetaBusiness"
+    GOOGLE_CALENDAR = "GoogleCalendar"
+    TELEGRAM = "Telegram"
+    EASYBROKER = "EasyBroker"
+
+
+class SecretReferenceState(str, enum.Enum):
+    """A reference's standing. Rotation is a state, not an in-place edit.
+
+    ``Rotating`` exists because a rotation is two facts that arrive at different
+    times: a new reference is available, and the old one has stopped being used.
+    Between them both are recorded, and ``resolve`` prefers the new one while
+    still being able to explain the old.
+    """
+
+    ACTIVE = "Active"
+    ROTATING = "Rotating"
+    REVOKED = "Revoked"
+
+
+class ChannelBindingKind(str, enum.Enum):
+    """What kind of external identifier maps inbound traffic to an Organization.
+
+    This is the mapping ADR-0019 said the product would eventually need. Until
+    Stage 9 the inbound path resolved the Organization by slug, which is exactly
+    the shortcut that becomes a leak the moment a second Organization exists.
+    """
+
+    WHATSAPP_PHONE_NUMBER = "WhatsAppPhoneNumberId"
+    WHATSAPP_BUSINESS_ACCOUNT = "WhatsAppBusinessAccountId"
+    TELEGRAM_BOT = "TelegramBotId"
+    PUBLIC_SITE_HOST = "PublicSiteHost"
+
+
+class ChannelBindingState(str, enum.Enum):
+    ACTIVE = "Active"
+    RETIRED = "Retired"
+
+
+class Capability(str, enum.Enum):
+    """One thing an Organization may or may not be entitled to do.
+
+    Deliberately a closed list. An entitlement system whose capabilities are
+    free-form strings cannot answer "what did this Organization buy" without
+    reading application code, and cannot refuse a capability nobody thought to
+    name.
+
+    Two of these carry a *limit* rather than a yes/no: Advisor seats and the
+    monthly conversation allowance. The distinction is in
+    :mod:`realestate.domain.platform.entitlements`, not here, because a column
+    that is sometimes a boolean and sometimes a number is how a limit ends up
+    being compared against ``True``.
+    """
+
+    COMMERCIAL_CRM = "CommercialCrm"
+    ADVISOR_SEATS = "AdvisorSeats"
+    AUTHORIZED_CATALOG = "AuthorizedCatalog"
+    LISTING_MEDIA = "ListingMedia"
+    PUBLIC_SITE = "PublicSite"
+    WEBSITE_CONVERSATION = "WebsiteConversation"
+    WHATSAPP_CHANNEL = "WhatsAppChannel"
+    CALENDAR_SCHEDULING = "CalendarScheduling"
+    EXTERNAL_INVENTORY = "ExternalInventory"
+    REACTIVATION_CAMPAIGNS = "ReactivationCampaigns"
+    DEVELOPMENT_CAMPAIGNS = "DevelopmentCampaigns"
+    SPONSORED_PLACEMENT = "SponsoredPlacement"
+    BUSINESS_INTELLIGENCE = "BusinessIntelligence"
+    MONTHLY_WHATSAPP_CONVERSATIONS = "MonthlyWhatsAppConversations"
+
+
+class EntitlementState(str, enum.Enum):
+    ENABLED = "Enabled"
+    DISABLED = "Disabled"
+
+
+class EntitlementSource(str, enum.Enum):
+    """Why an Organization holds this entitlement.
+
+    Recorded because "the base package includes it" and "somebody turned it on
+    by hand" are different answers to a customer asking why they can do
+    something, and only one of them is a commercial commitment.
+    """
+
+    PACKAGE = "Package"
+    TIER = "Tier"
+    ADD_ON = "AddOn"
+    OVERRIDE = "Override"
+
+
+class SupportAccessScope(str, enum.Enum):
+    """What a support grant permits. Read-only is the only scope Stage 9 has.
+
+    A write scope is deliberately absent rather than defined-and-unused: the
+    moment it exists, the temptation is to grant it for convenience, and a
+    support engineer who can change an Organization's commercial records makes
+    the audit trail ambiguous about who decided what.
+    """
+
+    READ_ONLY = "ReadOnly"
+
+
+class ProvisioningState(str, enum.Enum):
+    PENDING = "Pending"
+    COMPLETED = "Completed"
+    FAILED = "Failed"
+    ROLLED_BACK = "RolledBack"
+
+
+class ImportMode(str, enum.Enum):
+    DRY_RUN = "DryRun"
+    APPLY = "Apply"
+
+
+class ImportState(str, enum.Enum):
+    PLANNED = "Planned"
+    APPLIED = "Applied"
+    ROLLED_BACK = "RolledBack"
+    REFUSED = "Refused"
+
+
+class ImportFindingKind(str, enum.Enum):
+    """What the importer decided about one incoming record.
+
+    ``Duplicate`` and ``Invalid`` are separate because they need different
+    human answers: a duplicate means the record is already there, an invalid one
+    means the source is wrong. Collapsing them into "skipped" is how a migration
+    reports success while having silently dropped half the inventory.
+    """
+
+    ACCEPTED = "Accepted"
+    DUPLICATE = "Duplicate"
+    INVALID = "Invalid"
+    SKIPPED = "Skipped"
+
+
+class DataLifecycleState(str, enum.Enum):
+    REQUESTED = "Requested"
+    COMPLETED = "Completed"
+    BLOCKED = "Blocked"
+    FAILED = "Failed"
+
+
+class DeletionScope(str, enum.Enum):
+    """How much of an Organization a deletion is asked to remove.
+
+    ``OperationalContent`` removes conversations, drafts and media — the things
+    whose retention has no independent legal basis. ``Everything`` also removes
+    the commercial record, and is the request most likely to collide with a
+    retention hold.
+    """
+
+    OPERATIONAL_CONTENT = "OperationalContent"
+    EVERYTHING = "Everything"
+
+
+class RetentionBasis(str, enum.Enum):
+    LEGAL_OBLIGATION = "LegalObligation"
+    CONTRACT = "Contract"
+    DISPUTE = "Dispute"
+
+
+class UsageMetric(str, enum.Enum):
+    """What the platform counts about an Organization.
+
+    Usage, not billing. Nothing in Stage 9 prices any of these, and no row here
+    becomes an invoice: ADR-0053 records that packaging exists as a shape while
+    charging remains a separate, unauthorised decision.
+    """
+
+    ACTIVE_ADVISORS = "ActiveAdvisors"
+    WHATSAPP_CONVERSATIONS = "WhatsAppConversations"
+    INBOUND_MESSAGES = "InboundMessages"
+    OUTBOUND_MESSAGES = "OutboundMessages"
+    MODEL_TURNS = "ModelTurns"
+    ACTIVE_INTEGRATIONS = "ActiveIntegrations"
+    PUBLISHED_LISTINGS = "PublishedListings"
+    CONFIRMED_APPOINTMENTS = "ConfirmedAppointments"
+
+
+class OrganizationConfigurationVersion(Base):
+    """One immutable, complete statement of how an Organization operates.
+
+    Not a settings table. Each row is the whole document, so reading history
+    means reading a row rather than replaying a change log, and a rollback is
+    recording the previous document again rather than reversing edits nobody
+    kept.
+
+    The document holds brand, service area, booking hours, the default Advisor,
+    channel identifiers, which integrations are expected, and the operational
+    limits the Organization is permitted. It never holds a credential: those are
+    references, and they live in their own table (ADR-0052).
+    """
+
+    __tablename__ = "organization_configuration_versions"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    document: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    # sha256 of the canonical document. Recording the same document twice is a
+    # no-op rather than a new version, which is what makes a restarted
+    # provisioning run idempotent.
+    checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    is_current: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Why this version exists, in the operator's own words. Required: a
+    # configuration change nobody explained is indistinguishable from a mistake.
+    note: Mapped[str] = mapped_column(Text, nullable=False)
+    recorded_by: Mapped[str] = mapped_column(String(200), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    command_key: Mapped[str] = mapped_column(String(200), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("version > 0", name="ck_org_configuration_version"),
+        CheckConstraint(
+            "length(btrim(note)) > 0", name="ck_org_configuration_note"
+        ),
+        UniqueConstraint(
+            "organization_id", "version", name="uq_org_configuration_version"
+        ),
+        UniqueConstraint(
+            "organization_id", "command_key", name="uq_org_configuration_command"
+        ),
+        # Exactly one current document per Organization, enforced here rather
+        # than by whichever writer ran last.
+        Index(
+            "uq_org_configuration_current",
+            "organization_id",
+            unique=True,
+            postgresql_where=sql_text("is_current IS TRUE"),
+        ),
+    )
+
+
+class OrganizationSecretReference(Base):
+    """Where one Organization's credential for one provider can be found.
+
+    The row holds a *reference* — the name of an environment variable, or a path
+    a secret manager understands — and a fingerprint of the material that name
+    last resolved to. It never holds the material. That is the whole reason a
+    per-Organization export, an audit event and an operator screen can all
+    mention a credential without any of them being able to disclose one.
+
+    Rotation appends: the incoming reference is recorded ``Rotating`` alongside
+    the outgoing ``Active`` one, then promoted. A resolver therefore always has
+    something to answer with, and the fingerprint proves the value actually
+    changed rather than the name having been edited.
+    """
+
+    __tablename__ = "organization_secret_references"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    provider: Mapped[str] = mapped_column(String(40), nullable=False)
+    # The name, never the value. Validated against a conservative pattern by the
+    # module so a caller cannot smuggle the secret itself in here.
+    reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    state: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=SecretReferenceState.ACTIVE.value
+    )
+    # sha256 of the resolved material, truncated presentation aside. Stored so a
+    # rotation can be *proved* without the value being readable.
+    fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    recorded_by: Mapped[str] = mapped_column(String(200), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    rotated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('Active', 'Rotating', 'Revoked')",
+            name="ck_secret_reference_state",
+        ),
+        CheckConstraint(
+            "provider IN ('MetaWhatsApp', 'MetaBusiness', 'GoogleCalendar', "
+            "'Telegram', 'EasyBroker')",
+            name="ck_secret_reference_provider",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "provider",
+            "reference",
+            name="uq_secret_reference_name",
+        ),
+        # At most one Active reference per Organization and provider. Two would
+        # make ``resolve`` pick one, and a credential chosen by row order is a
+        # credential nobody can reason about.
+        Index(
+            "uq_secret_reference_active",
+            "organization_id",
+            "provider",
+            unique=True,
+            postgresql_where=sql_text("state = 'Active'"),
+        ),
+    )
+
+
+class OrganizationChannelBinding(Base):
+    """One external identifier that resolves inbound traffic to an Organization.
+
+    The uniqueness is deliberately *global*: a WhatsApp phone number id belongs
+    to one Organization or the operation is ambiguous, and an ambiguous inbound
+    mapping is how one brokerage answers another's customer. A retired binding
+    keeps its row so the history of who owned a number stays readable.
+    """
+
+    __tablename__ = "organization_channel_bindings"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    external_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    state: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=ChannelBindingState.ACTIVE.value
+    )
+    recorded_by: Mapped[str] = mapped_column(String(200), nullable=False)
+    bound_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    retired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('WhatsAppPhoneNumberId', 'WhatsAppBusinessAccountId', "
+            "'TelegramBotId', 'PublicSiteHost')",
+            name="ck_channel_binding_kind",
+        ),
+        CheckConstraint(
+            "state IN ('Active', 'Retired')", name="ck_channel_binding_state"
+        ),
+        Index(
+            "uq_channel_binding_active",
+            "kind",
+            "external_id",
+            unique=True,
+            postgresql_where=sql_text("state = 'Active'"),
+        ),
+        Index(
+            "ix_channel_bindings_organization", "organization_id", "kind", "state"
+        ),
+    )
+
+
+class OrganizationEntitlement(Base):
+    """What one Organization is entitled to do, as an append-only history.
+
+    A superseded row is kept rather than updated, because an entitlement change
+    lands while the operation is running: a campaign refused at 14:00 and
+    permitted at 14:05 has to be explainable at both times, and an edited row
+    cannot do that.
+    """
+
+    __tablename__ = "organization_entitlements"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    capability: Mapped[str] = mapped_column(String(60), nullable=False)
+    state: Mapped[str] = mapped_column(String(20), nullable=False)
+    # A ceiling for the capabilities that have one; NULL for a yes/no. A limit of
+    # zero is meaningful and distinct from NULL: it permits nothing.
+    limit_value: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source: Mapped[str] = mapped_column(String(20), nullable=False)
+    package: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    tier: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    note: Mapped[str] = mapped_column(Text, nullable=False)
+    recorded_by: Mapped[str] = mapped_column(String(200), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    superseded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('Enabled', 'Disabled')", name="ck_entitlement_state"
+        ),
+        CheckConstraint(
+            "source IN ('Package', 'Tier', 'AddOn', 'Override')",
+            name="ck_entitlement_source",
+        ),
+        CheckConstraint(
+            "limit_value IS NULL OR limit_value >= 0", name="ck_entitlement_limit"
+        ),
+        Index(
+            "uq_entitlement_current",
+            "organization_id",
+            "capability",
+            unique=True,
+            postgresql_where=sql_text("superseded_at IS NULL"),
+        ),
+        Index(
+            "ix_entitlements_history",
+            "organization_id",
+            "capability",
+            "recorded_at",
+        ),
+    )
+
+
+class SupportAccessGrant(Base):
+    """One temporary, explained, expiring permission for internal support.
+
+    The alternative this replaces is a platform operator who can read every
+    Organization because the code has no way to stop them. Here the internal
+    engineer gets an ordinary member row in one Organization, read-only, with an
+    expiry and a written reason, and the grant is what creates it.
+
+    ``last_used_at`` and ``use_count`` exist so "was the access actually needed"
+    is answerable after the fact. A grant that expired unused is evidence the
+    process is working.
+    """
+
+    __tablename__ = "support_access_grants"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    # The login the grant applies to, and the member row it created. Both,
+    # because the login is what authenticates and the member row is what the
+    # authorization path resolves.
+    subject_login: Mapped[str] = mapped_column(String(120), nullable=False)
+    member_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_members.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    scope: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=SupportAccessScope.READ_ONLY.value
+    )
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    # Where the customer asked for help. Not validated as a URL: an operator
+    # writing "llamada del 12 de marzo" is more useful than a broken link.
+    request_reference: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    granted_by: Mapped[str] = mapped_column(String(200), nullable=False)
+    granted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoked_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    use_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    command_key: Mapped[str] = mapped_column(String(200), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("scope = 'ReadOnly'", name="ck_support_grant_scope"),
+        CheckConstraint(
+            "length(btrim(reason)) > 0", name="ck_support_grant_reason"
+        ),
+        CheckConstraint(
+            "expires_at > granted_at", name="ck_support_grant_expiry"
+        ),
+        UniqueConstraint(
+            "organization_id", "command_key", name="uq_support_grant_command"
+        ),
+        # One live grant per login and Organization. A second would make
+        # "when does this access end" have two answers.
+        Index(
+            "uq_support_grant_active",
+            "organization_id",
+            "subject_login",
+            unique=True,
+            postgresql_where=sql_text("revoked_at IS NULL"),
+        ),
+        Index("ix_support_grants_expiry", "expires_at"),
+    )
+
+
+class OrganizationProvisioningRun(Base):
+    """One attempt to bring an Organization into existence, step by step.
+
+    ``organization_id`` is nullable on purpose: a run that failed before the
+    Organization row existed still has to be resumable and still has to be
+    explainable. The slug is therefore the durable handle, and it is claimed by
+    the run before anything else happens.
+    """
+
+    __tablename__ = "organization_provisioning_runs"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    command_key: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
+    slug: Mapped[str] = mapped_column(String(60), nullable=False)
+    organization_id: Mapped[uuid.UUID | None] = _optional_organization_fk(
+        ondelete="SET NULL"
+    )
+    #: ``Deprovision`` runs share the table: the steps are the same list read
+    #: backwards, and a separate table would duplicate the resume logic.
+    intent: Mapped[str] = mapped_column(String(20), nullable=False, default="Provision")
+    state: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=ProvisioningState.PENDING.value
+    )
+    requested_by: Mapped[str] = mapped_column(String(200), nullable=False)
+    plan: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    failure: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('Pending', 'Completed', 'Failed', 'RolledBack')",
+            name="ck_provisioning_run_state",
+        ),
+        CheckConstraint(
+            "intent IN ('Provision', 'Deprovision')",
+            name="ck_provisioning_run_intent",
+        ),
+        Index("ix_provisioning_runs_slug", "slug", "started_at"),
+    )
+
+
+class OrganizationProvisioningStep(Base):
+    """One named, individually resumable and individually reversible step."""
+
+    __tablename__ = "organization_provisioning_steps"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_provisioning_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    name: Mapped[str] = mapped_column(String(60), nullable=False)
+    state: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=ProvisioningState.PENDING.value
+    )
+    detail: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    rolled_back_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('Pending', 'Completed', 'Failed', 'RolledBack')",
+            name="ck_provisioning_step_state",
+        ),
+        UniqueConstraint("run_id", "name", name="uq_provisioning_step_name"),
+    )
+
+
+class OrganizationUsagePeriod(Base):
+    """One measured quantity for one Organization over one calendar month.
+
+    Recomputed rather than incremented, for the reason the analytics projection
+    already gives: a restart repeats a pass, and a counter that a repeated pass
+    increments is a counter nobody can trust. Usage, not billing — nothing here
+    is priced (ADR-0053).
+    """
+
+    __tablename__ = "organization_usage_periods"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    metric: Mapped[str] = mapped_column(String(40), nullable=False)
+    # The first instant of the month, in UTC. Months rather than days because
+    # the packaging shape ADR-0053 describes is monthly and a daily grain would
+    # invite a precision the measurement does not have.
+    period_start: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: What the count is of, so a report does not have to guess.
+    unit: Mapped[str] = mapped_column(String(20), nullable=False)
+    refreshed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint("quantity >= 0", name="ck_usage_quantity"),
+        UniqueConstraint(
+            "organization_id", "metric", "period_start", name="uq_usage_period_cell"
+        ),
+        Index("ix_usage_periods_read", "organization_id", "period_start"),
+    )
+
+
+class OrganizationImportRun(Base):
+    """One initial migration of a new Organization's existing records.
+
+    A dry run and an apply are the same plan with different consequences, so
+    they are the same row shape with a mode. That is what makes "the dry run
+    said 412 Properties" and "the apply created 412 Properties" comparable
+    instead of two reports written by two code paths.
+    """
+
+    __tablename__ = "organization_import_runs"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    command_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    mode: Mapped[str] = mapped_column(String(10), nullable=False)
+    state: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: Where the records came from, in the operator's words, plus whatever the
+    #: adapter can prove: a file name, a checksum, an export date.
+    provenance: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    summary: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    requested_by: Mapped[str] = mapped_column(String(200), nullable=False)
+    planned_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    applied_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    rolled_back_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    refusal: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("mode IN ('DryRun', 'Apply')", name="ck_import_run_mode"),
+        CheckConstraint(
+            "state IN ('Planned', 'Applied', 'RolledBack', 'Refused')",
+            name="ck_import_run_state",
+        ),
+        UniqueConstraint(
+            "organization_id", "command_key", name="uq_import_run_command"
+        ),
+        Index("ix_import_runs_organization", "organization_id", "planned_at"),
+    )
+
+
+class OrganizationImportFinding(Base):
+    """What the importer decided about one incoming record, and what it created.
+
+    The created identifier is the reason rollback is possible: an import that
+    only reported counts could not undo itself, and deleting "everything recent"
+    is not a rollback, it is a second incident.
+    """
+
+    __tablename__ = "organization_import_findings"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("organization_import_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    entity: Mapped[str] = mapped_column(String(40), nullable=False)
+    #: The source's own identifier for the record, so provenance survives.
+    source_reference: Mapped[str] = mapped_column(String(200), nullable=False)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_record_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('Accepted', 'Duplicate', 'Invalid', 'Skipped')",
+            name="ck_import_finding_kind",
+        ),
+        UniqueConstraint("run_id", "ordinal", name="uq_import_finding_ordinal"),
+        Index("ix_import_findings_run", "run_id", "kind"),
+    )
+
+
+class OrganizationRetentionHold(Base):
+    """A recorded reason one Organization's data may not be deleted yet.
+
+    Deletion asks this table first and refuses rather than partially complying.
+    A hold with an expiry releases itself; one without needs a human to release
+    it, which is the correct default for a legal obligation nobody has dated.
+    """
+
+    __tablename__ = "organization_retention_holds"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    basis: Mapped[str] = mapped_column(String(30), nullable=False)
+    #: Who requires it — an authority, a contract clause, a case number.
+    authority: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    recorded_by: Mapped[str] = mapped_column(String(200), nullable=False)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    released_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    released_by: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "basis IN ('LegalObligation', 'Contract', 'Dispute')",
+            name="ck_retention_hold_basis",
+        ),
+        Index(
+            "ix_retention_holds_live",
+            "organization_id",
+            postgresql_where=sql_text("released_at IS NULL"),
+        ),
+    )
+
+
+class OrganizationDataExport(Base):
+    """One completed export of everything one Organization owns.
+
+    The row records the artifact, its checksum and the per-table row counts. The
+    counts are the point: an export that silently missed a table is the failure
+    mode worth detecting, and it is only detectable against the scoping registry
+    that produced the list.
+    """
+
+    __tablename__ = "organization_data_exports"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    command_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    state: Mapped[str] = mapped_column(String(20), nullable=False)
+    requested_by: Mapped[str] = mapped_column(String(200), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    artifact_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    checksum: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    byte_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    row_counts: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    #: Which columns were withheld and why — credentials, tokens, digests.
+    withheld: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    failure: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('Requested', 'Completed', 'Blocked', 'Failed')",
+            name="ck_data_export_state",
+        ),
+        UniqueConstraint(
+            "organization_id", "command_key", name="uq_data_export_command"
+        ),
+    )
+
+
+class OrganizationDataDeletion(Base):
+    """One deletion request, what it removed, and what it deliberately kept."""
+
+    __tablename__ = "organization_data_deletions"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    command_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    scope: Mapped[str] = mapped_column(String(30), nullable=False)
+    state: Mapped[str] = mapped_column(String(20), nullable=False)
+    requested_by: Mapped[str] = mapped_column(String(200), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    deleted_counts: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    retained_counts: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    blocked_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "scope IN ('OperationalContent', 'Everything')",
+            name="ck_data_deletion_scope",
+        ),
+        CheckConstraint(
+            "state IN ('Requested', 'Completed', 'Blocked', 'Failed')",
+            name="ck_data_deletion_state",
+        ),
+        UniqueConstraint(
+            "organization_id", "command_key", name="uq_data_deletion_command"
         ),
     )

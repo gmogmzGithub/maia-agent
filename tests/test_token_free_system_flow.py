@@ -71,15 +71,23 @@ DURABLE_SESSION = "offline-sales-session"
 # not by this scenario. Truncating them would leave every later test in the
 # session without the Organization that all commercial data belongs to
 # (ADR-0019), so they are named as preserved rather than discovered by accident.
-PRESERVED_TABLES = frozenset({"organizations", "organization_members"})
+# ``measurement_definitions`` joins them for the same reason: migration 0025
+# seeds the versioned counting rules, and a scenario that truncated them would
+# leave every later analytics test unable to resolve its own definition version.
+PRESERVED_TABLES = frozenset(
+    {"organizations", "organization_members", "measurement_definitions"}
+)
 
 
 async def _truncate(database: Database) -> None:
     """Reset only the dedicated test database, including future mapped tables."""
     name = make_url(DATABASE_URL).database or ""
     assert name.endswith("_test"), f"refusing to truncate non-test database {name!r}"
+    # Schema-qualified: the pseudonymous analytics tables live in their own
+    # PostgreSQL schema since Stage 8, and a bare name would resolve against
+    # ``public`` and fail rather than truncating them.
     tables = ", ".join(
-        f'"{table.name}"'
+        f'"{table.schema}"."{table.name}"' if table.schema else f'"{table.name}"'
         for table in Base.metadata.tables.values()
         if table.name not in PRESERVED_TABLES
     )
@@ -219,7 +227,8 @@ async def test_whatsapp_lead_booking_reaches_telegram_without_provider_tokens(
         # who has an authoritative calendar, so the vertical scenario has to
         # provision one before the first message arrives.
         await commercial.provision_bookable_team(session)
-        await PropertyService(session, app.state.artifacts).accept_upload(
+        organization = await commercial.organization_id(session)
+        await PropertyService(session, app.state.artifacts, organization_id=organization).accept_upload(
             "casa-roble.md", CASA_ROBLE, actor_id="offline-developer"
         )
 
@@ -271,6 +280,9 @@ async def test_whatsapp_lead_booking_reaches_telegram_without_provider_tokens(
             "accepted": 1,
             "duplicates": 0,
             "statuses": 0,
+            # Stage 9: a body on a number no Organization claims is counted and
+            # logged rather than answered or retried forever (ADR-0050).
+            "unroutable": 0,
         }
         duplicate = await _post_signed(client, first)
         assert duplicate.json()["duplicates"] == 1

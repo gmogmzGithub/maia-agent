@@ -190,10 +190,13 @@ class StubWhatsApp:
 class StubTelegram:
     """Records every send; ``accepts`` decides whether Telegram takes them."""
 
-    def __init__(self, *, accepts: bool = True) -> None:
+    def __init__(self, *, accepts: bool = True, bot_id: str = "111222333") -> None:
         self.sent: list[SentNotice] = []
         self.accepts = accepts
         self.configured = True
+        # The worker resolves its Organization from a binding on this id
+        # (ADR-0050); the default matches ``commercial.TEST_TELEGRAM_BOT_ID``.
+        self.bot_id = bot_id
 
     async def send_message(self, chat_id: str, text: str) -> bool:
         self.sent.append(SentNotice(chat_id, text))

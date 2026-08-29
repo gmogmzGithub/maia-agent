@@ -247,6 +247,7 @@ class SavedCollections:
                     return False, None
                 self._session.add(
                     SavedCollectionItem(
+                        organization_id=collection.organization_id,
                         collection_id=collection.id,
                         listing_id=command.listing_id,
                         slug_snapshot=public.listing.slug,

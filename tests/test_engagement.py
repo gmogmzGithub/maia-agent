@@ -66,7 +66,7 @@ from realestate.domain.outbound import (
     OutboundMessaging,
 )
 from realestate.worker.engagement import EngagementWorker, outside_send_hours
-from tests.conftest import DATABASE_URL, requires_postgres
+from tests.conftest import DATABASE_URL, requires_postgres, reset_property_inventory
 from tests.fixtures.commercial import (
     ADMIN_LOGIN,
     actor_for,
@@ -76,6 +76,7 @@ from tests.fixtures.commercial import (
     reset,
 )
 from tests.fixtures.public_site import publish_listing
+from tests.fixtures import commercial
 
 pytestmark = requires_postgres
 NOW = datetime(2026, 8, 28, 18, tzinfo=UTC)  # noon in Mexico City
@@ -117,15 +118,7 @@ async def database():
         ):
             await session.execute(text(f"DELETE FROM {table_name}"))
         await reset(session)
-        for table_name in (
-            "listing_media",
-            "listing_offers",
-            "catalog_listings",
-            "properties",
-            "unit_models",
-            "developments",
-        ):
-            await session.execute(text(f"DELETE FROM {table_name}"))
+        await reset_property_inventory(session)
         await reset(session, members=True)
         await provision(session)
     yield database
@@ -189,6 +182,7 @@ async def foundation(database: Database, *, contacts: int = 1):
             )
             session.add(
                 ConsentRecord(
+                    organization_id=state.lead.organization_id,
                     lead_id=state.lead.id,
                     category=ConsentCategory.MARKETING.value,
                     state=ConsentState.GRANTED.value,
@@ -319,7 +313,7 @@ async def test_reactivation_reply_stops_sequence_and_attributes_new_opportunity(
             InboundMessage(
                 wamid="wamid.stage7.reply",
                 from_wa_id=state.lead.wa_id,
-                phone_number_id="123456",
+                phone_number_id=commercial.TEST_PHONE_NUMBER_ID,
                 message_type="text",
                 sent_at=NOW + timedelta(minutes=1),
                 text="Sí, me interesa verla",
@@ -355,6 +349,7 @@ async def test_campaign_preview_is_dry_and_explains_stale_and_suppressed_exclusi
         stale.became_stale_at = NOW
         session.add(
             SuppressionRecord(
+                organization_id=states[2][0].lead.organization_id,
                 lead_id=states[2][0].lead.id,
                 reason="ExplicitOptOut",
                 evidence="No me escribas",
@@ -440,6 +435,7 @@ async def test_audience_deduplicates_contacts_and_audits_activation_changes(
 
         session.add(
             SuppressionRecord(
+                organization_id=states[1][0].lead.organization_id,
                 lead_id=states[1][0].lead.id,
                 reason="ExplicitOptOut",
                 evidence="No me escribas",
@@ -558,6 +554,7 @@ async def test_campaign_pause_cancel_retry_and_mid_campaign_optout(
         assert remaining_lead is not None
         session.add(
             SuppressionRecord(
+                organization_id=await commercial.organization_id(session),
                 lead_id=remaining_lead,
                 reason="ExplicitOptOut",
                 evidence="Baja",
@@ -966,6 +963,7 @@ async def test_candidate_worker_handles_quiet_hours_missing_route_and_late_suppr
         )
         session.add(
             SuppressionRecord(
+                organization_id=authorized.organization_id,
                 lead_id=authorized.lead_id,
                 reason="ExplicitOptOut",
                 evidence="No",

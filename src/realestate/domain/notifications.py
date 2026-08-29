@@ -28,7 +28,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from realestate.db.models import Appointment, AppointmentStatus, Lead, Property
@@ -85,11 +85,21 @@ class BrokerNotificationService:
         *,
         digest_hour: int,
         reminder_minutes: int,
+        organization_id: uuid.UUID | None = None,
     ) -> None:
         self._session = session
         self._schedule = schedule
         self._digest_hour = digest_hour
         self._reminder_minutes = reminder_minutes
+        self._organization_id = organization_id
+
+    def _appointments(self) -> Select[tuple[Appointment]]:
+        query = select(Appointment)
+        if self._organization_id is not None:
+            query = query.where(
+                Appointment.organization_id == self._organization_id
+            )
+        return query
 
     # -- Selection ---------------------------------------------------------
 
@@ -113,7 +123,7 @@ class BrokerNotificationService:
         rows = (
             (
                 await self._session.execute(
-                    select(Appointment)
+                    self._appointments()
                     .where(Appointment.booked_notice_at.is_(None))
                     .where(
                         Appointment.status.in_(
@@ -177,7 +187,7 @@ class BrokerNotificationService:
         rows = (
             (
                 await self._session.execute(
-                    select(Appointment)
+                    self._appointments()
                     .where(Appointment.status == AppointmentStatus.CONFIRMED.value)
                     .where(Appointment.reminder_sent_at.is_(None))
                     .where(
@@ -215,7 +225,7 @@ class BrokerNotificationService:
         rows = (
             (
                 await self._session.execute(
-                    select(Appointment)
+                    self._appointments()
                     .where(Appointment.status == AppointmentStatus.CONFIRMED.value)
                     .where(Appointment.reminder_sent_at.is_(None))
                     .where(Appointment.starts_at <= moment)
@@ -240,6 +250,11 @@ class BrokerNotificationService:
         for appointment_id in notice.appointment_ids:
             row = await self._session.get(Appointment, appointment_id)
             if row is None:
+                continue
+            if (
+                self._organization_id is not None
+                and row.organization_id != self._organization_id
+            ):
                 continue
             if notice.kind in (BOOKED, NEEDS_REVIEW):
                 row.booked_notice_at = moment
@@ -277,7 +292,7 @@ class BrokerNotificationService:
         rows = (
             (
                 await self._session.execute(
-                    select(Appointment)
+                    self._appointments()
                     .where(Appointment.status == AppointmentStatus.CONFIRMED.value)
                     .where(Appointment.starts_at >= start)
                     .where(Appointment.starts_at < start + timedelta(days=1))

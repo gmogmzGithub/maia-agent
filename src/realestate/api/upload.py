@@ -87,7 +87,7 @@ async def upload_document(
     content = await file.read()
 
     async with request.app.state.database.session_scope() as session:
-        service = property_writer(request, session)
+        service = property_writer(request, session, actor)
         try:
             accepted: AcceptedUpload = await service.accept_upload(
                 filename=file.filename or "", content=content, actor_id=actor.label

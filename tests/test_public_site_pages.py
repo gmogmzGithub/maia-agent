@@ -102,6 +102,7 @@ class FakeProductGateway:
         params: dict[str, Any] | None = None,
         body: dict[str, Any] | None = None,
         token_header: tuple[str, str] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> GatewayResponse:
         self.calls.append(
             {
@@ -110,6 +111,7 @@ class FakeProductGateway:
                 "params": params,
                 "body": body,
                 "token_header": token_header,
+                "headers": headers,
             }
         )
         if path == "/internal/public-site/catalog":
@@ -231,6 +233,7 @@ class ForcedProductGateway(FakeProductGateway):
         params: dict[str, Any] | None = None,
         body: dict[str, Any] | None = None,
         token_header: tuple[str, str] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> GatewayResponse:
         if forced := self.forced.get((method, path)):
             self.calls.append(
@@ -249,6 +252,7 @@ class ForcedProductGateway(FakeProductGateway):
             params=params,
             body=body,
             token_header=token_header,
+            headers=headers,
         )
 
 
@@ -261,6 +265,7 @@ class PaginatedProductGateway(FakeProductGateway):
         params: dict[str, Any] | None = None,
         body: dict[str, Any] | None = None,
         token_header: tuple[str, str] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> GatewayResponse:
         if path == "/internal/public-site/catalog" and params:
             if params.get("page") == 1:
@@ -276,6 +281,7 @@ class PaginatedProductGateway(FakeProductGateway):
             params=params,
             body=body,
             token_header=token_header,
+            headers=headers,
         )
 
 
@@ -467,7 +473,7 @@ async def test_media_robots_sitemap_security_and_frontend_budgets() -> None:
     assert b":focus-visible" in css.content
     assert b"localStorage" in javascript.content
     assert b"BroadcastChannel" in javascript.content
-    assert b"MaiaStarted" in javascript.content
+    assert b"MaiaStarted" not in javascript.content
     assert b"mousemove" not in javascript.content
     assert b"keydown" in javascript.content  # gallery keyboard, not key capture
     assert b"https://" not in javascript.content

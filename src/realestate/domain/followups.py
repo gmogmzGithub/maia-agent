@@ -142,6 +142,10 @@ def _now() -> datetime:
 class DueFollowUp:
     """One cadence day that has come due for one engagement cycle."""
 
+    #: Whose cycle it is. Carried on the item rather than looked up when the
+    #: attempt row is written, so a sweep that spans Organizations cannot file
+    #: one brokerage's follow-up under another's (ADR-0050).
+    organization_id: UUID
     cycle_id: UUID
     conversation_id: UUID
     lead_wa_id: str
@@ -229,6 +233,7 @@ class LeadFollowUpService:
                     continue
                 items.append(
                     DueFollowUp(
+                        organization_id=cycle.organization_id,
                         cycle_id=cycle.id,
                         conversation_id=conversation.id,
                         lead_wa_id=lead.wa_id,
@@ -306,6 +311,7 @@ class LeadFollowUpService:
     ) -> LeadFollowUp:
         """One attempt row, however it turned out."""
         return LeadFollowUp(
+            organization_id=item.organization_id,
             cycle_id=item.cycle_id,
             conversation_id=item.conversation_id,
             day_number=item.day_number,

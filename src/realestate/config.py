@@ -67,6 +67,32 @@ class Settings(BaseSettings):
     def site_internal_token(self) -> str:
         return self.site_product_api_token or self.plugin_api_token
 
+    # --- The managed platform (ADR-0050 … ADR-0055, Stage 9) -----------------
+    # Which Brokerage Organization this process's environment describes. Every
+    # credential and behaviour setting in this file was written for exactly one
+    # brokerage, and Stage 9 makes that explicit rather than implicit: the named
+    # Organization may read these values as a bootstrap, and no other
+    # Organization may — asking is a refusal, never an inherited default
+    # (ADR-0051, ADR-0052).
+    #
+    # An installation provisioned from scratch leaves this pointing at a slug
+    # that does not exist, and then nothing here applies to anybody, which is the
+    # correct end state.
+    platform_bootstrap_organization_slug: str = Field(
+        default="larevia", alias="PLATFORM_BOOTSTRAP_ORGANIZATION_SLUG"
+    )
+    # The credential that authenticates an internal platform operator. It is not
+    # an Organization role and grants no access to any Organization's records:
+    # reading a customer's data needs a temporary, audited support grant
+    # (ADR-0054). Unset means the platform surfaces refuse every request, which
+    # is the right default for a local installation.
+    platform_operator_token: str = Field(default="", alias="PLATFORM_OPERATOR_TOKEN")
+    # Where per-Organization export artifacts are written. A storage location,
+    # not a credential.
+    organization_export_root: str = Field(
+        default="var/organization-exports", alias="ORGANIZATION_EXPORT_ROOT"
+    )
+
     # --- Organization roles (ADR-0019, Stage 2) ------------------------------
     # Non-secret, explicit configuration: which authenticated logins are
     # Organization Administrators and which are Real Estate Advisors. This is
@@ -247,6 +273,28 @@ class Settings(BaseSettings):
     worker_poll_seconds: float = Field(default=1.0, alias="WORKER_POLL_SECONDS")
     worker_enabled: bool = Field(default=True, alias="WORKER_ENABLED")
     log_level: str = Field(default="DEBUG", alias="LOG_LEVEL")
+
+    @property
+    def bootstrap_credential_references(self) -> dict[str, str]:
+        """Which environment variable holds which provider credential.
+
+        The *names*, so the founding Organization's Stage 0 secrets become Stage 9
+        references without any value moving. Keyed by the provider's enum value as
+        a plain string, because this module must not import the domain's model
+        layer — the one domain import above points the other way for a stated
+        reason and a second would make ``config`` a dependency of the schema.
+        """
+        return {
+            provider: name
+            for provider, name in (
+                ("MetaWhatsApp", "META_ACCESS_TOKEN"),
+                ("MetaBusiness", "META_ACCESS_TOKEN"),
+                ("GoogleCalendar", "GOOGLE_CALENDAR_CREDENTIALS"),
+                ("Telegram", "TELEGRAM_BOT_TOKEN"),
+                ("EasyBroker", "EASYBROKER_API_KEY"),
+            )
+            if getattr(self, name.lower(), "")
+        }
 
     @property
     def hermes_ws_url(self) -> str:
