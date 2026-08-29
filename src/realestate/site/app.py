@@ -10,16 +10,23 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlencode
 
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
+from fastapi.responses import (
+    HTMLResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    Response,
+)
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, UnidentifiedImageError
 
 from realestate.config import Settings, get_settings
+from realestate.site.design_demo import DesignDemoGateway
 from realestate.site.gateway import (
     GatewayResponse,
     HttpProductSiteGateway,
@@ -29,7 +36,7 @@ from realestate.site.gateway import (
 from realestate.site.templates import (
     absolute,
     conversation_page,
-    document,
+    document as document_template,
     escape,
     gallery,
     handoff_page,
@@ -67,7 +74,9 @@ _SAFE_RETURN = re.compile(r"^/(?!/)[A-Za-z0-9/_?&=.%+-]*$")
 
 def _response_headers(*, private: bool = False) -> dict[str, str]:
     return {
-        "Cache-Control": "private, no-store" if private else "public, max-age=0, must-revalidate",
+        "Cache-Control": "private, no-store"
+        if private
+        else "public, max-age=0, must-revalidate",
         "Content-Language": "es-MX",
         "Content-Security-Policy": (
             "default-src 'self'; img-src 'self' data:; style-src 'self'; "
@@ -154,7 +163,11 @@ def _measurement_headers(
     request: Request, *, sponsored_exposure: object | None = None
 ) -> dict[str, str]:
     """The session reference and crawler flag Product needs for capping."""
-    headers = {"X-Crawler": "true" if _crawler(request.headers.get("user-agent", "")) else "false"}
+    headers = {
+        "X-Crawler": "true"
+        if _crawler(request.headers.get("user-agent", ""))
+        else "false"
+    }
     headers["X-Session-Reference"] = _session_reference(request)
     exposure = sponsored_exposure or request.query_params.get("patrocinio")
     if exposure:
@@ -198,11 +211,14 @@ def create_site_app(
 ) -> FastAPI:
     configuration = settings or get_settings()
     owns_gateway = gateway is None
-    product = gateway or HttpProductSiteGateway(
+    product: ProductSiteGateway = gateway or HttpProductSiteGateway(
         configuration.product_internal_base_url,
         configuration.site_internal_token,
         site_host=host_of(configuration.site_public_origin),
     )
+    if configuration.site_design_demo:
+        product = DesignDemoGateway(product)
+    document = partial(document_template, demo=configuration.site_design_demo)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -230,7 +246,11 @@ def create_site_app(
         result = await product.request(
             "GET", "/internal/public-site/catalog", params={"page_size": 8}
         )
-        listings = list(_data(result).get("listings") or []) if result.status_code == 200 else []
+        listings = (
+            list(_data(result).get("listings") or [])
+            if result.status_code == 200
+            else []
+        )
         await _annotate_saved(listings, request, product)
         sponsored = await _sponsored(
             request, product, surface="Homepage", listings=listings
@@ -279,11 +299,15 @@ def create_site_app(
         result = await product.request(
             "GET", "/internal/public-site/catalog", params={**params, "page_size": 12}
         )
-        data = _data(result) if result.status_code == 200 else {
-            "listings": [],
-            "total": 0,
-            "query": params,
-        }
+        data = (
+            _data(result)
+            if result.status_code == 200
+            else {
+                "listings": [],
+                "total": 0,
+                "query": params,
+            }
+        )
         listings = list(data.get("listings") or [])
         await _annotate_saved(listings, request, product)
         sponsored = await _sponsored(
@@ -445,9 +469,7 @@ def create_site_app(
         media_id: uuid.UUID,
         w: int = Query(default=960, ge=320, le=1600),
     ) -> Response:
-        result = await product.request(
-            "GET", f"/internal/public-site/media/{media_id}"
-        )
+        result = await product.request("GET", f"/internal/public-site/media/{media_id}")
         if result.status_code != 200:
             return Response(status_code=404, headers={"X-Robots-Tag": "noindex"})
         width = min((480, 960, 1440), key=lambda candidate: abs(candidate - w))
@@ -916,10 +938,16 @@ Sitemap: {sitemap_url}
         zones = {
             zone_slug
             for zone_slug, zone in LOCAL_PAGES.items()
-            if any(zone.casefold() in str(item.get("public_location") or "").casefold() for item in listings)
+            if any(
+                zone.casefold() in str(item.get("public_location") or "").casefold()
+                for item in listings
+            )
         }
         paths.extend(f"/zonas/{zone}" for zone in sorted(zones))
-        urls = [f"<url><loc>{escape(absolute(configuration.site_public_origin, path))}</loc></url>" for path in paths]
+        urls = [
+            f"<url><loc>{escape(absolute(configuration.site_public_origin, path))}</loc></url>"
+            for path in paths
+        ]
         for listing in listings:
             images = "".join(
                 f"<image:image><image:loc>{escape(absolute(configuration.site_public_origin, item['url']))}</image:loc></image:image>"
@@ -943,7 +971,10 @@ Sitemap: {sitemap_url}
         return Response(
             xml,
             media_type="application/xml",
-            headers={"Cache-Control": "public, max-age=300", "X-Content-Type-Options": "nosniff"},
+            headers={
+                "Cache-Control": "public, max-age=300",
+                "X-Content-Type-Options": "nosniff",
+            },
         )
 
     return site
@@ -951,20 +982,23 @@ Sitemap: {sitemap_url}
 
 def _not_found(settings: Settings) -> HTMLResponse:
     return _html(
-        document(
+        document_template(
             title="Página no encontrada · Larevia",
             description="No encontramos esta página.",
             body='<section class="section-shell unavailable"><p class="eyebrow">404</p><h1>No encontramos esta página</h1><a class="button button-primary" href="/propiedades">Explorar propiedades</a></section>',
             origin=settings.site_public_origin,
             canonical_path="/",
             indexable=False,
+            demo=settings.site_design_demo,
         ),
         status_code=404,
         noindex=True,
     )
 
 
-def _responsive_image(content: bytes, content_type: str, width: int) -> tuple[bytes, str]:
+def _responsive_image(
+    content: bytes, content_type: str, width: int
+) -> tuple[bytes, str]:
     try:
         with Image.open(io.BytesIO(content)) as image:
             image.load()
@@ -1061,7 +1095,9 @@ async def _sponsored(
             "surface": surface,
             "visible_results": len(listings),
             "organic": ",".join(
-                str(item.get("listing_id")) for item in listings if item.get("listing_id")
+                str(item.get("listing_id"))
+                for item in listings
+                if item.get("listing_id")
             ),
         },
         headers=_measurement_headers(request),
@@ -1085,10 +1121,7 @@ async def _annotate_saved(
         "/internal/public-site/saved",
         token_header=("X-Collection-Token", token),
     )
-    saved_ids = {
-        str(item.get("listing_id"))
-        for item in _data(result).get("items", [])
-    }
+    saved_ids = {str(item.get("listing_id")) for item in _data(result).get("items", [])}
     for listing in listings:
         listing["_saved"] = str(listing.get("listing_id")) in saved_ids
 

@@ -107,19 +107,25 @@ Robots directives are access preferences, not a privacy or authorization control
 
 ## Visual direction
 
-The final Stage 5 direction is warm, editorial, and recognizably Mexican without
-using decorative clichés: cream paper surfaces, deep forest text, agave accents,
-clay calls to action, and restrained maize highlights. A display serif carries
-property and service hierarchy while a neutral sans-serif handles controls and
-dense facts. Spacious cards, asymmetric editorial sections, visible source
-attribution, and tactile 44-pixel-or-larger controls make the experience feel
-like a capable brokerage operator rather than an AI novelty.
+The complete approved system is defined in
+[Public Site Design System](public-site-design.md). Its direction is quiet
+premium: Resider-like photographic hierarchy and low-noise composition,
+Tuhabi-like cognitive simplicity, and an original warm Larevia identity for the
+Guadalajara Metropolitan Area. Warm white, charcoal, and agave dominate; clay
+and maize are rare accents. Inter carries controls and facts while Newsreader is
+reserved for selected editorial hierarchy.
 
-Larevia, Premium, and Super Premium share the same navigation, interaction, and
-accessibility model. Tier differences are restrained to surface treatment and
-marks; no customer profiling selects a tier. Motion is minimal and disabled by
-the user's reduced-motion preference. The gallery is horizontal and responds to
-buttons plus left/right keyboard input without shifting the document.
+Larevia, Premium, and Super Premium share navigation, facts, interaction,
+performance, and accessibility. Search cards remain aligned and do not advertise
+tier names. Technical Sheets and Galleries express higher tiers through
+photographic scale, whitespace, sequencing, typography, and tonal depth. The
+base Larevia tier remains an excellent complete experience, and no customer
+profiling selects a tier.
+
+Motion is minimal and disabled by the user's reduced-motion preference. The
+gallery responds to buttons and keyboard input without autoplay. The visual
+system covers every human-visible public route and exceptional state, including
+the sponsorship report; machine-only responses have no visual layer.
 
 ## Verification
 
