@@ -19,6 +19,21 @@ PROPERTY_INACTIVE_REASONS = (
     "Unspecified",
 )
 
+GET_TRANSACTION_JOURNEY = {
+    "name": "get_transaction_journey",
+    "description": (
+        "Read the current Contact's Product-confirmed purchase Transaction Journey. "
+        "Takes no identifiers and resolves the Opportunity only from the trusted "
+        "Sales session. Use it after the customer asks about their formal purchase "
+        "process, a pending item, a recorded delay, or what Product still needs.\n\n"
+        "This tool is READ ONLY. It cannot start a Journey, advance a milestone, "
+        "invent evidence, approve financing, interpret a document, or declare the "
+        "sale complete. Say only what the returned confirmed state supports. "
+        "If result is no_active_journey, do not imply that formal processing began."
+    ),
+    "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+}
+
 GET_PROPERTY_INFORMATION = {
     "name": "get_property_information",
     "description": (

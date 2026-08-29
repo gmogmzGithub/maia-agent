@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import enum
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -23,6 +23,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
@@ -6453,4 +6454,464 @@ class OrganizationDataDeletion(Base):
         UniqueConstraint(
             "organization_id", "command_key", name="uq_data_deletion_command"
         ),
+    )
+
+
+# --------------------------------------------------------------------------
+# Stage 10: Customer Experience and Market Intelligence
+# --------------------------------------------------------------------------
+
+
+class TransactionJourneyTemplateVersion(Base):
+    """One Organization-approved milestone plan, frozen into every Journey."""
+
+    __tablename__ = "transaction_journey_template_versions"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    state: Mapped[str] = mapped_column(String(20), nullable=False, default="Draft")
+    plan: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
+    created_by: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    approved_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('Draft', 'Approved', 'Superseded')",
+            name="ck_journey_template_state",
+        ),
+        CheckConstraint(
+            "state <> 'Approved' OR (approved_by IS NOT NULL AND approved_at IS NOT NULL)",
+            name="ck_journey_template_approval",
+        ),
+        UniqueConstraint(
+            "organization_id", "version", name="uq_journey_template_org_version"
+        ),
+        UniqueConstraint("organization_id", "id", name="uq_journey_template_org_id"),
+        Index("ix_journey_template_org_state", "organization_id", "state"),
+    )
+
+
+class TransactionJourney(Base):
+    """The Product-authoritative post-agreement work for one Opportunity."""
+
+    __tablename__ = "transaction_journeys"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    opportunity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    template_version_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    responsible_advisor_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    state: Mapped[str] = mapped_column(String(20), nullable=False, default="Active")
+    frozen_plan: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
+    started_by: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    completed_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organization_members.id", ondelete="RESTRICT")
+    )
+    cancellation_reason: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('Active', 'Completed', 'Cancelled')",
+            name="ck_transaction_journey_state",
+        ),
+        CheckConstraint(
+            "state <> 'Cancelled' OR (cancelled_at IS NOT NULL AND cancellation_reason IS NOT NULL)",
+            name="ck_transaction_journey_cancelled",
+        ),
+        CheckConstraint(
+            "state <> 'Completed' OR (completed_at IS NOT NULL AND completed_by IS NOT NULL)",
+            name="ck_transaction_journey_completed",
+        ),
+        _org_scoped_fk(
+            "opportunity_id", "opportunities", name="fk_journey_org_opportunity"
+        ),
+        _org_scoped_fk(
+            "template_version_id",
+            "transaction_journey_template_versions",
+            name="fk_journey_org_template",
+        ),
+        UniqueConstraint("organization_id", "id", name="uq_transaction_journeys_org_id"),
+        UniqueConstraint(
+            "organization_id", "opportunity_id", name="uq_journey_org_opportunity"
+        ),
+        Index("ix_transaction_journeys_org_state", "organization_id", "state"),
+    )
+
+
+class TransactionMilestone(Base):
+    """One human-confirmed, evidence-bearing step in a Transaction Journey."""
+
+    __tablename__ = "transaction_milestones"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    journey_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    code: Mapped[str] = mapped_column(String(80), nullable=False)
+    name: Mapped[str] = mapped_column(String(240), nullable=False)
+    responsibility: Mapped[str] = mapped_column(String(120), nullable=False)
+    state: Mapped[str] = mapped_column(String(20), nullable=False, default="Pending")
+    required_evidence: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    evidence: Mapped[str | None] = mapped_column(Text)
+    reason: Mapped[str | None] = mapped_column(Text)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    confirmed_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organization_members.id", ondelete="RESTRICT")
+    )
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('Pending', 'InProgress', 'Blocked', 'Completed', 'Skipped', 'Cancelled')",
+            name="ck_transaction_milestone_state",
+        ),
+        CheckConstraint(
+            "state NOT IN ('Blocked', 'Skipped', 'Cancelled') OR reason IS NOT NULL",
+            name="ck_transaction_milestone_reason",
+        ),
+        CheckConstraint(
+            "state <> 'Completed' OR required_evidence IS FALSE OR evidence IS NOT NULL",
+            name="ck_transaction_milestone_evidence",
+        ),
+        _org_scoped_fk(
+            "journey_id", "transaction_journeys", name="fk_milestone_org_journey"
+        ),
+        UniqueConstraint(
+            "organization_id", "journey_id", "sequence", name="uq_milestone_sequence"
+        ),
+        Index("ix_transaction_milestones_journey", "journey_id", "sequence"),
+    )
+
+
+class PurchaseProfile(Base):
+    """One dated, purpose-bound buyer profile for a Demand Opportunity."""
+
+    __tablename__ = "purchase_profiles"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    opportunity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    journey_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    birth_year: Mapped[int | None] = mapped_column(Integer)
+    monthly_income: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    income_currency: Mapped[str | None] = mapped_column(String(3))
+    adults: Mapped[int | None] = mapped_column(Integer)
+    children: Mapped[int | None] = mapped_column(Integer)
+    financial_dependants: Mapped[int | None] = mapped_column(Integer)
+    co_buyers: Mapped[int | None] = mapped_column(Integer)
+    home_purchase_number: Mapped[int | None] = mapped_column(Integer)
+    payment_path: Mapped[str | None] = mapped_column(String(20))
+    financing_modality: Mapped[str | None] = mapped_column(String(200))
+    down_payment: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    down_payment_currency: Mapped[str | None] = mapped_column(String(3))
+    target_monthly_payment: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    target_payment_currency: Mapped[str | None] = mapped_column(String(3))
+    preapproval_state: Mapped[str | None] = mapped_column(String(30))
+    field_states: Mapped[dict[str, str]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=sql_text("'{}'::jsonb")
+    )
+    recorded_by: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    source_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    __table_args__ = (
+        CheckConstraint("birth_year IS NULL OR birth_year BETWEEN 1900 AND 2100", name="ck_profile_birth_year"),
+        CheckConstraint("monthly_income IS NULL OR monthly_income >= 0", name="ck_profile_income"),
+        CheckConstraint("adults IS NULL OR adults >= 1", name="ck_profile_adults"),
+        CheckConstraint("children IS NULL OR children >= 0", name="ck_profile_children"),
+        CheckConstraint("financial_dependants IS NULL OR financial_dependants >= 0", name="ck_profile_dependants"),
+        CheckConstraint("co_buyers IS NULL OR co_buyers >= 0", name="ck_profile_co_buyers"),
+        CheckConstraint("home_purchase_number IS NULL OR home_purchase_number >= 1", name="ck_profile_home_number"),
+        CheckConstraint("payment_path IS NULL OR payment_path IN ('Cash', 'Credit', 'Combined')", name="ck_profile_payment_path"),
+        CheckConstraint("preapproval_state IS NULL OR preapproval_state IN ('NotStarted', 'InProgress', 'Preapproved', 'Denied', 'NotApplicable')", name="ck_profile_preapproval"),
+        _org_scoped_fk("opportunity_id", "opportunities", name="fk_profile_org_opportunity"),
+        _org_scoped_fk("journey_id", "transaction_journeys", name="fk_profile_org_journey"),
+        UniqueConstraint("organization_id", "id", name="uq_purchase_profiles_org_id"),
+        UniqueConstraint("organization_id", "opportunity_id", name="uq_profile_org_opportunity"),
+        UniqueConstraint("organization_id", "journey_id", name="uq_profile_org_journey"),
+    )
+
+
+class MarketSaleRecord(Base):
+    """The Organization-owned current analytical facts for one pursued sale."""
+
+    __tablename__ = "market_sale_records"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    opportunity_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    journey_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    purchase_profile_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    state: Mapped[str] = mapped_column(String(20), nullable=False, default="Preparation")
+    outcome: Mapped[str] = mapped_column(String(20), nullable=False, default="InProgress")
+    property_uuid: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    property_type: Mapped[str | None] = mapped_column(String(80))
+    municipality: Mapped[str | None] = mapped_column(String(120))
+    colonia: Mapped[str | None] = mapped_column(String(160))
+    address: Mapped[str | None] = mapped_column(Text)
+    land_area_sqm: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    construction_area_sqm: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    bedrooms: Mapped[int | None] = mapped_column(Integer)
+    bathrooms: Mapped[Decimal | None] = mapped_column(Numeric(4, 1))
+    parking_spaces: Mapped[int | None] = mapped_column(Integer)
+    construction_year: Mapped[int | None] = mapped_column(Integer)
+    property_condition: Mapped[str | None] = mapped_column(String(30))
+    publication_date: Mapped[date | None] = mapped_column(Date)
+    completion_date: Mapped[date | None] = mapped_column(Date)
+    published_price: Mapped[Decimal | None] = mapped_column(Numeric(16, 2))
+    published_currency: Mapped[str | None] = mapped_column(String(3))
+    appraisal_value: Mapped[Decimal | None] = mapped_column(Numeric(16, 2))
+    appraisal_currency: Mapped[str | None] = mapped_column(String(3))
+    paid_price: Mapped[Decimal | None] = mapped_column(Numeric(16, 2))
+    paid_currency: Mapped[str | None] = mapped_column(String(3))
+    field_states: Mapped[dict[str, str]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=sql_text("'{}'::jsonb")
+    )
+    source_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    recorded_by: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    completed_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organization_members.id", ondelete="RESTRICT")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint("state IN ('Preparation', 'Completed', 'Cancelled')", name="ck_market_sale_state"),
+        CheckConstraint("outcome IN ('InProgress', 'Won', 'Lost', 'Cancelled')", name="ck_market_sale_outcome"),
+        CheckConstraint("property_condition IS NULL OR property_condition IN ('New', 'Excellent', 'Good', 'NeedsImprovement')", name="ck_market_sale_condition"),
+        CheckConstraint("land_area_sqm IS NULL OR land_area_sqm > 0", name="ck_market_sale_land_area"),
+        CheckConstraint("construction_area_sqm IS NULL OR construction_area_sqm > 0", name="ck_market_sale_construction_area"),
+        CheckConstraint("published_price IS NULL OR published_price >= 0", name="ck_market_sale_published_price"),
+        CheckConstraint("appraisal_value IS NULL OR appraisal_value >= 0", name="ck_market_sale_appraisal_value"),
+        CheckConstraint("paid_price IS NULL OR paid_price >= 0", name="ck_market_sale_paid_price"),
+        CheckConstraint("(published_price IS NULL) = (published_currency IS NULL)", name="ck_market_sale_published_money"),
+        CheckConstraint("(appraisal_value IS NULL) = (appraisal_currency IS NULL)", name="ck_market_sale_appraisal_money"),
+        CheckConstraint("(paid_price IS NULL) = (paid_currency IS NULL)", name="ck_market_sale_paid_money"),
+        CheckConstraint("state <> 'Completed' OR (property_uuid IS NOT NULL AND property_type IS NOT NULL AND municipality IS NOT NULL AND completion_date IS NOT NULL AND paid_price IS NOT NULL AND paid_currency IS NOT NULL AND completed_by IS NOT NULL AND completed_at IS NOT NULL)", name="ck_market_sale_completed_minimum"),
+        _org_scoped_fk("opportunity_id", "opportunities", name="fk_market_sale_org_opportunity"),
+        _org_scoped_fk("journey_id", "transaction_journeys", name="fk_market_sale_org_journey"),
+        _org_scoped_fk("purchase_profile_id", "purchase_profiles", name="fk_market_sale_org_profile"),
+        ForeignKeyConstraint(["organization_id", "property_uuid"], ["properties.organization_id", "properties.id"], name="fk_market_sale_org_property", deferrable=True, initially="DEFERRED"),
+        UniqueConstraint("organization_id", "id", name="uq_market_sale_records_org_id"),
+        UniqueConstraint("organization_id", "opportunity_id", name="uq_market_sale_org_opportunity"),
+        UniqueConstraint("organization_id", "journey_id", name="uq_market_sale_org_journey"),
+        Index("ix_market_sale_org_state", "organization_id", "state", "completion_date"),
+    )
+
+
+class MarketRecordRevision(Base):
+    """An append-only database-attributed replacement of current market facts."""
+
+    __tablename__ = "market_record_revisions"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    source_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    old_values: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    new_values: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    database_role: Mapped[str] = mapped_column(String(120), nullable=False)
+    changed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint("source_type IN ('MarketSaleRecord', 'PurchaseProfile')", name="ck_market_revision_source"),
+        UniqueConstraint("source_type", "source_id", "source_version", name="uq_market_revision_source_version"),
+        Index("ix_market_revision_org_source", "organization_id", "source_type", "source_id"),
+    )
+
+
+class MarketContribution(Base):
+    """A durable, idempotent request to republish one analytical source."""
+
+    __tablename__ = "market_contributions"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    source_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    state: Mapped[str] = mapped_column(String(20), nullable=False, default="Pending")
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    projected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint("source_type IN ('MarketSaleRecord', 'PurchaseProfile')", name="ck_market_contribution_source"),
+        CheckConstraint("state IN ('Pending', 'Projected', 'Failed')", name="ck_market_contribution_state"),
+        UniqueConstraint("event_key", name="uq_market_contribution_event"),
+        UniqueConstraint("source_type", "source_id", "source_version", name="uq_market_contribution_source_version"),
+        Index("ix_market_contribution_pending", "state", "created_at"),
+    )
+
+
+class SharedMarketRecord(Base):
+    """Current Platform-owned analytical projection, with no Contact identity."""
+
+    __tablename__ = "shared_market_records"
+    __table_args__ = (
+        UniqueConstraint("source_organization_id", "source_record_id", name="uq_shared_market_source"),
+        Index("ix_shared_market_comparables", "state", "paid_currency", "municipality", "property_type", "completion_date"),
+        {"schema": "market_intelligence"},
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    source_organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_record_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(String(20), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(20), nullable=False)
+    property_uuid: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    property_type: Mapped[str | None] = mapped_column(String(80))
+    municipality: Mapped[str | None] = mapped_column(String(120))
+    colonia: Mapped[str | None] = mapped_column(String(160))
+    land_area_sqm: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    construction_area_sqm: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    bedrooms: Mapped[int | None] = mapped_column(Integer)
+    bathrooms: Mapped[Decimal | None] = mapped_column(Numeric(4, 1))
+    parking_spaces: Mapped[int | None] = mapped_column(Integer)
+    construction_year: Mapped[int | None] = mapped_column(Integer)
+    property_condition: Mapped[str | None] = mapped_column(String(30))
+    publication_date: Mapped[date | None] = mapped_column(Date)
+    completion_date: Mapped[date | None] = mapped_column(Date)
+    published_price: Mapped[Decimal | None] = mapped_column(Numeric(16, 2))
+    published_currency: Mapped[str | None] = mapped_column(String(3))
+    appraisal_value: Mapped[Decimal | None] = mapped_column(Numeric(16, 2))
+    appraisal_currency: Mapped[str | None] = mapped_column(String(3))
+    paid_price: Mapped[Decimal | None] = mapped_column(Numeric(16, 2))
+    paid_currency: Mapped[str | None] = mapped_column(String(3))
+    field_states: Mapped[dict[str, str]] = mapped_column(JSONB, nullable=False)
+    resolution_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    projected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class SharedBuyerProfile(Base):
+    """Exact contributed buyer facts, analytically linked without Contact identity."""
+
+    __tablename__ = "shared_buyer_profiles"
+    __table_args__ = (
+        UniqueConstraint("source_organization_id", "source_profile_id", name="uq_shared_profile_source"),
+        {"schema": "market_intelligence"},
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    source_organization_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_profile_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_sale_record_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    facts: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    field_states: Mapped[dict[str, str]] = mapped_column(JSONB, nullable=False)
+    projected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class SharedMarketRecordVersion(Base):
+    """Earlier central versions retained when the current projection changes."""
+
+    __tablename__ = "shared_market_record_versions"
+    __table_args__ = (
+        UniqueConstraint("source_record_id", "source_version", name="uq_shared_market_version"),
+        {"schema": "market_intelligence"},
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    source_record_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    source_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    values: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    replaced_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class MarketSaleResolution(Base):
+    """A human decision that several contributions describe one shared sale."""
+
+    __tablename__ = "market_sale_resolutions"
+    __table_args__ = ({"schema": "market_intelligence"},)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    resolved_by: Mapped[str] = mapped_column(String(200), nullable=False)
+    resolved_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class MarketSaleResolutionMember(Base):
+    """One preserved contribution included in a human duplicate resolution."""
+
+    __tablename__ = "market_sale_resolution_members"
+    __table_args__ = (
+        UniqueConstraint("shared_record_id", name="uq_market_resolution_record"),
+        {"schema": "market_intelligence"},
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    resolution_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("market_intelligence.market_sale_resolutions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    shared_record_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("market_intelligence.shared_market_records.id", ondelete="RESTRICT"),
+        nullable=False,
     )

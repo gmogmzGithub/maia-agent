@@ -554,9 +554,9 @@ def test_no_tool_outside_the_frozen_stage_0_surface_can_be_registered() -> None:
     """An accidental extra product tool is a load-time failure, not a silent
     scope expansion (P-069)."""
     assert set(plugin.REGISTERED_TOOLS) <= set(plugin.FROZEN_TOOL_SURFACE)
-    # Eight Stage 0 contracts, two human-operation tools, and two Stage 6
-    # Product-owned inventory tools.
-    assert len(plugin.FROZEN_TOOL_SURFACE) == 12
+    # Eight Stage 0 contracts, two human-operation tools, two Stage 6 inventory
+    # tools, and one Stage 10 read-only Journey view.
+    assert len(plugin.FROZEN_TOOL_SURFACE) == 13
 
 
 def test_each_registered_schema_names_the_tool_it_belongs_to() -> None:

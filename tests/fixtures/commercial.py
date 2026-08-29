@@ -150,6 +150,19 @@ async def provision_bookable_team(
 #: ``organizations`` is never cleared: migration 0012 creates the row and every
 #: scoped table points at it.
 _RESET_ORDER = (
+    # Stage 10 Platform projections and Organization-owned journey records.
+    "market_intelligence.market_sale_resolution_members",
+    "market_intelligence.market_sale_resolutions",
+    "market_intelligence.shared_market_record_versions",
+    "market_intelligence.shared_buyer_profiles",
+    "market_intelligence.shared_market_records",
+    "market_contributions",
+    "market_record_revisions",
+    "market_sale_records",
+    "purchase_profiles",
+    "transaction_milestones",
+    "transaction_journeys",
+    "transaction_journey_template_versions",
     # Stage 8 first: the analytics event store and the sponsorship agreements
     # reference Listings and members that later entries remove. The seeded
     # ``analytics.measurement_definitions`` row is deliberately absent — it is
@@ -345,6 +358,7 @@ async def provision(
     await directory.reconcile(plan)
     await bind_channels(session)
     await ensure_entitlements(session)
+    await ensure_configuration(session)
     members = await directory.members(await organization_id(session))
     return {member.login: member.id for member in members}
 
@@ -375,6 +389,43 @@ async def ensure_entitlements(
         reason=(
             "La suite otorga el paquete completo a la organización fundadora "
             "para que un caso no falle por una capacidad que otra prueba quitó."
+        ),
+    )
+    await session.commit()
+
+
+async def ensure_configuration(
+    session: AsyncSession, organization_id_value: uuid.UUID | None = None
+) -> None:
+    """Restore the founding test configuration if an interrupted suite removed it."""
+    from realestate.domain.platform.authority import PlatformOperator
+    from realestate.domain.platform.configuration import (
+        OrganizationConfiguration,
+        RecordConfiguration,
+    )
+
+    target = organization_id_value or await organization_id(session)
+    configuration = OrganizationConfiguration(session)
+    if await configuration.try_current(target) is not None:
+        return
+    await configuration.record(
+        PlatformOperator(label="TestHarness"),
+        RecordConfiguration(
+            organization_id=target,
+            document={
+                "origin": "process-environment",
+                "brand": {"working_name": "Larevia"},
+                "notes": {
+                    "test_harness": (
+                        "Configuración restaurada para aislar las suites locales."
+                    )
+                },
+            },
+            reason=(
+                "La suite restaura la configuración fundadora que una ejecución "
+                "interrumpida pudo haber eliminado."
+            ),
+            command_key="test-harness:restore-bootstrap-configuration",
         ),
     )
     await session.commit()

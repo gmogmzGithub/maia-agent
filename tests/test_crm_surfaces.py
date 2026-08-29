@@ -813,7 +813,7 @@ async def test_only_the_administrator_sees_the_won_form(wired) -> None:
         f"/crm/oportunidades/{opportunity_id}/etapa",
         data={
             "intent": "ganada",
-            "evidencia": "CompletedSale",
+            "evidencia": "SignedRentalAgreement",
             "detalle": "Ya se firmó.",
             "clave": "advisor-won-refused",
         },
@@ -826,15 +826,15 @@ async def test_only_the_administrator_sees_the_won_form(wired) -> None:
         f"/crm/oportunidades/{opportunity_id}/etapa",
         data={
             "intent": "ganada",
-            "evidencia": "CompletedSale",
-            "detalle": "Escritura firmada ante notario 12.",
+            "evidencia": "SignedRentalAgreement",
+            "detalle": "Contrato de arrendamiento firmado.",
             "clave": "admin-won",
         },
         auth=ADMIN,
         follow_redirects=True,
     )
     assert "Se registró el cambio de etapa." in accepted.text
-    assert "Ganada: Venta concluida legalmente" in accepted.text
+    assert "Ganada: Contrato de renta firmado" in accepted.text
 
 
 async def test_lost_and_dormant_are_recorded_with_their_reasons(wired) -> None:

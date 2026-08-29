@@ -32,11 +32,15 @@ from realestate.db.models import (
     AgentRole,
     AgentSession,
     Conversation,
+    ContactChannelIdentity,
     ExternalListingCandidate,
     HandoffSource,
     InboxGroup,
     InboxGroupStatus,
     InboxMessage,
+    Lead,
+    LeadEngagementCycle,
+    Opportunity,
     PropertyInactiveReason,
     PropertyStatus,
 )
@@ -59,6 +63,7 @@ from realestate.domain.external_inventory.types import (
     IntendedAction,
 )
 from realestate.domain.scheduling.calendars import CalendarDirectory
+from realestate.domain.journeys import TransactionJourneys
 
 router = APIRouter(prefix="/internal/plugin", tags=["plugin"])
 logger = logging.getLogger(__name__)
@@ -202,6 +207,7 @@ async def plugin_health(
             "request_human_handoff",
             "search_inventory",
             "revalidate_external_listing",
+            "get_transaction_journey",
         ],
     }
 
@@ -220,6 +226,81 @@ async def resolve_admin(
     if binding is None or binding.role != AgentRole.ADMINISTRATIVE.value:
         return None
     return binding
+
+
+@router.post(
+    "/tools/get_transaction_journey", dependencies=[Depends(require_plugin_token)]
+)
+async def get_transaction_journey(
+    request: Request,
+    hermes_session_id: str = Header(default="", alias=SESSION_HEADER),
+) -> dict[str, object]:
+    """Read only the current Sales session's human-confirmed Journey state."""
+    async with request.app.state.database.session_scope() as session:
+        binding = await _binding(session, hermes_session_id)
+        if (
+            binding is None
+            or binding.role != AgentRole.SALES.value
+            or binding.cycle_id is None
+        ):
+            return {"result": "forbidden"}
+        opportunity = await session.scalar(
+            select(Opportunity)
+            .join(
+                ContactChannelIdentity,
+                ContactChannelIdentity.contact_id == Opportunity.contact_id,
+            )
+            .join(Lead, Lead.id == ContactChannelIdentity.lead_id)
+            .join(LeadEngagementCycle, LeadEngagementCycle.lead_id == Lead.id)
+            .where(
+                Opportunity.organization_id == binding.organization_id,
+                ContactChannelIdentity.organization_id == binding.organization_id,
+                Lead.organization_id == binding.organization_id,
+                LeadEngagementCycle.organization_id == binding.organization_id,
+                LeadEngagementCycle.id == binding.cycle_id,
+            )
+            .order_by(Opportunity.created_at.desc())
+            .limit(1)
+        )
+        if opportunity is None:
+            return {"result": "no_active_journey"}
+        actor = Actor.product(binding.organization_id, "HermesJourneyRead")
+        workspace = await TransactionJourneys(session).for_opportunity(
+            actor, opportunity.id
+        )
+        if workspace is None:
+            return {"result": "no_active_journey"}
+        milestones = [
+            {
+                "sequence": row.sequence,
+                "name": row.name,
+                "responsibility": row.responsibility,
+                "state": row.state,
+                "due_at": row.due_at.isoformat() if row.due_at else None,
+                # Evidence itself can contain document or legal detail. Hermes
+                # only needs to know a human recorded it; it never receives the
+                # prose and therefore cannot reinterpret or disclose it.
+                "evidence_recorded": row.evidence is not None,
+                "reason": row.reason if row.state == "Blocked" else None,
+            }
+            for row in workspace.milestones
+        ]
+        current = next(
+            (
+                row
+                for row in milestones
+                if row["state"] not in {"Completed", "Skipped", "Cancelled"}
+            ),
+            None,
+        )
+        return {
+            "result": "found",
+            "journey_state": workspace.journey.state,
+            "started_at": workspace.journey.started_at.isoformat(),
+            "current_milestone": current,
+            "milestones": milestones,
+            "sale_state": workspace.sale.state,
+        }
 
 
 class PropertyInformationRequest(BaseModel):

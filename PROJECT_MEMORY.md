@@ -194,13 +194,14 @@ Santiago's calendar is the only initial connection. A Property Expert conducts a
 visit instead of the Responsible Advisor only when that responsibility is made
 explicit.
 
-Maia's customer-facing sales role ends when it confirms an appointment. The
-Appointment Handoff makes the Advisor responsible for subsequent service,
-negotiation, documents, offers, reservations, contracts, and closing. Maia does
-not provide post-appointment legal or commercial assistance and does not translate
-between the Contact and Advisor, but it may continue the bounded Appointment
-Logistics of confirmation, reminders, rescheduling, and cancellation against the
-Advisor's authoritative availability.
+The Appointment Handoff makes the Advisor responsible for subsequent service,
+negotiation, documents, offers, reservations, contracts, and closing. Maia may
+continue bounded Appointment Logistics and may later re-enter as a Transaction
+Journey coordinator only after an authorized Organization Member explicitly
+starts that Journey in the CRM. Product freezes a versioned milestone plan and
+humans confirm every material state; Maia communicates those confirmed states,
+pending work, reminders and delays without negotiating, interpreting documents
+legally, approving financing, inferring completion or declaring the sale Won.
 
 Appointment confirmations and reminders are deterministic Larevia system
 messages rather than open-ended sales messages composed by Maia. The starting
@@ -212,7 +213,9 @@ After an Appointment Handoff, Product routes clear confirmation, rescheduling,
 or cancellation requests to Maia and commercial or visit questions to the
 Advisor; ambiguity goes to the Advisor. Rescheduling is atomic from the
 customer's perspective: Product secures the new valid slot before releasing the
-old one, and failure preserves the original appointment.
+old one, and failure preserves the original appointment. A later explicitly
+started Transaction Journey creates a separate bounded authority for Maia to
+explain and communicate its human-confirmed milestones.
 
 Cancelling an appointment never closes the Opportunity. Maia confirms the
 cancellation and asks once whether the Contact wants another time; the Advisor
@@ -236,10 +239,11 @@ a Property's access policy explicitly requires them.
 
 After the visit, the Advisor records whether it occurred, the Contact's known
 interest, the Next Action, and the outcome; Product reminds the Advisor internally
-when this record is missing, while Maia does not pursue the Contact. A later
-Administrator-authorized match with genuinely relevant new inventory may open a
-new Maia reactivation conversation whose sole commercial objective is another
-appointment.
+when this record is missing. Maia does not independently pursue the Contact, but
+an authorized member may start the accepted buyer Transaction Journey when the
+deal begins formal processing. A later Administrator-authorized match with
+genuinely relevant new inventory may still open a separate reactivation
+conversation whose commercial objective is another appointment.
 
 A Development groups multiple houses, apartments, or lots that may be marketed
 in volume and may differ in their characteristics. It is not itself one Property
@@ -305,8 +309,10 @@ Advisor-based tiers, transparent WhatsApp/model usage, paid onboarding, and
 optional integration add-ons. Per-lead or commission-percentage pricing is not the
 initial model. Each Brokerage Organization owns its identifiable operational data;
 cross-organization access, credential sharing, or model training on mixed customer
-data is prohibited, and any aggregate benchmarks require a lawful contractual and
-anonymization basis.
+data is prohibited. A Brokerage Organization may contribute selected Property,
+sale and Purchase Profile analytical facts into a separate Platform-wide Shared
+Market Dataset. That projection contains no Contact identity, channel identity,
+document or conversation and never grants one brokerage access to another's CRM.
 
 Listings and Developments are administered in the Platform's authoritative catalog and
 consumed by the public site. A second independently editable website catalog or CMS
@@ -763,7 +769,44 @@ verified Property Visit Appointments with an unpaid Opportunity Origin. Rankings
 impressions, clicks, assistant citations, gallery engagement, Maia starts, and
 WhatsApp handoffs are diagnostic funnel measures, not the final success metric.
 
+## Stage 10 — Customer Experience and Market Intelligence
+
+Customer Experience becomes the operating priority after the existing stages.
+The first new path is a versioned buyer Transaction Journey, opened explicitly
+from the CRM and accompanied by Maia only through human-confirmed milestones. It
+adds a manually maintained Purchase Profile and Market Sale Record whose simple
+price vocabulary is Paid Price, Published Price and Appraisal Value. A purchase
+Opportunity cannot become Won without the Property, type, municipality,
+completion date, Paid Price and currency.
+
+Market Intelligence starts from zero with new facts entered by participating
+real-estate operators. It performs no historical backfill and ingests no public,
+registry, cadastral, demographic, portal or MLS data. Durable Market
+Contributions project the accepted analytical facts into a Platform-wide dataset
+without cross-Organization CRM access. Direct SQL corrections create revisions
+and republish through PostgreSQL triggers; co-brokered duplicate contributions
+require human resolution; only completed records are Comparable Sales; and
+aggregate reports require at least five applicable sales.
+
+The complete accepted design and implemented composition are in
+`docs/customer-experience-and-market-intelligence.md`. ADR-0056 supersedes the
+old post-appointment boundary; ADRs 0057 to 0059 record contribution, minimum
+sale facts and direct-SQL correction propagation.
+
+Local implementation is complete in migration 0028 and the Product, CRM,
+Hermes-plugin, worker and test layers. The buyer template remains an operational
+gate rather than a silent default: Santiago must review and an Organization
+Administrator must approve it before any Journey can start. The separate Market
+Intelligence Analyst credential must also be configured. No real brokerage has
+accepted or activated this stage, no historical data was imported, and no
+external dataset was connected.
+
 ## Current Stage
+
+Local Stage 10 adds the buyer Transaction Journey and the privacy-bounded shared
+market dataset described above. Its operational activation is pending Santiago's
+template review; “implemented” here describes the local Product and its verified
+runtime contracts, not live customer use.
 
 Local Stage 9 turns the product into a managed platform on which a second
 Brokerage Organization can operate — accompanied — without reaching Larevia's

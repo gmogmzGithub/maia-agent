@@ -202,6 +202,27 @@ Administrator's do not add up is not recoverable. The buyer's half travels by an
 expiring, revocable, read-only link stored only as a digest, with a PDF built from
 the same line list as the page.
 
+## Customer Experience and Market Intelligence
+
+Stage 10 keeps customer transaction work inside one Organization while deriving
+a deliberately smaller Platform-wide analytical dataset. `TransactionJourneys`
+owns the approved-template gate, frozen plan and human-only milestone
+transitions. `MarketRecords` owns the Purchase Profile and sale snapshot; the
+Won transition asks it to enforce the minimum completed-sale facts in the same
+database transaction.
+
+PostgreSQL is also the correction boundary. A direct update versions the old and
+new values and enqueues a `MarketContribution`; `MarketProjector` idempotently
+replaces the current shared fact and keeps the prior projected version. The
+shared `market_intelligence` schema contains no Contact, channel, conversation or
+document identity. Its API takes `MarketIntelligenceAnalyst`, never an `Actor` or
+`PlatformOperator`, so analytical access cannot become cross-Organization CRM
+access by convenience.
+
+Hermes receives one read-only projection of confirmed Journey state. It can
+explain that state in conversation, but it has no operation that advances a
+milestone, writes evidence, completes a sale or reads the evidence prose.
+
 ## The Managed Platform
 
 Stage 9 turns one brokerage's product into a service several brokerages are on,

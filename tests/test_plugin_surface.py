@@ -12,6 +12,8 @@ handoff, which is an operation with an alert and a deadline behind it rather
 than something the Model can do by writing a sentence (ADR-0029).
 Stage 6 adds two thin Product calls because external candidates must never be
 read directly by Hermes and must be revalidated for a named use.
+Stage 10 adds one read-only Journey view whose Contact and Opportunity are
+resolved exclusively from the trusted Sales session (ADR-0056).
 """
 
 from __future__ import annotations
@@ -41,20 +43,25 @@ STAGE_SIX_ADDITIONS = {
     "revalidate_external_listing",
 }
 
+STAGE_TEN_ADDITIONS = {"get_transaction_journey"}
+
 EXPECTED_FROZEN_SURFACE = (
-    STAGE_ZERO_SURFACE | STAGE_THREE_ADDITIONS | STAGE_SIX_ADDITIONS
+    STAGE_ZERO_SURFACE
+    | STAGE_THREE_ADDITIONS
+    | STAGE_SIX_ADDITIONS
+    | STAGE_TEN_ADDITIONS
 )
 
 
 def test_the_frozen_surface_is_exactly_the_reviewed_contracts() -> None:
     assert set(plugin.FROZEN_TOOL_SURFACE) == EXPECTED_FROZEN_SURFACE
-    assert len(plugin.FROZEN_TOOL_SURFACE) == 12
+    assert len(plugin.FROZEN_TOOL_SURFACE) == 13
 
 
 def test_stage_three_added_exactly_two_names() -> None:
     """A guard on the guard: the surface grew by two, and by which two."""
     assert set(plugin.FROZEN_TOOL_SURFACE) - STAGE_ZERO_SURFACE == (
-        STAGE_THREE_ADDITIONS | STAGE_SIX_ADDITIONS
+        STAGE_THREE_ADDITIONS | STAGE_SIX_ADDITIONS | STAGE_TEN_ADDITIONS
     )
 
 
@@ -76,6 +83,7 @@ def test_every_frozen_tool_is_registered() -> None:
         "request_human_handoff",
         "search_inventory",
         "revalidate_external_listing",
+        "get_transaction_journey",
     )
 
 

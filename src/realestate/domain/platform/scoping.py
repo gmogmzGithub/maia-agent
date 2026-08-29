@@ -238,6 +238,14 @@ SCOPES: tuple[TableScope, ...] = (
     _org("organization_retention_holds"),
     _org("organization_data_exports"),
     _org("organization_data_deletions"),
+    # ---- Stage 10: customer experience and contributed market facts ------
+    _org("transaction_journey_template_versions"),
+    _org("transaction_journeys"),
+    _org("transaction_milestones"),
+    _org("purchase_profiles"),
+    _org("market_sale_records"),
+    _org("market_record_revisions"),
+    _org("market_contributions"),
     # ---- Deliberately platform-wide --------------------------------------
     _platform(
         "measurement_definitions",
@@ -261,6 +269,34 @@ SCOPES: tuple[TableScope, ...] = (
         "The steps of a provisioning run, and unscoped for the same reason it "
         "is: the step that creates the Organization row runs before there is an "
         "Organization to attribute it to.",
+    ),
+    _platform(
+        "shared_market_records",
+        "The operating company owns this analytical projection. It contains "
+        "selected sale and Property facts contributed under ADR-0057, never "
+        "Contact identity, documents, channels or conversations, and its "
+        "provenance does not grant a brokerage access to another CRM.",
+    ),
+    _platform(
+        "shared_buyer_profiles",
+        "Purpose-bound buyer facts contributed for analysis without a Contact "
+        "identifier. The rows are Platform analytical data rather than a shared "
+        "customer directory (ADR-0057).",
+    ),
+    _platform(
+        "shared_market_record_versions",
+        "Earlier analytical projections are Platform revision history retained "
+        "so a direct SQL correction never silently erases the value reports used.",
+    ),
+    _platform(
+        "market_sale_resolutions",
+        "A Platform analyst's decision that several preserved contributions "
+        "describe one sale; it belongs to no one Brokerage Organization.",
+    ),
+    _platform(
+        "market_sale_resolution_members",
+        "Membership in a Platform duplicate-resolution decision preserves each "
+        "contribution without moving either brokerage's CRM record.",
     ),
 )
 

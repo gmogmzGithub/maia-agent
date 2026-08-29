@@ -295,3 +295,8 @@ documents the isolation threat model, the scoping table, provisioning,
 configuration, entitlements, credentials, support access, the data lifecycle,
 what each provider does and does not allow us to separate, and the operating
 limits — with the five operational runbooks in [docs/runbooks](docs/runbooks).
+The [Stage 10 Customer Experience and Market Intelligence guide](docs/customer-experience-and-market-intelligence.md)
+documents the buyer Journey, minimum sale facts, direct-SQL correction
+propagation, privacy-bounded shared dataset, analyst authority, comparable-report
+thresholds, and the operational activation gates that remain after local
+implementation.
