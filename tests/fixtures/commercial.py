@@ -206,10 +206,27 @@ _RESET_ORDER = (
     # alert about a deactivated Advisor is deliberately not owned by any
     # Contact.
     "internal_alerts",
+    "appointment_reminders",
+    "human_handoff_requests",
+    "conversation_handling",
     "advisor_absences",
     "property_experts",
+    "appointments",
+    "availability_snapshots",
+    "listing_media",
+    "listing_offers",
+    "catalog_listings",
+    "outbox_messages",
+    "outbound_decisions",
+    "inbox_messages",
+    "inbox_groups",
+    "conversations",
+    "lead_engagement_cycles",
     "contacts",
     "leads",
+    "properties",
+    "unit_models",
+    "developments",
 )
 
 
@@ -227,9 +244,9 @@ async def reset(session: AsyncSession, *, members: bool = False) -> None:
     members are gone — hence the order.
     """
     for table in _RESET_ORDER:
-        await session.execute(text(f"DELETE FROM {table}"))
+        await session.execute(text(f"TRUNCATE TABLE {table} CASCADE"))
     if members:
-        await session.execute(text("DELETE FROM organization_members"))
+        await session.execute(text("TRUNCATE TABLE organization_members CASCADE"))
     await session.commit()
 
 

@@ -330,6 +330,7 @@ async def reset_property_inventory(session) -> None:  # noqa: ANN001
         "reactivation_candidates",
         "appointments",
         "availability_snapshots",
+        "property_document_versions",
         "listing_media",
         "listing_offers",
         "catalog_listings",
@@ -337,7 +338,7 @@ async def reset_property_inventory(session) -> None:  # noqa: ANN001
         "unit_models",
         "developments",
     ):
-        await session.execute(text(f"DELETE FROM {table}"))
+        await session.execute(text(f"TRUNCATE TABLE {table} CASCADE"))
 
 
 async def age_pending_inbox(database) -> None:  # noqa: ANN001

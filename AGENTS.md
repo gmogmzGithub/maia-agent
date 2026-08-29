@@ -88,7 +88,8 @@ In practice, when you touch this codebase:
   customer's records means a temporary, explained, expiring support grant;
 - a configuration document never contains a credential. Store a reference.
 
-See `docs/managed-platform.md` for the reasoning and the operating limits.
+See `docs/architecture/architecture.md` and ADR-0033 through ADR-0055 for the
+reasoning and the operating limits.
 
 ## Implementation Style
 

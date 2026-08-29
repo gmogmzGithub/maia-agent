@@ -672,7 +672,7 @@ appointments will support a founding price and later stable price catalog rather
 than an invented amount.
 
 Real-estate and sales assumptions requiring Santiago's review are maintained in
-`docs/SANTIAGO_REAL_ESTATE_REVIEW.md`. That document is the single review queue
+`docs/open-questions/SANTIAGO_REAL_ESTATE_REVIEW.md`. That document is the single review queue
 for operational expertise; it does not give Santiago responsibility for software,
 security, privacy-law, or infrastructure decisions outside his domain.
 
@@ -788,10 +788,10 @@ and republish through PostgreSQL triggers; co-brokered duplicate contributions
 require human resolution; only completed records are Comparable Sales; and
 aggregate reports require at least five applicable sales.
 
-The complete accepted design and implemented composition are in
-`docs/customer-experience-and-market-intelligence.md`. ADR-0056 supersedes the
-old post-appointment boundary; ADRs 0057 to 0059 record contribution, minimum
-sale facts and direct-SQL correction propagation.
+The accepted design and implemented composition are captured by ADR-0056 through
+ADR-0059. ADR-0056 supersedes the old post-appointment boundary; ADRs 0057 to
+0059 record contribution, minimum sale facts and direct-SQL correction
+propagation.
 
 Local implementation is complete in migration 0028 and the Product, CRM,
 Hermes-plugin, worker and test layers. The buyer template remains an operational
@@ -1354,7 +1354,7 @@ business truth or side effects.
 ## Channel Direction
 
 WhatsApp is the customer channel; Telegram is the private Broker/Administrator
-channel and never the Lead entry point. `docs/architecture.md` states the full
+channel and never the Lead entry point. `docs/architecture/architecture.md` states the full
 boundary, including which Telegram notices Product owns — read it there rather
 than restating it here.
 

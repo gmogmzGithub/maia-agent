@@ -15,6 +15,8 @@ dist/
 .coverage.*
 htmlcov/
 coverage.xml
+output/
+tmp/
 
 # Secrets — never commit. See .env.example for the required keys.
 .env
