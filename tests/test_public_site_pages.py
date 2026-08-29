@@ -14,6 +14,7 @@ from PIL import Image
 
 from realestate.config import Settings
 from realestate.site.app import CONVERSATION_COOKIE, SAVED_COOKIE, create_site_app
+from realestate.site.design_demo import DEMO_PROPERTY_IMAGES
 from realestate.site.gateway import GatewayResponse
 
 LISTING_ID = str(uuid.UUID("11111111-1111-4111-8111-111111111111"))
@@ -285,24 +286,37 @@ class PaginatedProductGateway(FakeProductGateway):
         )
 
 
-def settings(*, whatsapp: str = "") -> Settings:
+def settings(*, whatsapp: str = "", design_demo: bool = False) -> Settings:
     return Settings(
         _env_file=None,
         PLUGIN_API_TOKEN="test-token",
         SITE_PUBLIC_ORIGIN="https://larevia.test",
+        SITE_DESIGN_DEMO=design_demo,
         OFFICIAL_WHATSAPP_NUMBER=whatsapp,
     )
 
 
 async def client_for(
-    gateway: FakeProductGateway, *, whatsapp: str = ""
+    gateway: FakeProductGateway, *, whatsapp: str = "", design_demo: bool = False
 ) -> httpx.AsyncClient:
-    app = create_site_app(settings(whatsapp=whatsapp), gateway)
+    app = create_site_app(settings(whatsapp=whatsapp, design_demo=design_demo), gateway)
     return httpx.AsyncClient(
         transport=ASGITransport(app=app),
         base_url="https://larevia.test",
         follow_redirects=False,
     )
+
+
+async def test_local_design_demo_labels_and_uses_the_complete_photo_set() -> None:
+    gateway = FakeProductGateway()
+    async with await client_for(gateway, design_demo=True) as client:
+        sheet = await client.get("/propiedades/casa-encino-larevia")
+        gallery = await client.get("/propiedades/casa-encino-larevia/galeria")
+
+    assert "Demostración local · propiedades e imágenes ficticias" in sheet.text
+    assert gallery.text.count('class="gallery-slide"') == len(DEMO_PROPERTY_IMAGES)
+    for filename in DEMO_PROPERTY_IMAGES:
+        assert f"/assets/demo/properties/{filename}" in gallery.text
 
 
 async def test_server_rendered_search_detail_gallery_and_local_discovery() -> None:

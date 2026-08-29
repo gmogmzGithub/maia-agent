@@ -59,6 +59,9 @@ class Settings(BaseSettings):
     site_public_origin: str = Field(
         default="http://localhost:8080", alias="SITE_PUBLIC_ORIGIN"
     )
+    # A local-review affordance only. Public deployments leave this false so
+    # fictional design fixtures can never be mistaken for live inventory.
+    site_design_demo: bool = Field(default=False, alias="SITE_DESIGN_DEMO")
     official_whatsapp_number: str = Field(
         default="", alias="OFFICIAL_WHATSAPP_NUMBER"
     )
