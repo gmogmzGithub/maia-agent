@@ -48,10 +48,12 @@ from realestate.api.ui import (
     relative,
     table,
 )
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from realestate.db.models import (
     ACTIVE_STAGES,
+    Appointment,
+    AppointmentStatus,
     ChannelIdentityTrust,
     InboxGroup,
     InboxGroupStatus,
@@ -256,6 +258,41 @@ def _restriction_note(restriction: RestrictionView) -> str:
 # ---------------------------------------------------------------- Panel ------
 
 
+@dataclass(frozen=True)
+class _PriorityItem:
+    label: str
+    kind: str
+    reason: str
+    detail: str
+    owner: str
+    href: str
+    action: str
+
+
+def _priority_rows(items: list[_PriorityItem]) -> str:
+    if not items:
+        return empty(
+            "No hay asuntos que requieran intervención.",
+            "Product no encontró conversaciones en espera, compromisos vencidos "
+            "ni revisiones dentro de tu alcance.",
+        )
+    return (
+        '<ol class="priority-list">'
+        + "".join(
+            '<li class="priority-row">'
+            f'<span class="priority-label priority-{escape(item.kind)}">'
+            f"{escape(item.label)}</span>"
+            f'<div><div class="priority-reason">{escape(item.reason)}</div>'
+            f'<div class="priority-meta">{escape(item.detail)}</div></div>'
+            f'<div class="priority-owner">{escape(item.owner)}</div>'
+            f'<a class="button priority-action" href="{escape(item.href)}">'
+            f"{escape(item.action)}</a></li>"
+            for item in items
+        )
+        + "</ol>"
+    )
+
+
 @router.get("", response_class=HTMLResponse)
 async def panel(
     request: Request, actor: Actor = Depends(require_actor)
@@ -265,35 +302,159 @@ async def panel(
     async with request.app.state.database.session_scope() as session:
         views = CommercialInbox(session)
         coverage = await views.coverage(actor, now=moment)
-        overdue_rows = await NextActions(session).due_with_contacts(
-            actor, now=moment, overdue_only=True, limit=20
+        inbox_rows = await views.query(
+            actor, InboxFilters(needs_reply=True, limit=20), now=moment
+        )
+        due_rows = await NextActions(session).due_with_contacts(
+            actor, now=moment, limit=40
         )
         queue = await Assignment(session).queue(actor) if actor.is_administrator else []
+        members = {
+            member.id: member.display_name
+            for member in await OrganizationDirectory(session).members(
+                actor.organization_id
+            )
+        }
+        appointment_query = (
+            select(Appointment, OrganizationMember.display_name)
+            .outerjoin(
+                OrganizationMember,
+                OrganizationMember.id == Appointment.advisor_id,
+            )
+            .where(Appointment.organization_id == actor.organization_id)
+            .where(Appointment.status == AppointmentStatus.NEEDS_REVIEW.value)
+            .order_by(Appointment.starts_at, Appointment.id)
+            .limit(20)
+        )
+        if not actor.sees_whole_operation:
+            appointment_query = appointment_query.where(
+                or_(
+                    Appointment.advisor_id == actor.member_id,
+                    Appointment.conducting_advisor_id == actor.member_id,
+                )
+            )
+        appointment_rows = list(await session.execute(appointment_query))
 
+    overdue_rows = [item for item in due_rows if item.action.due_at <= moment]
+    upcoming_rows = [
+        item
+        for item in due_rows
+        if moment < item.action.due_at <= moment + timedelta(days=7)
+    ]
+
+    priority: list[_PriorityItem] = []
+    priority.extend(
+        _PriorityItem(
+            label="Ahora",
+            kind="now",
+            reason=(
+                f"{entry.contact_name or 'Un contacto'} espera respuesta"
+            ),
+            detail=(
+                f"Bandeja · {relative(entry.last_inbound_at, now=moment)} · "
+                f"{STAGE_LABELS.get(entry.stage or '', 'Sin etapa')}"
+            ),
+            owner=entry.advisor_name or "Sin asesor",
+            href=f"/crm/bandeja/{entry.conversation_id}",
+            action="Responder",
+        )
+        for entry in inbox_rows[:8]
+    )
+    priority.extend(
+        _PriorityItem(
+            label="Hoy",
+            kind="today",
+            reason=(
+                f"{ACTION_KIND_LABELS.get(item.action.kind, item.action.kind)} · "
+                f"{item.contact_name or 'Contacto sin nombre'}"
+            ),
+            detail=(
+                f"Venció {local(item.action.due_at)} · "
+                f"{relative(item.action.due_at, now=moment)}"
+            ),
+            owner=members.get(item.action.responsible_member_id, "Sin responsable"),
+            href=f"/crm/oportunidades/{item.action.opportunity_id}",
+            action="Abrir acción",
+        )
+        for item in overdue_rows[:8]
+    )
+    if actor.is_administrator:
+        priority.extend(
+            _PriorityItem(
+                label="Revisión",
+                kind="review",
+                reason=(
+                    f"{item.contact_name or 'Una oportunidad'} no tiene asesor responsable"
+                ),
+                detail=f"Cola de asignación · {relative(item.since, now=moment)}",
+                owner="Sin asesor",
+                href="/crm/asignacion",
+                action="Asignar",
+            )
+            for item in queue[:8]
+        )
+    priority.extend(
+        _PriorityItem(
+            label="Revisión",
+            kind="review",
+            reason=f"La visita {visit.reference} requiere revisión",
+            detail=f"Agenda · {local(visit.starts_at)}",
+            owner=advisor_name or "Sin asesor",
+            href="/crm/agenda",
+            action="Revisar visita",
+        )
+        for visit, advisor_name in appointment_rows[:8]
+    )
+    priority.extend(
+        _PriorityItem(
+            label="Próximamente",
+            kind="soon",
+            reason=(
+                f"{ACTION_KIND_LABELS.get(item.action.kind, item.action.kind)} · "
+                f"{item.contact_name or 'Contacto sin nombre'}"
+            ),
+            detail=f"Vence {local(item.action.due_at)}",
+            owner=members.get(item.action.responsible_member_id, "Sin responsable"),
+            href=f"/crm/oportunidades/{item.action.opportunity_id}",
+            action="Preparar",
+        )
+        for item in upcoming_rows[:8]
+    )
+
+    metric_scope = (
+        f"Toda {actor.organization_name}" if actor.is_administrator else "Mi trabajo"
+    )
+    metric_freshness = local(moment)
     stats = "".join(
         f'<div class="stat"><div class="muted">{escape(label)}</div>'
         f'<div class="value">{escape(value)}</div>'
-        f'<div class="muted">{escape(note)}</div></div>'
-        for label, value, note in (
+        f'<div class="muted">{escape(note)} · {escape(metric_scope)} · '
+        f'Estado actual · Consultado {escape(metric_freshness)}</div>'
+        f'<a href="{escape(href)}">Ver trabajo</a></div>'
+        for label, value, note, href in (
             (
                 "Cobertura de seguimiento",
                 f"{coverage.percentage}%",
                 f"{coverage.covered} de {coverage.active} oportunidades calificadas activas",
+                "/crm/oportunidades?huecos=1",
             ),
             (
                 "Oportunidades calificadas",
                 str(coverage.qualified_active),
                 f"{coverage.qualified_covered} con asesor y acción vigente",
+                "/crm/oportunidades?stage=Qualified",
             ),
             (
                 "Sin asesor responsable",
                 str(coverage.without_advisor),
                 "Requieren asignación",
+                "/crm/asignacion" if actor.is_administrator else "/crm/oportunidades",
             ),
             (
                 "Con acción vencida",
                 str(coverage.overdue),
                 "Requieren atención hoy",
+                "/crm/oportunidades?huecos=1",
             ),
         )
     )
@@ -356,12 +517,47 @@ async def panel(
             else empty("La cola de asignación está vacía.")
         )
 
+    issue_count = (
+        len(inbox_rows) + len(overdue_rows) + len(queue) + len(appointment_rows)
+    )
+    if issue_count:
+        summary = (
+            '<div class="operational-summary"><strong>'
+            f"{issue_count} asunto{'s' if issue_count != 1 else ''} requieren atención"
+            "</strong>"
+            f"{len(inbox_rows)} persona(s) esperan · "
+            f"{len(overdue_rows)} acción(es) vencida(s) · "
+            f"{len(queue)} oportunidad(es) sin asesor · "
+            f"{len(appointment_rows)} visita(s) requieren revisión</div>"
+        )
+    else:
+        summary = (
+            '<div class="ok" role="status"><strong>La operación está al día.</strong> '
+            "No hay asuntos que requieran intervención dentro de tu alcance.</div>"
+        )
+    priority_block = (
+        '<section class="work-section" aria-labelledby="prioridad">'
+        '<div class="work-section-header"><div><h2 id="prioridad">'
+        + ("Prioridad de operación" if actor.is_administrator else "Lo siguiente")
+        + '</h2><p>Ordenada por urgencia, vencimiento y tiempo de espera.</p></div></div>'
+        + _priority_rows(priority)
+        + "</section>"
+    )
     content = (
-        f"{banner}<div class='stats'>{stats}</div>"
+        f"{summary}{priority_block}"
+        '<section class="work-section" aria-labelledby="salud-operativa">'
+        '<div class="work-section-header"><div><h2 id="salud-operativa">'
+        "Salud operativa</h2><p>Alcance actual · definición de cobertura de seguimiento.</p>"
+        f"</div></div>{banner}<div class='stats'>{stats}</div></section>"
         f"<h2>Huecos de seguimiento</h2>{gaps_table}"
         f"{overdue_block}{queue_block}"
     )
-    return shell(actor, "Panel de operación", content, active="/crm")
+    title = (
+        f"Operación de {actor.organization_name}"
+        if actor.is_administrator
+        else "Mi trabajo"
+    )
+    return shell(actor, title, content, active="/crm")
 
 
 # --------------------------------------------------------------- Bandeja -----
@@ -408,7 +604,7 @@ async def inbox(
         empty_message="No hay conversaciones que coincidan.",
         empty_hint="Quita los filtros o espera el primer mensaje de WhatsApp.",
     )
-    content = _inbox_filter_form(filters) + listing
+    content = _inbox_filter_form(filters, actor) + listing
     return shell(actor, "Bandeja de conversaciones", content, active="/crm/bandeja")
 
 
@@ -421,7 +617,7 @@ SCOPE_LABELS = {
 }
 
 
-def _inbox_filter_form(filters: InboxFilters) -> str:
+def _inbox_filter_form(filters: InboxFilters, actor: Actor) -> str:
     checks = "".join(
         checkbox(name, label, value)
         for name, label, value in (
@@ -436,7 +632,7 @@ def _inbox_filter_form(filters: InboxFilters) -> str:
 <input id="f-q" name="q" value="{escape(filters.query or "")}"
  placeholder="Ana, 5213312..."></label></div>
 <div class="field"><label for="f-scope">Alcance
-<select id="f-scope" name="scope">{options(InboxFilters.SCOPES, filters.scope, SCOPE_LABELS)}</select></label></div>
+<select id="f-scope" name="scope">{options(InboxFilters.SCOPES if actor.is_administrator else ("all", "mine"), filters.scope, SCOPE_LABELS)}</select></label></div>
 <div class="field"><label for="f-stage">Etapa
 <select id="f-stage" name="stage"><option value="">Todas</option>
 {options(tuple(STAGE_LABELS), filters.stage or "", STAGE_LABELS)}</select></label></div>
@@ -469,10 +665,12 @@ async def conversation(
     """One conversation, its restrictions, and what Product refused to send."""
     moment = _now()
     async with request.app.state.database.session_scope() as session:
+        views = CommercialInbox(session)
         try:
-            view = await CommercialInbox(session).conversation(actor, conversation_id)
+            view = await views.conversation(actor, conversation_id)
         except CommercialError as exc:
             return refusal(actor, exc, active="/crm/bandeja")
+        queue = await views.query(actor, InboxFilters(limit=8), now=moment)
         handling = await ConversationHandling(session).snapshot(conversation_id)
         pending_handoff = await HumanHandoff(session).open_for_conversation(
             conversation_id
@@ -552,9 +750,52 @@ async def conversation(
 <a class="button" href="/crm/oportunidades/{view.opportunity.id}">Abrir oportunidad</a>
 <a class="button quiet" href="/crm/contactos/{view.contact.id}">Ver contacto</a></div>"""
 
-    content = (
-        flash(_CONVERSATION_FLASH.get(guardado))
-        + (f'<div class="error" role="alert">{escape(error)}</div>' if error else "")
+    queue_items = "".join(
+        '<li class="queue-item'
+        + (" selected" if entry.conversation_id == conversation_id else "")
+        + '"><a href="/crm/bandeja/'
+        + str(entry.conversation_id)
+        + '"><span class="priority-label priority-'
+        + (
+            "now"
+            if entry.awaiting_reply
+            else "today"
+            if entry.next_action_overdue
+            else "review"
+            if entry.restriction.suppressed or entry.restriction.denied_count
+            else "soon"
+        )
+        + '">'
+        + (
+            "Ahora"
+            if entry.awaiting_reply
+            else "Hoy"
+            if entry.next_action_overdue
+            else "Revisión"
+            if entry.restriction.suppressed or entry.restriction.denied_count
+            else "Al día"
+        )
+        + "</span><strong>"
+        + escape(entry.contact_name or "Contacto sin nombre")
+        + '</strong><div class="queue-preview">'
+        + escape(entry.preview)
+        + '</div><span class="muted">'
+        + escape(relative(entry.last_inbound_at, now=moment))
+        + " · "
+        + escape(entry.advisor_name or "Sin asesor")
+        + "</span></a></li>"
+        for entry in queue
+    )
+    queue_panel = (
+        '<aside class="workspace-panel queue-panel" aria-label="Prioridad de conversaciones">'
+        '<h2>Prioridad</h2><p class="hint">Conversaciones dentro de tu alcance.</p>'
+        f'<ul class="queue-list">{queue_items}</ul>'
+        '<p><a href="/crm/bandeja">Ver toda la Bandeja</a></p></aside>'
+    )
+    conversation_panel = (
+        '<section class="workspace-panel conversation-panel" aria-label="Conversación seleccionada">'
+        f"<h2>{escape(view.contact.display_name or 'Contacto sin nombre')}</h2>"
+        f'<p class="hint">WhatsApp · {escape(view.channel_identity)}</p>'
         + handling_panel(
             handling,
             pending_handoff,
@@ -562,17 +803,32 @@ async def conversation(
             conversation_id=conversation_id,
             maia_mid_turn=mid_turn is not None,
         )
+        + "<h2>Conversación</h2>"
+        + thread
         + reply_form(handling, actor, conversation_id=conversation_id)
+        + "</section>"
+    )
+    context_panel = (
+        '<aside class="workspace-panel context-panel sticky-rail" '
+        'aria-label="Contexto y autoridad">'
         + f"{restriction_block}"
-        f"<div class='card'><h2>Contacto</h2><dl class='pairs'>"
+        + f"<div><h2>Contacto</h2><dl class='pairs'>"
         f"<dt>Nombre</dt><dd>{escape(view.contact.display_name or 'Sin nombre registrado')}</dd>"
         f"<dt>WhatsApp</dt><dd>{escape(view.channel_identity)}</dd></dl></div>"
-        f"<div class='card'><h2>Oportunidad</h2>{opportunity_block}</div>"
-        f"<h2>Conversación</h2>{thread}"
+        f"<div><h2>Oportunidad</h2>{opportunity_block}</div></aside>"
+    )
+    content = (
+        flash(_CONVERSATION_FLASH.get(guardado))
+        + (f'<div class="error" role="alert">{escape(error)}</div>' if error else "")
+        + '<div class="workspace conversation-workspace">'
+        + queue_panel
+        + conversation_panel
+        + context_panel
+        + "</div>"
     )
     return shell(
         actor,
-        f"Conversación con {view.contact.display_name or view.channel_identity}",
+        "Bandeja",
         content,
         active="/crm/bandeja",
     )
@@ -642,7 +898,7 @@ async def opportunities(
 <select id="o-stage" name="stage"><option value="">Todas las activas</option>
 {options(tuple(STAGE_LABELS), chosen or "", STAGE_LABELS)}</select></label></div>
 <div class="field"><label for="o-scope">Alcance
-<select id="o-scope" name="scope">{options(InboxFilters.SCOPES, scope, SCOPE_LABELS)}</select></label></div>
+<select id="o-scope" name="scope">{options(InboxFilters.SCOPES if actor.is_administrator else ("all", "mine"), scope, SCOPE_LABELS)}</select></label></div>
 <div class="field"><fieldset><legend>Filtros</legend>
 {checkbox("huecos", "Sólo huecos de seguimiento", huecos == "1")}
 {checkbox("cerradas", "Incluir cerradas y en pausa", cerradas == "1")}
@@ -702,7 +958,7 @@ async def opportunity_detail(
         )
 
     overdue = pending is not None and pending.due_at <= moment
-    header = f"""<div class="card"><dl class="pairs">
+    header = f"""<div><h2>Resumen</h2><dl class="pairs">
 <dt>Contacto</dt><dd><a href="/crm/contactos/{contact.id}">
 {escape(contact.display_name or "Sin nombre registrado")}</a><br>
 <span class="muted">{escape(", ".join(row.identity for row in identities))}</span></dd>
@@ -742,23 +998,86 @@ async def opportunity_detail(
             "ok",
         )
 
-    content = (
-        flash(SAVED_MESSAGES.get(guardado))
-        + errors_box([error] if error else [])
-        + outcome_block
-        + header
+    covered = (
+        opportunity.stage not in QUALIFIED_OR_BEYOND
+        or (
+            opportunity.responsible_advisor_id is not None
+            and (
+                (pending is not None and not overdue)
+                or (pending is None and exception is not None)
+            )
+        )
+    )
+    requires_review = bool(
+        overdue
+        or exception is not None
+        or (snapshot is not None and (snapshot.pending or snapshot.missing_required))
+    )
+    next_action_label = (
+        ACTION_KIND_LABELS.get(pending.kind, pending.kind)
+        if pending is not None
+        else "Sin siguiente acción"
+    )
+    next_action_due = local(pending.due_at) if pending is not None else "—"
+    summary = f"""<div class="opportunity-summary" aria-label="Resumen de la oportunidad">
+<div><span class="summary-label">Etapa</span><span class="summary-value">{_stage_tag(opportunity.stage)}</span></div>
+<div><span class="summary-label">Asesor responsable</span><span class="summary-value">{escape(current_advisor or "Sin asignar")}</span></div>
+<div><span class="summary-label">Siguiente acción</span><span class="summary-value">{escape(next_action_label)}</span><span class="muted">{escape(next_action_due)}</span></div>
+<div><span class="summary-label">Cobertura</span><span class="summary-value">{tag("Vigente", "ok") if covered else tag("Incompleta", "bad")}</span></div>
+<div><span class="summary-label">Atención</span><span class="summary-value">{tag("Revisión", "warn") if requires_review else tag("Al día", "ok")}</span></div>
+</div>"""
+    review_banner = ""
+    if snapshot is not None and snapshot.pending:
+        pending_labels = ", ".join(
+            criterion_label(name) for name in snapshot.pending
+        )
+        review_banner = (
+            '<div class="warn" role="status"><strong>Hay criterios pendientes de '
+            "confirmar.</strong> "
+            + escape(pending_labels)
+            + ". Confírmalos con el contacto y registra la fuente.</div>"
+        )
+    elif overdue:
+        review_banner = (
+            '<div class="error" role="alert"><strong>La siguiente acción está '
+            "vencida.</strong> Registra el resultado o sustituye el compromiso con "
+            "una fecha vigente.</div>"
+        )
+
+    main_work = (
+        '<div class="opportunity-main">'
+        + review_banner
         + _criteria_card(opportunity, snapshot, criteria_history)
         + _next_action_card(
             opportunity, pending, overdue, action_history, advisors, actor, moment
         )
-        + _stage_card(opportunity, actor)
-        + _assignment_card(opportunity, actor, advisors, advisor_names, assignments)
         + _exception_card(opportunity, exception)
         + _history_card(transitions)
+        + "</div>"
+    )
+    action_rail = (
+        '<aside class="workspace-panel sticky-rail" aria-label="Acciones permitidas">'
+        "<h2>Acciones</h2>"
+        + _stage_card(opportunity, actor)
+        + _assignment_card(
+            opportunity, actor, advisors, advisor_names, assignments
+        )
+        + header
+        + "</aside>"
+    )
+    content = (
+        flash(SAVED_MESSAGES.get(guardado))
+        + errors_box([error] if error else [])
+        + outcome_block
+        + summary
+        + '<div class="workspace opportunity-workspace">'
+        + main_work
+        + action_rail
+        + "</div>"
     )
     return shell(
         actor,
-        f"Oportunidad de {contact.display_name or 'contacto sin nombre'}",
+        contact.display_name or "Oportunidad sin nombre de contacto",
         content,
         active="/crm/oportunidades",
     )
@@ -819,21 +1138,22 @@ def _criteria_card(
 <div class="actions"><button type="submit">Registrar la necesidad</button></div>
 </form></div>"""
         )
-    confirmed_rows = "".join(
-        f"<tr><td>{escape(criterion_label(name))}</td>"
-        f"<td>{escape(INTENT_LABELS.get(value, value) if name == INTENT else value)}</td>"
-        f"<td>{tag('Confirmado', 'ok')}</td><td></td></tr>"
+    confirmed_items = "".join(
+        '<div class="criterion"><strong>'
+        f"{escape(criterion_label(name))}</strong><br>"
+        f"{escape(INTENT_LABELS.get(value, value) if name == INTENT else value)}"
+        '<br><span class="muted">Confirmado en Product</span></div>'
         for name, value in snapshot.confirmed.items()
     )
-    pending_rows = "".join(
-        f"<tr><td>{escape(criterion_label(name))}</td>"
-        f"<td>{escape(INTENT_LABELS.get(value, value) if name == INTENT else value)}</td>"
-        f"<td>{tag('Por confirmar', 'warn')}</td>"
-        f"<td><form method='post' "
+    pending_items = "".join(
+        '<div class="criterion pending"><strong>'
+        f"{escape(criterion_label(name))}</strong><br>"
+        f"{escape(INTENT_LABELS.get(value, value) if name == INTENT else value)}"
+        f"<form method='post' "
         f"action='/crm/oportunidades/{opportunity.id}/criterios'>"
         f"<input type='hidden' name='intent' value='confirmar'>{command_field()}"
         f"<input type='hidden' name='nombre' value='{escape(name)}'>"
-        f"<button class='quiet'>Confirmar con el contacto</button></form></td></tr>"
+        f"<button class='quiet'>Confirmar con el contacto</button></form></div>"
         for name, value in snapshot.pending.items()
     )
     missing = snapshot.missing_required
@@ -889,11 +1209,29 @@ def _criteria_card(
         if history_rows
         else ""
     )
-    current = table(
-        "Criterios de la necesidad · " + NEED_STATUS_LABELS[snapshot.status.value],
-        ("Criterio", "Valor", "Estado", "Acción"),
-        confirmed_rows + pending_rows,
-        empty_message="Todavía no hay criterios registrados.",
+    current = (
+        '<p class="hint">Estado de la necesidad: '
+        + escape(NEED_STATUS_LABELS[snapshot.status.value])
+        + "</p>"
+        + (
+            '<h3>Criterios confirmados</h3><div class="criteria-grid">'
+            + confirmed_items
+            + "</div>"
+            if confirmed_items
+            else ""
+        )
+        + (
+            '<h3>Pendiente</h3><div class="criteria-grid">'
+            + pending_items
+            + "</div>"
+            if pending_items
+            else ""
+        )
+        + (
+            empty("Todavía no hay criterios registrados.")
+            if not confirmed_items and not pending_items
+            else ""
+        )
     )
     return (
         f'<div class="card"><h2>Necesidad del contacto</h2>{stale_note}'

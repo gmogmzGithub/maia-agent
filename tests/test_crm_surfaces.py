@@ -52,6 +52,7 @@ from realestate.domain.commercial.opportunities import (
     AdvanceStage,
     OpportunityManagement,
 )
+from realestate.domain.internal_alerts import InternalAlerts
 from realestate.domain.outbound import (
     Denied,
     OutboundIntent,
@@ -175,6 +176,66 @@ async def test_the_shell_names_the_session_and_the_role(wired) -> None:
     assert "Asesor inmobiliario" in advisor.text
 
 
+async def test_the_shared_shell_is_brand_led_role_shaped_and_responsive(wired) -> None:
+    client, _database = wired
+
+    admin = await client.get("/crm", auth=ADMIN)
+    advisor = await client.get("/crm", auth=ADVISOR)
+
+    assert "Operación de Larevia" in admin.text
+    assert "Toda Larevia" in admin.text
+    assert "Mi trabajo" in advisor.text
+    assert "Operado con Maia" in advisor.text
+    assert 'class="rail"' in admin.text
+    assert 'class="mobile-bottom"' in admin.text
+    assert "grid-template-columns:repeat(5" in admin.text
+    assert "@media (prefers-reduced-motion:reduce)" in admin.text
+    assert "--bg:#f7f5ef" in admin.text
+    assert "inter-variable.ttf" in admin.text
+    assert "newsreader-variable.ttf" in admin.text
+    assert "Cambiar organización" not in admin.text
+    assert 'name="organization"' not in admin.text
+
+
+async def test_advisor_navigation_omits_administrator_only_destinations(wired) -> None:
+    client, _database = wired
+
+    admin = (await client.get("/crm", auth=ADMIN)).text
+    advisor = (await client.get("/crm", auth=ADVISOR)).text
+
+    for href in (
+        "/crm/asignacion",
+        "/crm/inventario-externo",
+        "/crm/reactivacion",
+        "/crm/patrocinios",
+        "/crm/bi",
+        "/crm/plataforma",
+    ):
+        assert f'href="{href}"' in admin
+        assert f'href="{href}"' not in advisor
+    # The role-appropriate read-only team surface remains available.
+    assert 'href="/crm/equipo"' in advisor
+    advisor_inbox = (await client.get("/crm/bandeja", auth=ADVISOR)).text
+    advisor_opportunities = (
+        await client.get("/crm/oportunidades", auth=ADVISOR)
+    ).text
+    assert '<option value="unassigned">' not in advisor_inbox
+    assert '<option value="unassigned">' not in advisor_opportunities
+
+
+async def test_the_home_puts_operational_work_before_metrics(wired) -> None:
+    client, database = wired
+    await _opportunity(database)
+
+    admin = (await client.get("/crm", auth=ADMIN)).text
+    advisor = (await client.get("/crm", auth=ADVISOR)).text
+
+    assert admin.index("Prioridad de operación") < admin.index("Salud operativa")
+    assert advisor.index("Lo siguiente") < advisor.index("Salud operativa")
+    assert 'class="priority-list"' in admin
+    assert 'class="operational-summary"' in admin
+
+
 async def test_the_assignment_queue_is_administrator_only(wired) -> None:
     client, database = wired
     await _opportunity(database, assign=False)
@@ -222,7 +283,7 @@ async def test_every_surface_ships_the_accessible_spanish_shell(
     assert '<meta name="viewport" content="width=device-width,initial-scale=1">' in html
     assert 'href="#contenido"' in html
     assert "Ir al contenido principal" in html
-    assert '<main id="contenido">' in html
+    assert '<main id="contenido"' in html
     assert 'aria-label="Navegación principal"' in html
     assert 'aria-current="page"' in html
     # Keyboard focus stays visible and controls stay reachable on a phone.
@@ -302,6 +363,22 @@ async def test_the_opportunity_detail_is_also_spanish_and_labelled(wired) -> Non
         "Historial de etapas",
     ):
         assert label in html
+    assert 'class="opportunity-summary"' in html
+    assert 'class="workspace opportunity-workspace"' in html
+    assert 'aria-label="Acciones permitidas"' in html
+
+
+async def test_the_conversation_is_a_queue_thread_and_context_workspace(wired) -> None:
+    client, database = wired
+    _contact_id, conversation_id, _opportunity_id = await _opportunity(database)
+
+    html = (await client.get(f"/crm/bandeja/{conversation_id}", auth=ADMIN)).text
+
+    assert 'class="workspace conversation-workspace"' in html
+    assert 'aria-label="Prioridad de conversaciones"' in html
+    assert 'aria-label="Conversación seleccionada"' in html
+    assert 'aria-label="Contexto y autoridad"' in html
+    assert "Ver toda la Bandeja" in html
 
 
 # -- Empty states ---------------------------------------------------------
@@ -821,6 +898,228 @@ async def test_an_unknown_reason_or_intent_is_refused(wired) -> None:
         assert expected in response.text, data
 
 
+async def test_mutation_forms_validate_optional_fields_and_replay_safely(wired) -> None:
+    """Retries remain idempotent across each dense opportunity workflow.
+
+    This is intentionally an HTTP contract: a browser can resend a form after a
+    timeout, and Product must acknowledge the original command without applying
+    the business mutation twice.
+    """
+    client, database = wired
+    _contact_id, _conversation_id, opportunity_id = await _opportunity(database)
+
+    incomplete_qualification = await client.post(
+        f"/crm/oportunidades/{opportunity_id}/etapa",
+        data={
+            "intent": "avanzar",
+            "etapa": OpportunityStage.QUALIFIED.value,
+            "accion_tipo": NextActionKind.CALL.value,
+            "clave": "qualification-without-due-date",
+        },
+        auth=ADMIN,
+        follow_redirects=True,
+    )
+    assert "Indica una siguiente acción y un vencimiento válidos." in (
+        incomplete_qualification.text
+    )
+
+    past_due = await client.post(
+        f"/crm/oportunidades/{opportunity_id}/acciones",
+        data={
+            "tipo": NextActionKind.CALL.value,
+            "vence": (commercial.now() - timedelta(days=1)).strftime(
+                "%Y-%m-%dT%H:%M"
+            ),
+            "clave": "past-due-action",
+        },
+        auth=ADMIN,
+        follow_redirects=True,
+    )
+    assert "debe vencer en el futuro" in past_due.text
+
+    malformed_responsible = await client.post(
+        f"/crm/oportunidades/{opportunity_id}/acciones",
+        data={
+            "tipo": NextActionKind.CALL.value,
+            "vence": (commercial.now() + timedelta(days=1)).strftime(
+                "%Y-%m-%dT%H:%M"
+            ),
+            "responsable": "no-es-un-uuid",
+            "clave": "malformed-action-owner",
+        },
+        auth=ADMIN,
+        follow_redirects=True,
+    )
+    assert "Responsable desconocido." in malformed_responsible.text
+
+    async with database.session_scope() as session:
+        members = await commercial.provision(session)
+        advisor_id = members[commercial.ADVISOR_LOGIN]
+    action_payload = {
+        "tipo": NextActionKind.CALL.value,
+        "vence": (commercial.now() + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M"),
+        "responsable": str(advisor_id),
+        "clave": "replayed-action-with-owner",
+    }
+    scheduled = await client.post(
+        f"/crm/oportunidades/{opportunity_id}/acciones",
+        data=action_payload,
+        auth=ADMIN,
+        follow_redirects=True,
+    )
+    assert "Se agendó la siguiente acción." in scheduled.text
+
+    async with database.session_scope() as session:
+        pending = await NextActions(session).pending(opportunity_id)
+        assert pending is not None
+        action_id = pending.id
+    completion_payload = {
+        "resultado": "Done",
+        "detalle": "Contacto realizado.",
+        "clave": "replayed-completion",
+    }
+    for _attempt in range(2):
+        completed = await client.post(
+            f"/crm/acciones/{action_id}/completar",
+            data=completion_payload,
+            auth=ADMIN,
+            follow_redirects=True,
+        )
+        assert "Se registró el resultado de la acción." in completed.text
+
+    _contact_id, _conversation_id, assignment_id = await _opportunity(
+        database, assign=False, wa_id="5213312345691"
+    )
+    assignment_payload = {"intent": "automatica", "clave": "replayed-assignment"}
+    for _attempt in range(2):
+        assigned = await client.post(
+            f"/crm/oportunidades/{assignment_id}/asignar",
+            data=assignment_payload,
+            auth=ADMIN,
+            follow_redirects=True,
+        )
+        assert "Se actualizó el asesor responsable." in assigned.text
+
+    _contact_id, _conversation_id, exception_id = await _opportunity(
+        database, wa_id="5213312345692"
+    )
+    exception_payload = {
+        "intent": "registrar",
+        "motivo": "AwaitingContact",
+        "detalle": "Pendiente de respuesta.",
+        "clave": "replayed-exception",
+    }
+    for _attempt in range(2):
+        recorded = await client.post(
+            f"/crm/oportunidades/{exception_id}/excepcion",
+            data=exception_payload,
+            auth=ADMIN,
+            follow_redirects=True,
+        )
+        assert "Se registró la excepción." in recorded.text
+
+    duplicate_exception = await client.post(
+        f"/crm/oportunidades/{exception_id}/excepcion",
+        data={**exception_payload, "clave": "different-exception-command"},
+        auth=ADMIN,
+        follow_redirects=True,
+    )
+    assert "Se registró la excepción." in duplicate_exception.text
+    unknown_exception = await client.post(
+        f"/crm/oportunidades/{exception_id}/excepcion",
+        data={"intent": "desconocida", "clave": "unknown-exception-intent"},
+        auth=ADMIN,
+        follow_redirects=True,
+    )
+    assert "Acción desconocida." in unknown_exception.text
+
+    criteria_payload = {
+        "intent": "registrar",
+        "nombre": "service_area",
+        "valor": "Zapopan norte",
+        "clave": "replayed-criterion",
+    }
+    for _attempt in range(2):
+        criterion = await client.post(
+            f"/crm/oportunidades/{opportunity_id}/criterios",
+            data=criteria_payload,
+            auth=ADMIN,
+            follow_redirects=True,
+        )
+        assert "Se actualizaron los criterios." in criterion.text
+
+    missing_pending = await client.post(
+        f"/crm/oportunidades/{opportunity_id}/criterios",
+        data={
+            "intent": "confirmar",
+            "nombre": "horizon",
+            "clave": "confirm-missing-pending",
+        },
+        auth=ADMIN,
+        follow_redirects=True,
+    )
+    assert "No hay un criterio pendiente" in missing_pending.text
+    unknown_criteria = await client.post(
+        f"/crm/oportunidades/{opportunity_id}/criterios",
+        data={
+            "intent": "desconocida",
+            "nombre": "service_area",
+            "clave": "unknown-criteria-intent",
+        },
+        auth=ADMIN,
+        follow_redirects=True,
+    )
+    assert "Acción desconocida." in unknown_criteria.text
+
+    _contact_id, _conversation_id, closed_id = await _opportunity(
+        database, wa_id="5213312345693"
+    )
+    close_payload = {
+        "intent": "perdida",
+        "motivo": "Unknown",
+        "clave": "replayed-stage-change",
+    }
+    for _attempt in range(2):
+        closed = await client.post(
+            f"/crm/oportunidades/{closed_id}/etapa",
+            data=close_payload,
+            auth=ADMIN,
+            follow_redirects=True,
+        )
+        assert "Se registró el cambio de etapa." in closed.text
+
+    exception_on_closed = await client.post(
+        f"/crm/oportunidades/{closed_id}/excepcion",
+        data={
+            "intent": "registrar",
+            "motivo": "AwaitingContact",
+            "clave": "exception-on-closed",
+        },
+        auth=ADMIN,
+        follow_redirects=True,
+    )
+    assert "ya está cerrada" in exception_on_closed.text
+
+    unknown_opportunity = await client.post(
+        f"/crm/oportunidades/{uuid.uuid4()}/excepcion",
+        data={
+            "intent": "registrar",
+            "motivo": "AwaitingContact",
+            "clave": "exception-on-unknown-opportunity",
+        },
+        auth=ADMIN,
+        follow_redirects=True,
+    )
+    assert "No encontramos esa oportunidad." in unknown_opportunity.text
+
+    # A worker may settle an alert after retention or another worker removed it.
+    # Both outcomes are safe no-ops rather than delivery-loop failures.
+    async with database.session_scope() as session:
+        alerts = InternalAlerts(session)
+        await alerts.mark_undeliverable(uuid.uuid4(), "Ya no existe.")
+        await alerts.mark_sent(uuid.uuid4())
+
+
 # -- The Assignment Queue -------------------------------------------------
 
 
@@ -1247,12 +1546,12 @@ def test_operator_text_and_focus_colours_meet_wcag_aa_contrast() -> None:
         return (brighter + 0.05) / (darker + 0.05)
 
     pairs = (
-        ("1f2933", "f6f8fb"),
-        ("5b6472", "fff"),
-        ("1145b8", "fff"),
-        ("a4231a", "fdf2f1"),
-        ("026a3e", "ecfdf3"),
-        ("8a5300", "fff8ec"),
+        ("17211d", "f7f5ef"),
+        ("59675f", "fff"),
+        ("315c4c", "fff"),
+        ("8b2520", "f8e5e3"),
+        ("214f36", "e6f0e9"),
+        ("664a05", "fbf1d6"),
         ("0b57d0", "fff"),
     )
     for foreground, background in pairs:
@@ -1791,5 +2090,5 @@ async def test_the_property_surface_links_back_to_the_crm(wired) -> None:
     # And it now carries the same accessibility guarantees as the CRM shell.
     assert '<html lang="es-MX">' in html
     assert "Ir al contenido principal" in html
-    assert '<main id="contenido">' in html
+    assert '<main id="contenido"' in html
     assert "focus-visible" in html

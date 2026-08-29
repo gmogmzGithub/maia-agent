@@ -33,7 +33,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -347,6 +347,19 @@ class InternalAlerts:
                 InternalAlert.recipient_member_id == actor.member_id
             )
         return list(await self._session.scalars(query))
+
+    async def open_count(self, actor: Actor) -> int:
+        """Exact actionable count for the shared CRM navigation."""
+        query = (
+            select(func.count(InternalAlert.id))
+            .where(InternalAlert.organization_id == actor.organization_id)
+            .where(InternalAlert.acknowledged_at.is_(None))
+        )
+        if not actor.sees_whole_operation:
+            query = query.where(
+                InternalAlert.recipient_member_id == actor.member_id
+            )
+        return int(await self._session.scalar(query) or 0)
 
     async def acknowledge(self, actor: Actor, alert_id: uuid.UUID) -> bool:
         """Dismiss one alert from the operator's list. Never commits."""

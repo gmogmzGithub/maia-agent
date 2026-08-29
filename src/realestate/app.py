@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 import httpx
 
 from realestate.api import health as health_api
@@ -474,6 +475,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     # CORS stays disabled (P-051): no browser origin may reach this application.
     app.state.settings = settings
+    # The CRM reuses the reviewed, self-hosted public typography. Serving only
+    # this immutable asset directory keeps the operational surface independent
+    # of a third-party CDN and does not expose runtime state.
+    app.mount(
+        "/crm-assets",
+        StaticFiles(directory=Path(__file__).parent / "site" / "assets"),
+        name="crm-assets",
+    )
     app.include_router(health_api.router)
     app.include_router(admin_api.router)
     app.include_router(crm_api.router)

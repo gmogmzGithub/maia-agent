@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="390" height="844" viewBox="0 0 390 844" role="img" aria-labelledby="title desc">
+  <title id="title">Mi trabajo, vista móvil de una Asesora inmobiliaria</title>
+  <desc id="desc">Panel personal móvil con una conversación inmediata, acciones del día y navegación inferior.</desc>
+  <style>
+    .ui { font-family: Inter, Arial, sans-serif; fill: #17211d; }
+    .h1 { font: 600 28px Inter, Arial, sans-serif; fill: #17211d; }
+    .h2 { font: 600 17px Inter, Arial, sans-serif; fill: #17211d; }
+    .body { font: 400 14px Inter, Arial, sans-serif; fill: #17211d; }
+    .small { font: 400 11px Inter, Arial, sans-serif; fill: #657069; }
+    .label { font: 600 10px Inter, Arial, sans-serif; }
+    .button { font: 600 13px Inter, Arial, sans-serif; fill: #ffffff; }
+  </style>
+  <rect width="390" height="844" fill="#f7f5ef"/>
+  <rect x="0" y="0" width="390" height="68" fill="#17211d"/>
+  <text x="18" y="30" font-family="Newsreader, Georgia, serif" font-size="23" font-weight="600" fill="#ffffff">Larevia</text>
+  <text x="18" y="49" font-family="Inter, Arial, sans-serif" font-size="9" fill="#aebbb5">OPERADO CON MAIA</text>
+  <circle cx="330" cy="27" r="15" fill="#315c4c"/>
+  <text x="330" y="31" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="10" font-weight="700" fill="#ffffff">MT</text>
+  <circle cx="365" cy="27" r="14" fill="#f9e8e3"/>
+  <text x="365" y="31" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="11" font-weight="700" fill="#7a2e22">2</text>
+
+  <text class="h1" x="18" y="110">Mi trabajo</text>
+  <text class="small" x="18" y="131">Mariana Torres · Asesora inmobiliaria</text>
+  <text class="small" x="18" y="147">Actualizado hoy, 10:42</text>
+  <rect x="18" y="158" width="354" height="42" rx="8" fill="#fff8e6" stroke="#ead59a"/>
+  <text x="34" y="184" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="600" fill="#17211d">2 asuntos ahora · 4 pendientes hoy</text>
+
+  <text class="h2" x="18" y="226">Lo siguiente</text>
+  <rect x="18" y="242" width="354" height="196" rx="10" fill="#ffffff" stroke="#d9d6cd"/>
+  <rect x="34" y="258" width="58" height="22" rx="11" fill="#f9e8e3"/>
+  <text x="63" y="273" text-anchor="middle" class="label" fill="#7a2e22">AHORA</text>
+  <text x="34" y="306" font-family="Inter, Arial, sans-serif" font-size="17" font-weight="600" fill="#17211d">Responder a Sofía</text>
+  <text class="body" x="34" y="330">Espera desde hace 18 min</text>
+  <text class="small" x="34" y="351">Calificada · Presupuesto máximo pendiente</text>
+  <text class="small" x="34" y="370">Siguiente acción hoy, 11:30</text>
+  <rect x="34" y="384" width="322" height="44" rx="8" fill="#315c4c"/>
+  <text class="button" x="195" y="411" text-anchor="middle">Abrir conversación</text>
+
+  <text class="h2" x="18" y="464">Hoy</text>
+  <rect x="18" y="480" width="354" height="86" rx="10" fill="#ffffff" stroke="#d9d6cd"/>
+  <rect x="34" y="496" width="52" height="22" rx="11" fill="#fbf1d6"/>
+  <text x="60" y="511" text-anchor="middle" class="label" fill="#664a05">HOY</text>
+  <text x="98" y="511" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="600" fill="#17211d">Registrar llamada de Mateo</text>
+  <text class="small" x="34" y="540">Venció 09:30 · hace 1 h 12 min</text>
+  <text x="338" y="540" text-anchor="end" font-family="Inter, Arial, sans-serif" font-size="12" font-weight="600" fill="#315c4c">Abrir →</text>
+
+  <rect x="18" y="578" width="354" height="86" rx="10" fill="#ffffff" stroke="#d9d6cd"/>
+  <rect x="34" y="594" width="74" height="22" rx="11" fill="#fbf1d6"/>
+  <text x="71" y="609" text-anchor="middle" class="label" fill="#664a05">REVISIÓN</text>
+  <text x="120" y="609" font-family="Inter, Arial, sans-serif" font-size="14" font-weight="600" fill="#17211d">Preparar visita de Paola</text>
+  <text class="small" x="34" y="638">Casa Jacaranda · hoy, 15:30</text>
+  <text x="338" y="638" text-anchor="end" font-family="Inter, Arial, sans-serif" font-size="12" font-weight="600" fill="#315c4c">Agenda →</text>
+
+  <text class="h2" x="18" y="710">Próximamente</text>
+  <rect x="18" y="726" width="354" height="54" rx="10" fill="#ffffff" stroke="#d9d6cd"/>
+  <text x="34" y="748" font-family="Inter, Arial, sans-serif" font-size="13" font-weight="600" fill="#17211d">3 acciones en los próximos 7 días</text>
+  <text class="small" x="34" y="768">La primera vence lunes, 09:00</text>
+
+  <rect x="0" y="788" width="390" height="56" fill="#ffffff" stroke="#d9d6cd"/>
+  <rect x="7" y="795" width="66" height="42" rx="8" fill="#e5efeb"/>
+  <text x="40" y="813" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="12" font-weight="700" fill="#315c4c">Hoy</text>
+  <text x="40" y="829" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="9" fill="#315c4c">●</text>
+  <text x="117" y="820" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="10" font-weight="600" fill="#4c554f">Bandeja</text>
+  <text x="195" y="820" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="10" font-weight="600" fill="#4c554f">Agenda</text>
+  <text x="273" y="820" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="9" font-weight="600" fill="#4c554f">Oportunidades</text>
+  <text x="351" y="820" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="10" font-weight="600" fill="#4c554f">Más</text>
+</svg>
