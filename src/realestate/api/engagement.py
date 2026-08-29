@@ -421,8 +421,13 @@ async def synchronize_templates(
 ) -> RedirectResponse:
     try:
         async with request.app.state.database.session_scope() as session:
+            source = request.app.state.meta_templates
+            if hasattr(source, "for_organization"):
+                source = await source.for_organization(
+                    session, actor.organization_id
+                )
             result = await TemplateRegistry(session).synchronize(
-                actor, request.app.state.meta_templates, at=utc_now()
+                actor, source, at=utc_now()
             )
             await session.commit()
     except CommercialError as exc:

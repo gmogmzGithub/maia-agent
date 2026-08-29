@@ -103,10 +103,12 @@ class AppointmentReminders:
         schedule: WeeklySchedule,
         *,
         day_of_hour: int,
+        organization_id: uuid.UUID | None = None,
     ) -> None:
         self._session = session
         self._schedule = schedule
         self._day_of_hour = day_of_hour
+        self._organization_id = organization_id
 
     async def schedule_for(self, appointment: Appointment) -> list[AppointmentReminder]:
         """Create the reminders this confirmed visit owes. Never commits.
@@ -171,13 +173,18 @@ class AppointmentReminders:
     async def due(self, now: datetime | None = None) -> list[DueReminder]:
         """Reminders owed right now, earliest first."""
         moment = now or utc_now()
-        rows = await self._session.execute(
+        query = (
             select(AppointmentReminder, Appointment)
             .join(Appointment, Appointment.id == AppointmentReminder.appointment_id)
             .where(AppointmentReminder.settled_at.is_(None))
             .where(AppointmentReminder.due_at <= moment)
             .order_by(AppointmentReminder.due_at)
         )
+        if self._organization_id is not None:
+            query = query.where(
+                Appointment.organization_id == self._organization_id
+            )
+        rows = await self._session.execute(query)
         return [DueReminder(reminder=r, appointment=a) for r, a in rows.all()]
 
     async def settle_due(self, now: datetime | None = None) -> dict[str, int]:

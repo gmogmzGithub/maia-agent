@@ -374,7 +374,12 @@ class HumanHandoff:
 
     # -- The deadline ------------------------------------------------------
 
-    async def escalate_due(self, now: datetime | None = None) -> int:
+    async def escalate_due(
+        self,
+        now: datetime | None = None,
+        *,
+        organization_id: uuid.UUID | None = None,
+    ) -> int:
         """Alert the Administrator about every request nobody has taken. Commits.
 
         Exactly-once by construction: the alert row and the ``admin_alert_at``
@@ -383,14 +388,21 @@ class HumanHandoff:
         nothing, because the deadline is stored rather than held in a timer.
         """
         moment = now or utc_now()
+        query = (
+            select(HumanHandoffRequest)
+            .where(HumanHandoffRequest.status == HandoffStatus.PENDING.value)
+            .where(HumanHandoffRequest.escalate_at <= moment)
+            .where(HumanHandoffRequest.admin_alert_at.is_(None))
+            .order_by(HumanHandoffRequest.requested_at)
+            .with_for_update(skip_locked=True)
+        )
+        if organization_id is not None:
+            query = query.where(
+                HumanHandoffRequest.organization_id == organization_id
+            )
         rows = list(
             await self._session.scalars(
-                select(HumanHandoffRequest)
-                .where(HumanHandoffRequest.status == HandoffStatus.PENDING.value)
-                .where(HumanHandoffRequest.escalate_at <= moment)
-                .where(HumanHandoffRequest.admin_alert_at.is_(None))
-                .order_by(HumanHandoffRequest.requested_at)
-                .with_for_update(skip_locked=True)
+                query
             )
         )
         escalated = 0

@@ -11,17 +11,10 @@ Two boundaries matter here and are enforced before the Model sees anything:
   what an audit trail should record — but produces no session, no turn, and no
   reply.
 
-Stage 9 adds a third, and it is the reason this worker resolves an Organization
-before it polls: the process runs **one** bot token, so the administrative
-channel belongs to exactly one Brokerage Organization. Which one is a lookup
-against the ``TelegramBotId`` channel binding, not an assumption. Without a
-binding the worker does nothing and says so — because the alternative, defaulting
-to whichever Organization happens to exist, would let one brokerage's
-administrator change another's inventory through Maia.
-
-That the platform runs a single administrative bot is a Stage 9 operating limit
-rather than a design: a second Organization needs its own token, and polling
-several is a change to this worker, not to the boundary above.
+Stage 9 adds a third: every bot token is paired with the Organization whose
+``TelegramBotId`` binding names that bot. The multi-Organization coordinator at
+the bottom of this module creates one of these deliberately narrow workers per
+active Organization. An unbound or mismatched token is never polled.
 """
 
 from __future__ import annotations
@@ -43,6 +36,11 @@ from realestate.db.models import (
     ChannelCursor,
 )
 from realestate.domain.commercial.actors import CommercialError
+from realestate.domain.platform.providers import (
+    OrganizationTelegramClients,
+    organization_administrator_chat_ids,
+)
+from realestate.domain.platform.registry import operating_organization_ids
 from realestate.domain.platform.routing import OrganizationRouting
 from realestate.hermes.client import HermesClient
 from realestate.hermes.sessions import RoleSession, bind_channel_session, run_turn
@@ -61,6 +59,7 @@ class TelegramAdminWorker:
         *,
         admin_profile: str,
         allowed_user_ids: frozenset[str],
+        organization_id: uuid.UUID | None = None,
     ) -> None:
         self._database = database
         self._hermes = hermes
@@ -70,7 +69,7 @@ class TelegramAdminWorker:
         # Resolved on the first tick and remembered: the binding does not change
         # while the process runs, and a lookup per poll would be a query a
         # second for a value that is constant.
-        self._organization_id: uuid.UUID | None = None
+        self._organization_id = organization_id
         self._unbound_reported = False
 
     async def _organization(self) -> uuid.UUID | None:
@@ -264,3 +263,59 @@ class TelegramAdminWorker:
             channel_key=self._channel_key(update),
             hermes_session_id=hermes_session_id,
         )
+
+
+class OrganizationTelegramAdminWorkers:
+    """Poll every active Organization's own bot with its own allowlist."""
+
+    def __init__(
+        self,
+        database: Database,
+        hermes: HermesClient,
+        clients: OrganizationTelegramClients,
+        *,
+        admin_profile: str,
+    ) -> None:
+        self._database = database
+        self._hermes = hermes
+        self._clients = clients
+        self._admin_profile = admin_profile
+        self._workers: dict[
+            uuid.UUID,
+            tuple[TelegramClient, frozenset[str], TelegramAdminWorker],
+        ] = {}
+
+    async def tick(self) -> None:
+        configured: list[tuple[uuid.UUID, TelegramClient, frozenset[str]]] = []
+        async with self._database.session_scope() as session:
+            for organization_id in await operating_organization_ids(session):
+                try:
+                    client = await self._clients.for_organization(
+                        session, organization_id
+                    )
+                except CommercialError:
+                    continue
+                allowed = await organization_administrator_chat_ids(
+                    session, organization_id
+                )
+                configured.append((organization_id, client, allowed))
+
+        active_ids: set[uuid.UUID] = set()
+        for organization_id, client, allowed in configured:
+            active_ids.add(organization_id)
+            cached = self._workers.get(organization_id)
+            if cached is None or cached[0] is not client or cached[1] != allowed:
+                worker = TelegramAdminWorker(
+                    self._database,
+                    self._hermes,
+                    client,
+                    admin_profile=self._admin_profile,
+                    allowed_user_ids=allowed,
+                    organization_id=organization_id,
+                )
+                self._workers[organization_id] = (client, allowed, worker)
+            await self._workers[organization_id][2].tick()
+
+        for organization_id in tuple(self._workers):
+            if organization_id not in active_ids:
+                self._workers.pop(organization_id, None)

@@ -259,11 +259,11 @@ Not every integration can be separated per Organization by us alone:
 * **Google Calendar** separates per Advisor calendar, but the *service account*
   is one credential per reference. An Organization that requires its own service
   account records its own reference; nothing forces it to.
-* **Telegram** does not separate inside one process: the administrative worker
-  polls one bot token, so the administrative channel belongs to exactly one
-  Organization — resolved from its `TelegramBotId` binding, and doing nothing at
-  all when unbound. A second Organization needs its own token and a change to
-  that worker.
+* **Telegram** separates by bot token. Each active Organization resolves its own
+  secret reference, verifies that the token's public bot id matches its active
+  `TelegramBotId` binding, and polls with only that Organization's active
+  Administrator chat ids. A missing or mismatched pair is skipped, never
+  inherited from the founding Organization.
 * **EasyBroker** separates by API key, and remains gated on the account access and
   written MLS clarification that ADR-0020 and PROJECT_MEMORY already require.
 * **The public site** runs one process per public origin, and tells Product which
@@ -288,13 +288,14 @@ Not every integration can be separated per Organization by us alone:
   wrong brokerage, but the collision itself discloses that some other
   Organization holds it. A per-Organization login namespace needs a different
   authentication scheme.
-* **One administrative Telegram bot per process**, as above.
 * **A platform operator can grant themselves support access to any
   Organization.** Bounded, expiring and visible to the customer, but real
   (ADR-0054).
-* **Load has not been measured.** No capacity claim is made for any number of
-  Organizations. The isolation tests run two synthetic Organizations
-  concurrently; that proves the boundary, not throughput.
+* **Only bounded local load has been measured.** The automated rehearsal accepts
+  100 concurrent synthetic inquiries across two Organizations with a concurrency
+  ceiling of ten and a deliberately broad 30-second regression bound. This
+  catches contention and scoping regressions; it is not a production capacity or
+  latency claim.
 * **Analytics retention is still unresolved** (ADR-0044), and Stage 9 does not
   change it. Deletion can now remove analytics rows on request, which is not the
   same as an expiry policy.

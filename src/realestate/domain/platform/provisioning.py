@@ -859,6 +859,11 @@ class OrganizationProvisioning:
                     "Esa clave de operación ya se usó para otro "
                     "aprovisionamiento."
                 )
+            if dict(existing.plan) != dict(plan):
+                raise ProvisioningRefused(
+                    "Esa clave de operación ya pertenece a un plan distinto. "
+                    "Reintenta con el plan original o usa una clave nueva."
+                )
             return existing
         run = OrganizationProvisioningRun(
             command_key=command_key,

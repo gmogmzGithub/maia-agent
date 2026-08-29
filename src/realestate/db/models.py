@@ -574,7 +574,26 @@ class Conversation(Base):
 
     # PostgreSQL does not index a foreign key on its own, and the gate's
     # service-window lookup joins through this column on every request.
-    __table_args__ = (Index("ix_conversations_lead", "lead_id"),)
+    __table_args__ = (
+        _org_scoped_fk("lead_id", "leads", name="fk_conversations_org_lead"),
+        _org_scoped_fk(
+            "property_uuid", "properties", name="fk_conversations_org_property"
+        ),
+        ForeignKeyConstraint(
+            ["lead_id", "cycle_id"],
+            ["lead_engagement_cycles.lead_id", "lead_engagement_cycles.id"],
+            name="fk_conversations_lead_cycle",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        UniqueConstraint("organization_id", "id", name="uq_conversations_org_id"),
+        UniqueConstraint(
+            "organization_id", "id", "lead_id", name="uq_conversations_org_id_lead"
+        ),
+        UniqueConstraint("lead_id", "id", name="uq_conversations_lead_id"),
+        UniqueConstraint("cycle_id", "id", name="uq_conversations_cycle_id"),
+        Index("ix_conversations_lead", "lead_id"),
+    )
 
 
 class LeadFollowUpStatus(str, enum.Enum):

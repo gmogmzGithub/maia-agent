@@ -47,6 +47,8 @@ from realestate.db.models import (
     RetentionBasis,
 )
 from realestate.domain.commercial.actors import Actor, CommercialError
+from realestate.domain.audit import record_audit
+from realestate.domain.platform.authority import require_reason
 from realestate.domain.platform.authority import PlatformOperator
 from realestate.domain.platform.configuration import (
     OrganizationConfiguration,
@@ -149,8 +151,14 @@ def _refusal(exc: CommercialError) -> JSONResponse:
 
 
 class ChannelBody(BaseModel):
+    model_config = {"extra": "forbid"}
+
     kind: ChannelBindingKind
     external_id: str = Field(min_length=1, max_length=200)
+
+
+class ChannelBindingBody(ChannelBody):
+    reason: str = Field(min_length=12, max_length=2_000)
 
 
 class CredentialBody(BaseModel):
@@ -599,16 +607,32 @@ async def record_credential(
 async def bind_channel(
     request: Request,
     organization_id: uuid.UUID,
-    body: ChannelBody,
+    body: ChannelBindingBody,
     operator: PlatformOperator = Depends(require_platform_operator),
 ) -> JSONResponse:
     async with request.app.state.database.session_scope() as session:
         try:
+            reason = require_reason(body.reason)
             binding = await OrganizationRouting(session).bind(
                 organization_id=organization_id,
                 kind=body.kind,
                 external_id=body.external_id,
                 recorded_by=operator.label,
+            )
+            await record_audit(
+                session,
+                organization_id=organization_id,
+                actor_type=operator.actor_type,
+                actor_id=operator.label,
+                action="BindOrganizationChannel",
+                subject_type="OrganizationChannelBinding",
+                subject_id=str(binding.id),
+                details={
+                    "kind": binding.kind,
+                    "external_id": binding.external_id,
+                    "reason": reason,
+                },
+                commit=False,
             )
             await session.commit()
         except CommercialError as exc:

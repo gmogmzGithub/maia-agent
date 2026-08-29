@@ -22,7 +22,7 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from realestate.channels.whatsapp.client import WhatsAppClient
+from realestate.channels.whatsapp.client import SendOutcome, SendResult, WhatsAppClient
 from realestate.db.engine import Database
 from realestate.db.models import (
     Conversation,
@@ -43,6 +43,7 @@ from realestate.domain.appointments import (
 from realestate.domain.audit import record_audit
 from realestate.domain.availability import WeeklySchedule
 from realestate.domain.commercial.handling import ConversationHandling
+from realestate.domain.commercial.actors import CommercialError
 from realestate.domain.inbox import (
     RECONCILIATION_WINDOW_SECONDS,
     ClaimedGroup,
@@ -62,6 +63,8 @@ from realestate.domain.outbox import (
     PROCESSING_FAILURE_BODY,
     OutboxService,
 )
+from realestate.domain.platform.whatsapp import OrganizationWhatsAppClients
+from realestate.domain.platform.runtime import OrganizationAppointmentPolicies
 from realestate.channels.whatsapp.formatting import to_whatsapp_markup
 from realestate.hermes.client import HermesClient
 from realestate.hermes.sessions import (
@@ -80,10 +83,10 @@ class WhatsAppWorker:
         self,
         database: Database,
         hermes: HermesClient,
-        whatsapp: WhatsAppClient,
+        whatsapp: WhatsAppClient | OrganizationWhatsAppClients,
         *,
         sales_profile: str,
-        schedule: WeeklySchedule,
+        schedule: WeeklySchedule | OrganizationAppointmentPolicies,
         max_concurrent: int = 3,
     ) -> None:
         self._database = database
@@ -146,13 +149,24 @@ class WhatsAppWorker:
             lead = await session.get(Lead, conversation.lead_id)
 
             try:
-                reply = await self._run_hermes_turn(session, inbox, group, cycle, lead)
+                schedule = self._schedule
+                if isinstance(schedule, OrganizationAppointmentPolicies):
+                    schedule = (
+                        await schedule.for_organization(
+                            session, conversation.organization_id
+                        )
+                    ).schedule
+                reply = await self._run_hermes_turn(
+                    session, inbox, group, cycle, lead, schedule
+                )
             except Exception as exc:
                 logger.exception("Processing failed for conversation %s", conversation_id)
                 await self._handle_failure(session, inbox, group, conversation, exc)
                 return
 
-            await self._settle(session, inbox, group, conversation, reply)
+            await self._settle(
+                session, inbox, group, conversation, reply, schedule
+            )
 
     # -- The Hermes turn --------------------------------------------------
 
@@ -163,6 +177,7 @@ class WhatsAppWorker:
         group: ClaimedGroup,
         cycle: LeadEngagementCycle,
         lead: Lead | None,
+        schedule: WeeklySchedule,
     ) -> str:
         role_session = await session_for_cycle(
             session, cycle.id, cycle.organization_id
@@ -215,7 +230,7 @@ class WhatsAppWorker:
             # guess reads to the Lead as "no availability".
             dated_prompt(
                 group.combined_text(),
-                today=datetime.now(tz=self._schedule.zone).date(),
+                today=datetime.now(tz=schedule.zone).date(),
             ),
             profile=self._sales_profile,
             on_attached=bind,
@@ -293,6 +308,7 @@ class WhatsAppWorker:
         group: ClaimedGroup,
         conversation: Conversation,
         reply: str,
+        schedule: WeeklySchedule,
     ) -> None:
         """Release the draft only when the group truly covers the Conversation.
 
@@ -324,7 +340,7 @@ class WhatsAppWorker:
         # one is owed it *replaces* the draft, so a confirmed visit produces
         # exactly one confirmation and an inconclusive one cannot be described
         # as confirmed (P-042, P-044).
-        notice = await pending_lead_notice(session, conversation, self._schedule)
+        notice = await pending_lead_notice(session, conversation, schedule)
 
         if notice is None and not reply.strip():
             logger.warning("Hermes produced an empty draft for %s", conversation.id)
@@ -494,14 +510,29 @@ class WhatsAppWorker:
                 delivery = await OutboundMessaging(session).prepare_delivery(row)
                 if isinstance(delivery, DeliveryDenied):
                     continue
+                whatsapp = self._whatsapp
+                if isinstance(whatsapp, OrganizationWhatsAppClients):
+                    try:
+                        whatsapp = await whatsapp.for_organization(
+                            session, row.organization_id
+                        )
+                    except CommercialError as exc:
+                        await outbox.record_result(
+                            row,
+                            SendResult(
+                                SendOutcome.FAILED_RETRYABLE,
+                                detail=exc.message,
+                            ),
+                        )
+                        continue
                 if isinstance(delivery, TemplateDelivery):
-                    result = await self._whatsapp.send_template(
+                    result = await whatsapp.send_template(
                         delivery.to_wa_id,
                         delivery.template_id,
                         delivery.language_code,
                     )
                 else:
-                    result = await self._whatsapp.send_text(
+                    result = await whatsapp.send_text(
                         delivery.to_wa_id,
                         delivery.body,
                     )

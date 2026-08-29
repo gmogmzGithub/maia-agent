@@ -395,10 +395,10 @@ Since Stage 9 that `.env` describes exactly one Brokerage Organization — the
 founding one, named by `PLATFORM_BOOTSTRAP_ORGANIZATION_SLUG` — and startup binds
 its channels and names its existing credentials as references, idempotently,
 without moving a secret. Every other Organization reads its own versioned
-configuration and its own secret references, or is refused. The topology's two
-single-Organization limits follow from the container count rather than the
-boundary: the administrative worker polls one Telegram bot, and the `site`
-container serves one public origin.
+configuration and its own secret references, or is refused. Telegram workers
+poll one verified bot per active Organization inside Product. The remaining
+single-Organization topology limit is the `site` container, which serves one
+public origin.
 
 Optional integrations require their normal provider credentials:
 

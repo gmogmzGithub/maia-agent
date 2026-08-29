@@ -294,6 +294,22 @@ async def test_re_running_the_same_command_key_changes_nothing(database) -> None
         assert versions == 1
 
 
+async def test_a_provisioning_command_key_cannot_resume_with_a_different_plan(
+    database,
+) -> None:
+    result, resolver = await _provisioned(database)
+    async with database.session_scope() as session:
+        key = await _command_key_of(session, result.run_id)
+        with pytest.raises(ProvisioningRefused, match="plan distinto"):
+            await OrganizationProvisioning(session, resolver=resolver).provision(
+                OPERATOR,
+                _plan(
+                    command_key=key,
+                    display_name="Otro nombre que no pertenece al comando original",
+                ),
+            )
+
+
 async def _command_key_of(session, run_id: uuid.UUID) -> str:
     found = await session.scalar(
         text(
@@ -858,6 +874,9 @@ async def test_a_grant_creates_a_read_only_unassignable_member(database) -> None
         )
         assert actor.organization_id == result.organization_id
         assert not actor.is_administrator
+        assert actor.read_only
+        with pytest.raises(NotAuthorized, match="sólo lectura"):
+            actor.require_writable()
         member = await session.scalar(
             select(OrganizationMember)
             .where(OrganizationMember.organization_id == result.organization_id)

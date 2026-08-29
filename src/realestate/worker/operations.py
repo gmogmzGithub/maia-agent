@@ -17,6 +17,7 @@ did.
 from __future__ import annotations
 
 import logging
+import uuid
 
 from realestate.channels.telegram.client import TelegramClient
 from realestate.db.engine import Database
@@ -24,6 +25,14 @@ from realestate.domain.availability import WeeklySchedule
 from realestate.domain.commercial.handoff import HumanHandoff
 from realestate.domain.internal_alerts import InternalAlerts
 from realestate.domain.scheduling.reminders import AppointmentReminders
+from realestate.domain.appointments import AppointmentPolicy
+from realestate.domain.commercial.actors import CommercialError
+from realestate.domain.platform.providers import (
+    OrganizationTelegramClients,
+    organization_administrator_chat_ids,
+)
+from realestate.domain.platform.registry import operating_organization_ids
+from realestate.domain.platform.runtime import OrganizationAppointmentPolicies
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +46,7 @@ class OperationsWorker:
         schedule: WeeklySchedule,
         day_of_reminder_hour: int,
         administrator_chat_ids: frozenset[str],
+        organization_id: uuid.UUID | None = None,
     ) -> None:
         self._database = database
         self._telegram = telegram
@@ -47,6 +57,7 @@ class OperationsWorker:
         # members have no per-person chat configured, so an escalation is never
         # silently undeliverable on a local setup that already works.
         self._administrator_chat_ids = administrator_chat_ids
+        self._organization_id = organization_id
 
     async def tick(self) -> None:
         await self._escalate()
@@ -55,12 +66,16 @@ class OperationsWorker:
 
     async def _escalate(self) -> None:
         async with self._database.session_scope() as session:
-            await HumanHandoff(session).escalate_due()
+            await HumanHandoff(session).escalate_due(
+                organization_id=self._organization_id
+            )
 
     async def _deliver_alerts(self) -> None:
         async with self._database.session_scope() as session:
             alerts = InternalAlerts(session)
-            for claimed in await alerts.claim_due():
+            for claimed in await alerts.claim_due(
+                organization_id=self._organization_id
+            ):
                 chat_ids = claimed.chat_ids or (
                     tuple(self._administrator_chat_ids)
                     if claimed.alert.recipient_member_id is None
@@ -93,7 +108,78 @@ class OperationsWorker:
     async def _settle_reminders(self) -> None:
         async with self._database.session_scope() as session:
             outcomes = await AppointmentReminders(
-                session, self._schedule, day_of_hour=self._day_of_reminder_hour
+                session,
+                self._schedule,
+                day_of_hour=self._day_of_reminder_hour,
+                organization_id=self._organization_id,
             ).settle_due()
         if outcomes:
             logger.info("Settled due visit reminders: %s", outcomes)
+
+
+class OrganizationOperationsWorkers:
+    """Run alerts and reminders with each Organization's bot and schedule."""
+
+    def __init__(
+        self,
+        database: Database,
+        clients: OrganizationTelegramClients,
+        policies: OrganizationAppointmentPolicies,
+    ) -> None:
+        self._database = database
+        self._clients = clients
+        self._policies = policies
+        self._workers: dict[
+            uuid.UUID,
+            tuple[TelegramClient, frozenset[str], AppointmentPolicy, OperationsWorker],
+        ] = {}
+
+    async def tick(self) -> None:
+        configured: list[
+            tuple[uuid.UUID, TelegramClient, frozenset[str], AppointmentPolicy]
+        ] = []
+        async with self._database.session_scope() as session:
+            for organization_id in await operating_organization_ids(session):
+                try:
+                    client = await self._clients.for_organization(
+                        session, organization_id
+                    )
+                    policy = await self._policies.for_organization(
+                        session, organization_id
+                    )
+                except CommercialError:
+                    continue
+                chat_ids = await organization_administrator_chat_ids(
+                    session, organization_id
+                )
+                configured.append((organization_id, client, chat_ids, policy))
+
+        active_ids: set[uuid.UUID] = set()
+        for organization_id, client, chat_ids, policy in configured:
+            active_ids.add(organization_id)
+            cached = self._workers.get(organization_id)
+            if (
+                cached is None
+                or cached[0] is not client
+                or cached[1] != chat_ids
+                or cached[2] != policy
+            ):
+                worker = OperationsWorker(
+                    self._database,
+                    client,
+                    schedule=policy.schedule,
+                    day_of_reminder_hour=policy.day_of_reminder_hour,
+                    administrator_chat_ids=chat_ids,
+                    organization_id=organization_id,
+                )
+                self._workers[organization_id] = (
+                    client,
+                    chat_ids,
+                    policy,
+                    worker,
+                )
+            await self._workers[organization_id][3].tick()
+
+        for organization_id in tuple(self._workers):
+            if organization_id not in active_ids:
+                self._workers.pop(organization_id, None)

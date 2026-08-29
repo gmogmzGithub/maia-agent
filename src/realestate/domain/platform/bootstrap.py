@@ -46,7 +46,6 @@ from realestate.db.models import (
     IntegrationProvider,
     Organization,
     OrganizationChannelBinding,
-    OrganizationStatus,
 )
 from realestate.domain.audit import record_audit
 from realestate.domain.clock import utc_now
@@ -219,20 +218,6 @@ class PlatformBootstrap:
                 at=moment,
             )
             named.append(f"{provider.value}:{reference}")
-
-        # The founding Organization predates the lifecycle column and was
-        # backfilled Active by migration 0026. Asserting it here as well keeps a
-        # database restored from an older dump from starting up unusable.
-        organization = await self._session.get(
-            Organization, organization_id, with_for_update=True
-        )
-        if organization is not None and organization.status not in (
-            OrganizationStatus.ACTIVE.value,
-            OrganizationStatus.SUSPENDED.value,
-            OrganizationStatus.DEPROVISIONED.value,
-        ):
-            organization.status = OrganizationStatus.ACTIVE.value
-            organization.activated_at = organization.activated_at or moment
 
         if bound or named:
             await record_audit(

@@ -44,7 +44,7 @@ X-Platform-Operator: <your login>
     "brand": {"working_name": "Acme", "public_origin": "https://acme.mx"},
     "service_area": {"municipalities": ["Guadalajara", "Zapopan"]},
     "scheduling": {"time_zone": "America/Mexico_City", "visit_minutes": 90,
-                   "weekly_schedule": "mon=09:00-17:00;tue=09:00-17:00"},
+                   "weekly_schedule": "mon=09:00-17:00;tue=09:00-17:00;wed=09:00-17:00;thu=09:00-17:00;fri=09:00-17:00;sat=nada;sun=nada"},
     "team": {"default_advisor": "ana@acme.mx"},
     "channels": {"whatsapp_phone_number_id": "…"},
     "integrations": {"expected": ["MetaWhatsApp", "GoogleCalendar"]},

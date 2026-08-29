@@ -26,7 +26,12 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from realestate.api.developer import require_developer
 from realestate.api.ui import escape, layout
 from realestate.db.models import MemberRole
-from realestate.domain.commercial.actors import Actor, CommercialError, UnknownMember
+from realestate.domain.commercial.actors import (
+    Actor,
+    CommercialError,
+    NotAuthorized,
+    UnknownMember,
+)
 from realestate.domain.commercial.organization import (
     ROLE_LABELS,
     OrganizationDirectory,
@@ -45,8 +50,15 @@ async def require_actor(
     """
     async with request.app.state.database.session_scope() as session:
         try:
-            return await OrganizationDirectory(session).resolve_actor(login)
+            actor = await OrganizationDirectory(session).resolve_actor(login)
+            if actor.read_only and request.method.upper() not in {"GET", "HEAD", "OPTIONS"}:
+                actor.require_writable()
+            return actor
         except UnknownMember as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail=exc.message
+            ) from exc
+        except NotAuthorized as exc:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN, detail=exc.message
             ) from exc

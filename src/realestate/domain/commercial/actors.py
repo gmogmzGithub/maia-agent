@@ -132,6 +132,10 @@ class Actor:
     #: Audit identity. A login for a human, a subsystem name for Product.
     label: str
     display_name: str
+    #: Temporary support grants may inspect the ordinary CRM but may not mutate
+    #: it. Kept on the trusted Actor so the HTTP boundary can enforce the grant
+    #: without inferring authority again from a login string.
+    read_only: bool = False
 
     @property
     def actor_type(self) -> str:
@@ -162,6 +166,13 @@ class Actor:
         if not self.is_administrator:
             raise NotAuthorized(
                 "Sólo un administrador de la organización puede realizar esta acción."
+            )
+
+    def require_writable(self) -> None:
+        """Refuse a mutation attempted through a read-only support grant."""
+        if self.read_only:
+            raise NotAuthorized(
+                "El acceso temporal de soporte es de sólo lectura."
             )
 
     def require_same_organization(self, organization_id: uuid.UUID) -> None:

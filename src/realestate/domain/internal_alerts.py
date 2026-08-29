@@ -173,24 +173,34 @@ class InternalAlerts:
         logger.info("Raised internal alert %s for %s", kind.value, subject_id)
         return alert
 
-    async def claim_due(self, limit: int = 20) -> list[ClaimedAlert]:
+    async def claim_due(
+        self,
+        limit: int = 20,
+        *,
+        organization_id: uuid.UUID | None = None,
+    ) -> list[ClaimedAlert]:
         """Claim pending alerts for delivery. Commits the claim.
 
         The lease is what stops two workers from sending the same notice while
         also stopping one crashed worker from parking it forever.
         """
         moment = utc_now()
+        query = (
+            select(InternalAlert)
+            .where(InternalAlert.status == InternalAlertStatus.PENDING.value)
+            .where(
+                (InternalAlert.claimed_at.is_(None))
+                | (InternalAlert.claimed_at <= moment - CLAIM_LEASE)
+            )
+            .order_by(InternalAlert.created_at)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        if organization_id is not None:
+            query = query.where(InternalAlert.organization_id == organization_id)
         rows = list(
             await self._session.scalars(
-                select(InternalAlert)
-                .where(InternalAlert.status == InternalAlertStatus.PENDING.value)
-                .where(
-                    (InternalAlert.claimed_at.is_(None))
-                    | (InternalAlert.claimed_at <= moment - CLAIM_LEASE)
-                )
-                .order_by(InternalAlert.created_at)
-                .limit(limit)
-                .with_for_update(skip_locked=True)
+                query
             )
         )
         # A broadcast alert addresses every Administrator, so a tick that claims

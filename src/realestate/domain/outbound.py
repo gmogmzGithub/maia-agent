@@ -383,6 +383,10 @@ class OutboundMessaging:
             # original, which is also what the partial unique index enforces.
             previous = await self._session.scalar(
                 select(OutboundDecision)
+                .where(
+                    OutboundDecision.organization_id
+                    == intent.conversation.organization_id
+                )
                 .where(OutboundDecision.idempotency_key == intent.idempotency_key)
                 .where(OutboundDecision.outcome == OutboundOutcome.QUEUED.value)
                 .limit(1)

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta
+from typing import cast
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -67,6 +68,7 @@ from realestate.db.models import (
     OrganizationMember,
     PropertyExpertRole,
 )
+from realestate.domain.appointments import AppointmentPolicy
 from realestate.domain.clock import utc_now
 from realestate.domain.commercial.actors import Actor, CommercialError
 from realestate.domain.commercial.handling import (
@@ -132,16 +134,46 @@ TEAM = "/crm/equipo"
 AGENDA = "/crm/agenda"
 
 
-def _scheduling(request: Request, session: AsyncSession) -> AdvisorScheduling:
-    policy = request.app.state.appointment_policy
-    return AdvisorScheduling(session, request.app.state.calendars, policy.scheduling)
+async def _policy(
+    request: Request, session: AsyncSession, organization_id: uuid.UUID
+) -> AppointmentPolicy:
+    policies = getattr(
+        request.app.state,
+        "appointment_policies",
+        request.app.state.appointment_policy,
+    )
+    if hasattr(policies, "for_organization"):
+        return cast(
+            AppointmentPolicy,
+            await policies.for_organization(session, organization_id),
+        )
+    return cast(AppointmentPolicy, policies)
 
 
-def _visits(request: Request, session: AsyncSession) -> Appointments:
-    policy = request.app.state.appointment_policy
+async def _scheduling(
+    request: Request, session: AsyncSession, organization_id: uuid.UUID
+) -> AdvisorScheduling:
+    policy = await _policy(request, session, organization_id)
+    directories = getattr(
+        request.app.state,
+        "calendar_directories",
+        request.app.state.calendars,
+    )
+    calendars = (
+        await directories.for_organization(session, organization_id)
+        if hasattr(directories, "for_organization")
+        else directories
+    )
+    return AdvisorScheduling(session, calendars, policy.scheduling)
+
+
+async def _visits(
+    request: Request, session: AsyncSession, organization_id: uuid.UUID
+) -> Appointments:
+    policy = await _policy(request, session, organization_id)
     return Appointments(
         session,
-        _scheduling(request, session),
+        await _scheduling(request, session, organization_id),
         schedule=policy.schedule,
         day_of_reminder_hour=policy.day_of_reminder_hour,
         max_candidates=policy.max_candidates,
@@ -736,14 +768,16 @@ async def agenda(
     """Visits this operator owns or conducts, and what each one still needs."""
     moment = utc_now()
     async with request.app.state.database.session_scope() as session:
-        visits = _visits(request, session)
+        visits = await _visits(request, session, actor.organization_id)
         upcoming = await visits.agenda(
             actor, since=moment - OPERATOR_AGENDA_LOOKBACK
         )
+        policy = await _policy(request, session, actor.organization_id)
         reminders = AppointmentReminders(
             session,
-            request.app.state.appointment_policy.schedule,
-            day_of_hour=request.app.state.appointment_policy.day_of_reminder_hour,
+            policy.schedule,
+            day_of_hour=policy.day_of_reminder_hour,
+            organization_id=actor.organization_id,
         )
         members = {
             view.member.id: view.member
@@ -942,7 +976,9 @@ async def record_outcome(
     due = parse_datetime_input(str(form.get("vence", "")))
     async with request.app.state.database.session_scope() as session:
         try:
-            outcome = await _visits(request, session).record_outcome(
+            outcome = await (
+                await _visits(request, session, actor.organization_id)
+            ).record_outcome(
                 actor,
                 RecordVisitOutcome(
                     appointment_id=appointment_id,
@@ -977,7 +1013,7 @@ async def reschedule_form(
     taken and see the form succeed before anything authoritative said yes.
     """
     async with request.app.state.database.session_scope() as session:
-        visits = _visits(request, session)
+        visits = await _visits(request, session, actor.organization_id)
         try:
             visit = await visits.visit(actor, appointment_id)
         except CommercialError as exc:
@@ -985,7 +1021,9 @@ async def reschedule_form(
         advisor_id = visit.attending_advisor_id
         found = None
         if advisor_id is not None:
-            found = await _scheduling(request, session).find_slots(
+            found = await (
+                await _scheduling(request, session, actor.organization_id)
+            ).find_slots(
                 SlotQuery(
                     organization_id=actor.organization_id, advisor_id=advisor_id
                 )
@@ -1046,7 +1084,9 @@ async def reschedule_visit(
         return redirect_back(path, error="Elige un horario de la lista.")
     async with request.app.state.database.session_scope() as session:
         try:
-            outcome = await _visits(request, session).reschedule(
+            outcome = await (
+                await _visits(request, session, actor.organization_id)
+            ).reschedule(
                 actor,
                 RescheduleVisit(
                     appointment_id=appointment_id,
@@ -1068,7 +1108,9 @@ async def cancel_visit(
     form = await request.form()
     async with request.app.state.database.session_scope() as session:
         try:
-            outcome = await _visits(request, session).cancel(
+            outcome = await (
+                await _visits(request, session, actor.organization_id)
+            ).cancel(
                 actor,
                 CancelVisit(
                     appointment_id=appointment_id,

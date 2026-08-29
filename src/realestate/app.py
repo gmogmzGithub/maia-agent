@@ -34,7 +34,6 @@ from realestate.api import webhooks as webhooks_api
 from realestate.channels.google.calendar import GoogleCalendar
 from realestate.channels.telegram.client import TelegramClient
 from realestate.channels.whatsapp.client import WhatsAppClient
-from realestate.channels.whatsapp.templates import MetaTemplateSource
 from realestate.config import Settings, get_settings
 from realestate.db.engine import Database
 from realestate.domain.appointments import AppointmentPolicy
@@ -46,6 +45,16 @@ from realestate.domain.platform.bootstrap import (
     PlatformBootstrap,
 )
 from realestate.domain.platform.credentials import SecretResolver
+from realestate.domain.platform.providers import (
+    OrganizationEasyBrokerAdapters,
+    OrganizationGoogleCalendarDirectories,
+    OrganizationTelegramClients,
+)
+from realestate.domain.platform.runtime import OrganizationAppointmentPolicies
+from realestate.domain.platform.whatsapp import (
+    OrganizationMetaTemplateSources,
+    OrganizationWhatsAppClients,
+)
 from realestate.db.models import IntegrationProvider
 from realestate.domain.catalog.storage import LocalMediaStorage
 from realestate.domain.external_inventory.easybroker import EasyBrokerAdapter
@@ -53,15 +62,15 @@ from realestate.domain.scheduling.calendars import GoogleCalendarDirectory
 from realestate.domain.properties import ArtifactStore, CatalogStore
 from realestate.hermes import HermesClient
 from realestate.hosts import host_of as site_host_of
-from realestate.worker.broker import BrokerNotifier
+from realestate.worker.broker import OrganizationBrokerNotifiers
 from realestate.worker.external_inventory import ExternalInventoryCleanupWorker
 from realestate.worker.analytics import AnalyticsWorker
 from realestate.worker.engagement import EngagementWorker
 from realestate.worker.followups import LeadFollowUpWorker
 from realestate.worker.loop import BackgroundLoop, idle_tick
-from realestate.worker.operations import OperationsWorker
+from realestate.worker.operations import OrganizationOperationsWorkers
 from realestate.worker.platform import PlatformWorker
-from realestate.worker.telegram import TelegramAdminWorker
+from realestate.worker.telegram import OrganizationTelegramAdminWorkers
 from realestate.worker.upkeep import CommercialUpkeepWorker
 from realestate.worker.whatsapp import WhatsAppWorker
 
@@ -243,12 +252,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         graph_version=settings.meta_graph_version,
         base_url=settings.meta_graph_base_url,
     )
-    app.state.meta_templates = MetaTemplateSource(
-        access_token=settings.meta_access_token,
-        waba_id=settings.meta_waba_id,
-        graph_version=settings.meta_graph_version,
-        base_url=settings.meta_graph_base_url,
-    )
     # Kept for /health, which probes the one calendar an operator configured.
     app.state.calendar = GoogleCalendar(
         credentials_path=settings.google_calendar_credentials,
@@ -274,37 +277,76 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # secret manager replaces this and nothing else (ADR-0052).
     app.state.secret_resolver = SecretResolver()
     app.state.bootstrap_organization_id = None
-    app.state.admin_worker = TelegramAdminWorker(
+    # Bind the founding Organization and reconcile its members before any
+    # worker can claim operational work. Provider directories below need the
+    # resolved bootstrap id to keep the legacy environment fallback bounded.
+    await _bootstrap_platform(app)
+    await _reconcile_directory(app)
+    app.state.whatsapp_clients = OrganizationWhatsAppClients(
+        app.state.secret_resolver,
+        bootstrap_organization_id=app.state.bootstrap_organization_id,
+        legacy_access_token=settings.meta_access_token,
+        graph_version=settings.meta_graph_version,
+        base_url=settings.meta_graph_base_url,
+    )
+    app.state.meta_templates = OrganizationMetaTemplateSources(
+        app.state.secret_resolver,
+        bootstrap_organization_id=app.state.bootstrap_organization_id,
+        legacy_access_token=settings.meta_access_token,
+        graph_version=settings.meta_graph_version,
+        base_url=settings.meta_graph_base_url,
+    )
+    app.state.easybroker_sources = OrganizationEasyBrokerAdapters(
+        app.state.secret_resolver,
+        bootstrap_organization_id=app.state.bootstrap_organization_id,
+        legacy_api_key=settings.easybroker_api_key,
+        legacy_mls_access_confirmed=settings.easybroker_mls_access_confirmed,
+        legacy_retention_permission_confirmed=(
+            settings.easybroker_retention_permission_confirmed
+        ),
+        base_url=settings.easybroker_base_url,
+    )
+    app.state.calendar_directories = OrganizationGoogleCalendarDirectories(
+        app.state.secret_resolver,
+        bootstrap_organization_id=app.state.bootstrap_organization_id,
+        legacy_credentials_path=settings.google_calendar_credentials,
+    )
+    app.state.appointment_policies = OrganizationAppointmentPolicies(
+        app.state.appointment_policy,
+        bootstrap_organization_id=app.state.bootstrap_organization_id,
+    )
+    app.state.telegram_clients = OrganizationTelegramClients(
+        app.state.secret_resolver,
+        bootstrap_organization_id=app.state.bootstrap_organization_id,
+        legacy_bot_token=settings.telegram_bot_token,
+    )
+    app.state.admin_worker = OrganizationTelegramAdminWorkers(
         database=app.state.database,
         hermes=app.state.hermes,
-        telegram=app.state.telegram,
+        clients=app.state.telegram_clients,
         admin_profile=settings.admin_profile,
-        allowed_user_ids=settings.admin_user_ids,
     )
     app.state.worker = WhatsAppWorker(
         database=app.state.database,
         hermes=app.state.hermes,
-        whatsapp=app.state.whatsapp,
+        whatsapp=app.state.whatsapp_clients,
         sales_profile=settings.sales_profile,
-        schedule=app.state.appointment_policy.schedule,
+        schedule=app.state.appointment_policies,
         max_concurrent=settings.max_concurrent_conversations,
     )
-    app.state.broker_notifier = BrokerNotifier(
+    app.state.broker_notifier = OrganizationBrokerNotifiers(
         database=app.state.database,
-        telegram=app.state.telegram,
-        chat_ids=settings.admin_user_ids,
-        schedule=app.state.appointment_policy.schedule,
+        clients=app.state.telegram_clients,
+        policies=app.state.appointment_policies,
         digest_hour=settings.broker_digest_hour,
         reminder_minutes=settings.broker_reminder_minutes_before,
     )
     app.state.followup_worker = LeadFollowUpWorker(database=app.state.database)
     # Human-handoff escalation, internal alert delivery, and visit reminders.
-    app.state.operations_worker = OperationsWorker(
+    app.state.operations_worker = OrganizationOperationsWorkers(
         database=app.state.database,
-        telegram=app.state.telegram,
-        schedule=app.state.appointment_policy.schedule,
-        day_of_reminder_hour=settings.appointment_day_of_reminder_hour,
-        administrator_chat_ids=settings.admin_user_ids,
+        clients=app.state.telegram_clients,
+        policies=app.state.appointment_policies,
     )
     # Property Need staleness, day-28 dormancy and conversation-content expiry.
     # Paces itself: these rules have 28- and 90-day horizons and the loop ticks
@@ -312,7 +354,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.upkeep_worker = CommercialUpkeepWorker(database=app.state.database)
     app.state.external_inventory_cleanup_worker = ExternalInventoryCleanupWorker(
         database=app.state.database,
-        source=app.state.easybroker,
+        source=app.state.easybroker_sources,
     )
     app.state.engagement_worker = EngagementWorker(
         database=app.state.database,
@@ -382,8 +424,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await app.state.background_loop.start()
     else:
         logger.warning("Background worker is disabled; API stays up but no Inbox polling runs")
-    await _bootstrap_platform(app)
-    await _reconcile_directory(app)
     await _log_startup_report(app)
 
     try:
@@ -399,9 +439,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ("Hermes client", app.state.hermes.aclose),
             ("public site proxy", app.state.public_site_proxy.aclose),
             ("EasyBroker adapter", app.state.easybroker.aclose),
+            ("Organization EasyBroker adapters", app.state.easybroker_sources.aclose),
             ("Meta template source", app.state.meta_templates.aclose),
             ("WhatsApp client", app.state.whatsapp.aclose),
+            ("Organization WhatsApp clients", app.state.whatsapp_clients.aclose),
             ("Telegram client", app.state.telegram.aclose),
+            ("Organization Telegram clients", app.state.telegram_clients.aclose),
             ("database engine", app.state.database.dispose),
         ):
             try:

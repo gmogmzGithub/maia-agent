@@ -66,7 +66,8 @@ async def wired(tmp_path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("PLATFORM_OPERATOR_TOKEN", TOKEN)
     monkeypatch.setenv("ORGANIZATION_EXPORT_ROOT", str(tmp_path / "exports"))
     monkeypatch.setenv(
-        "DEVELOPER_BASIC_CREDENTIALS_JSON", commercial.credentials_json()
+        "DEVELOPER_BASIC_CREDENTIALS_JSON",
+        commercial.credentials_json(**{OPERATOR: "support-password"}),
     )
     get_settings.cache_clear()
 
@@ -426,7 +427,11 @@ async def test_a_channel_can_be_bound_and_a_conflict_is_named(wired) -> None:
 
     bound = await client.put(
         f"/platform/organizations/{organization_id}/channels",
-        json={"kind": "PublicSiteHost", "external_id": "apiplat.test"},
+        json={
+            "kind": "PublicSiteHost",
+            "external_id": "apiplat.test",
+            "reason": "Se asigna el dominio público de la organización.",
+        },
         headers=HEADERS,
     )
     assert bound.json()["state"] == "Active"
@@ -436,6 +441,7 @@ async def test_a_channel_can_be_bound_and_a_conflict_is_named(wired) -> None:
         json={
             "kind": "WhatsAppPhoneNumberId",
             "external_id": commercial.TEST_PHONE_NUMBER_ID,
+            "reason": "Se intenta asignar el número operativo solicitado.",
         },
         headers=HEADERS,
     )
@@ -467,6 +473,15 @@ async def test_support_access_is_granted_listed_and_revoked(wired) -> None:
     # because the member login namespace is platform-wide (ADR-0054).
     assert payload["login"] == f"soporte:{SLUG}:{OPERATOR}"
     assert payload["scope"] == "ReadOnly"
+
+    support_auth = (payload["login"], "support-password")
+    crm = await client.get("/crm", auth=support_auth)
+    assert crm.status_code == 200
+    blocked_write = await client.post(
+        "/crm/inventario-externo/sincronizar", auth=support_auth
+    )
+    assert blocked_write.status_code == 403
+    assert "sólo lectura" in blocked_write.json()["detail"]
 
     listed = await client.get("/platform/support-access", headers=HEADERS)
     grants = {item["grant_id"]: item for item in listed.json()["grants"]}

@@ -68,6 +68,7 @@ def update(update_id: int, text: str, *, user: str = BROKER) -> TelegramUpdate:
 async def database():
     db = Database(DATABASE_URL)
     async with db.session_scope() as session:
+        await commercial.provision_bookable_team(session)
         await session.execute(delete(AdminMessage))
         await session.execute(delete(ChannelCursor))
         await session.execute(delete(AgentSession))

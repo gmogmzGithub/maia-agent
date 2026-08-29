@@ -25,9 +25,11 @@ would prove that hand-built rows are isolated, which is not the claim.
 from __future__ import annotations
 
 import uuid
+import asyncio
 
 import pytest
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError
 
 from realestate.db.engine import Base, Database
 from realestate.db.models import (
@@ -42,6 +44,8 @@ from realestate.db.models import (
     Conversation,
     InboxMessage,
     IntegrationProvider,
+    InternalAlert,
+    InternalAlertStatus,
     Organization,
     OrganizationMember,
     OrganizationStatus,
@@ -59,10 +63,12 @@ from realestate.domain.commercial.organization import (
 )
 from realestate.domain.commercial.views import CommercialInbox
 from realestate.domain.inbox import InboxService
+from realestate.domain.internal_alerts import InternalAlerts
 from realestate.domain.platform.authority import PlatformOperator
 from realestate.domain.platform.credentials import (
     IntegrationCredentials,
     MissingCredential,
+    RecordSecretReference,
     SecretResolver,
 )
 from realestate.domain.platform.provisioning import (
@@ -70,6 +76,11 @@ from realestate.domain.platform.provisioning import (
     CredentialAssignment,
     OrganizationProvisioning,
     ProvisionOrganization,
+)
+from realestate.domain.platform.providers import (
+    OrganizationEasyBrokerAdapters,
+    OrganizationGoogleCalendarDirectories,
+    OrganizationTelegramClients,
 )
 from realestate.domain.platform.registry import operating_organization_ids
 from realestate.domain.platform.routing import (
@@ -84,6 +95,7 @@ from realestate.domain.platform.scoping import (
     qualified_name,
     unclassified_tables,
 )
+from realestate.domain.platform.whatsapp import OrganizationWhatsAppClients
 from realestate.domain.properties import ArtifactStore, PropertyService
 from tests.conftest import DATABASE_URL, requires_postgres
 from tests.fixtures import commercial
@@ -175,7 +187,14 @@ async def _second_organization(session, resolver: SecretResolver) -> uuid.UUID:
             configuration={
                 "brand": {"working_name": "Segunda"},
                 "service_area": {"municipalities": ["Tlaquepaque"]},
-                "scheduling": {"time_zone": "America/Mexico_City"},
+                "scheduling": {
+                    "time_zone": "America/Mexico_City",
+                    "visit_minutes": 60,
+                    "weekly_schedule": (
+                        "mon=10:00-16:00;tue=10:00-16:00;wed=10:00-16:00;"
+                        "thu=10:00-16:00;fri=10:00-16:00;sat=nada;sun=nada"
+                    ),
+                },
             },
             administrators=(SECOND_ADMIN,),
             advisors=(SECOND_ADVISOR,),
@@ -199,6 +218,10 @@ async def _second_organization(session, resolver: SecretResolver) -> uuid.UUID:
                     provider=IntegrationProvider.META_WHATSAPP,
                     reference="SEGUNDA_META_ACCESS_TOKEN",
                 ),
+                CredentialAssignment(
+                    provider=IntegrationProvider.TELEGRAM,
+                    reference="SEGUNDA_TELEGRAM_BOT_TOKEN",
+                ),
             ),
             add_ons=(Capability.EXTERNAL_INVENTORY,),
             reason="Alta de la segunda organización para la matriz de aislamiento.",
@@ -219,7 +242,12 @@ async def two_organizations(tmp_path):
     onboarding actually creates.
     """
     database = Database(DATABASE_URL)
-    resolver = SecretResolver({"SEGUNDA_META_ACCESS_TOKEN": "segunda-token"})
+    resolver = SecretResolver(
+        {
+            "SEGUNDA_META_ACCESS_TOKEN": "segunda-token",
+            "SEGUNDA_TELEGRAM_BOT_TOKEN": f"{SECOND_TELEGRAM_BOT}:second-secret",
+        }
+    )
     async with database.session_scope() as session:
         await commercial.forget_organization(session, SECOND_SLUG)
     async with database.session_scope() as session:
@@ -638,6 +666,441 @@ async def test_a_credential_recorded_by_provisioning_resolves_only_for_its_owner
             await credentials.resolve(first, IntegrationProvider.META_WHATSAPP)
 
 
+async def test_operational_whatsapp_clients_use_each_organizations_token_and_number(
+    two_organizations,
+) -> None:
+    database, first, second, _key, resolver = two_organizations
+    resolver.record("LAREVIA_META_ACCESS_TOKEN", "larevia-token")
+    async with database.session_scope() as session:
+        await IntegrationCredentials(session, resolver).record(
+            OPERATOR,
+            RecordSecretReference(
+                organization_id=first,
+                provider=IntegrationProvider.META_WHATSAPP,
+                reference="LAREVIA_META_ACCESS_TOKEN",
+                command_key=f"credential:{uuid.uuid4().hex}",
+                reason="Prueba de entrega aislada para la organización fundadora.",
+            ),
+        )
+        await session.commit()
+
+    created: list[tuple[str, str]] = []
+
+    class Client:
+        def __init__(self, **kwargs) -> None:
+            created.append((kwargs["access_token"], kwargs["phone_number_id"]))
+
+        async def aclose(self) -> None:
+            return None
+
+    directory = OrganizationWhatsAppClients(
+        resolver,
+        client_factory=Client,  # type: ignore[arg-type]
+    )
+    async with database.session_scope() as session:
+        await directory.for_organization(session, first)
+        await directory.for_organization(session, second)
+    assert set(created) == {
+        ("larevia-token", commercial.TEST_PHONE_NUMBER_ID),
+        ("segunda-token", SECOND_PHONE_NUMBER_ID),
+    }
+    await directory.aclose()
+
+
+async def test_operational_telegram_clients_use_each_organizations_bound_bot(
+    two_organizations,
+) -> None:
+    database, first, second, _key, resolver = two_organizations
+    first_token = f"{commercial.TEST_TELEGRAM_BOT_ID}:larevia-secret"
+    resolver.record("LAREVIA_TELEGRAM_BOT_TOKEN", first_token)
+    async with database.session_scope() as session:
+        await IntegrationCredentials(session, resolver).record(
+            OPERATOR,
+            RecordSecretReference(
+                organization_id=first,
+                provider=IntegrationProvider.TELEGRAM,
+                reference="LAREVIA_TELEGRAM_BOT_TOKEN",
+                command_key=f"credential:{uuid.uuid4().hex}",
+                reason="Prueba de Telegram aislado para la organización fundadora.",
+            ),
+        )
+        await session.commit()
+
+    created: list[str] = []
+
+    class Client:
+        def __init__(self, **kwargs) -> None:
+            self._token = kwargs["bot_token"]
+            created.append(self._token)
+
+        @property
+        def bot_id(self) -> str:
+            return self._token.split(":", 1)[0]
+
+        async def aclose(self) -> None:
+            return None
+
+    directory = OrganizationTelegramClients(
+        resolver,
+        client_factory=Client,  # type: ignore[arg-type]
+    )
+    async with database.session_scope() as session:
+        await directory.for_organization(session, first)
+        await directory.for_organization(session, second)
+    assert set(created) == {
+        first_token,
+        f"{SECOND_TELEGRAM_BOT}:second-secret",
+    }
+    await directory.aclose()
+
+
+async def test_operational_easybroker_clients_never_share_an_api_key(
+    two_organizations,
+) -> None:
+    database, first, second, _key, resolver = two_organizations
+    resolver.record("LAREVIA_EASYBROKER_KEY", "larevia-easybroker")
+    resolver.record("SEGUNDA_EASYBROKER_KEY", "segunda-easybroker")
+    async with database.session_scope() as session:
+        credentials = IntegrationCredentials(session, resolver)
+        for organization_id, reference in (
+            (first, "LAREVIA_EASYBROKER_KEY"),
+            (second, "SEGUNDA_EASYBROKER_KEY"),
+        ):
+            await credentials.record(
+                OPERATOR,
+                RecordSecretReference(
+                    organization_id=organization_id,
+                    provider=IntegrationProvider.EASYBROKER,
+                    reference=reference,
+                    command_key=f"credential:{uuid.uuid4().hex}",
+                    reason="Prueba de credenciales aisladas para inventario externo.",
+                ),
+            )
+        await session.commit()
+
+    created: list[str] = []
+
+    class Adapter:
+        def __init__(self, **kwargs) -> None:
+            created.append(kwargs["api_key"])
+
+        async def aclose(self) -> None:
+            return None
+
+    directory = OrganizationEasyBrokerAdapters(
+        resolver,
+        adapter_factory=Adapter,  # type: ignore[arg-type]
+    )
+    async with database.session_scope() as session:
+        await directory.for_organization(session, first)
+        await directory.for_organization(session, second)
+    assert set(created) == {"larevia-easybroker", "segunda-easybroker"}
+    await directory.aclose()
+
+
+async def test_operational_calendar_directories_use_each_organizations_reference(
+    two_organizations,
+) -> None:
+    database, first, second, _key, resolver = two_organizations
+    resolver.record("LAREVIA_GOOGLE_CALENDAR", "/secrets/larevia.json")
+    resolver.record("SEGUNDA_GOOGLE_CALENDAR", "/secrets/segunda.json")
+    async with database.session_scope() as session:
+        credentials = IntegrationCredentials(session, resolver)
+        for organization_id, reference in (
+            (first, "LAREVIA_GOOGLE_CALENDAR"),
+            (second, "SEGUNDA_GOOGLE_CALENDAR"),
+        ):
+            await credentials.record(
+                OPERATOR,
+                RecordSecretReference(
+                    organization_id=organization_id,
+                    provider=IntegrationProvider.GOOGLE_CALENDAR,
+                    reference=reference,
+                    command_key=f"credential:{uuid.uuid4().hex}",
+                    reason="Prueba de calendarios aislados por organización.",
+                ),
+            )
+        await session.commit()
+    directories = OrganizationGoogleCalendarDirectories(resolver)
+    async with database.session_scope() as session:
+        first_directory = await directories.for_organization(session, first)
+        second_directory = await directories.for_organization(session, second)
+    assert first_directory._credentials_path == "/secrets/larevia.json"
+    assert second_directory._credentials_path == "/secrets/segunda.json"
+
+
+async def test_operational_scheduling_uses_each_organizations_current_version(
+    two_organizations,
+) -> None:
+    from realestate.domain.appointments import AppointmentPolicy
+    from realestate.domain.platform.runtime import OrganizationAppointmentPolicies
+    from tests.fixtures.stubs import SCHEDULE
+
+    database, first, second, _key, _resolver = two_organizations
+    bootstrap = AppointmentPolicy(
+        schedule=SCHEDULE,
+        visit_minutes=90,
+        horizon_days=8,
+        max_candidates=6,
+        day_of_reminder_hour=9,
+    )
+    policies = OrganizationAppointmentPolicies(
+        bootstrap,
+        bootstrap_organization_id=first,
+    )
+    async with database.session_scope() as session:
+        first_policy = await policies.for_organization(session, first)
+        second_policy = await policies.for_organization(session, second)
+
+    assert first_policy.visit_minutes == 90
+    assert second_policy.visit_minutes == 60
+    assert first_policy.schedule.ranges[0][0].start.hour == 9
+    assert second_policy.schedule.ranges[0][0].start.hour == 10
+
+
+async def test_a_single_bot_worker_never_claims_another_organizations_alert(
+    two_organizations,
+) -> None:
+    """The documented one-bot limit must fail closed, never cross-deliver."""
+    database, first, second, _key, _resolver = two_organizations
+    async with database.session_scope() as session:
+        for organization_id, label in ((first, "larevia"), (second, "segunda")):
+            session.add(
+                InternalAlert(
+                    organization_id=organization_id,
+                    kind="HumanHandoffEscalated",
+                    subject_type="Conversation",
+                    subject_id=label,
+                    title=f"Alerta {label}",
+                    body=f"Contenido {label}",
+                    dedupe_key=f"telegram-isolation:{label}",
+                )
+            )
+        await session.commit()
+
+        claimed = await InternalAlerts(session).claim_due(organization_id=first)
+        assert [item.alert.organization_id for item in claimed] == [first]
+        other = await session.scalar(
+            select(InternalAlert).where(InternalAlert.organization_id == second)
+        )
+        assert other is not None
+        assert other.status == InternalAlertStatus.PENDING.value
+        assert other.claimed_at is None
+
+
+async def test_two_organizations_run_simultaneous_inbound_to_delivery_flows(
+    two_organizations,
+) -> None:
+    """Synthetic Stage 9 rehearsal across routing, truth, gate and worker."""
+    from datetime import UTC, datetime
+
+    from realestate.channels.whatsapp.client import SendOutcome, SendResult
+    from realestate.channels.whatsapp.payload import InboundMessage
+    from realestate.db.models import OutboundInitiation, OutboxStatus
+    from realestate.domain.outbound import (
+        OutboundIntent,
+        OutboundMessaging,
+        Purpose,
+        Queued,
+    )
+    from realestate.worker.whatsapp import WhatsAppWorker
+    from tests.fixtures.stubs import SCHEDULE
+
+    database, first, second, _key, resolver = two_organizations
+    resolver.record("LAREVIA_META_ACCESS_TOKEN", "larevia-token")
+    async with database.session_scope() as session:
+        await IntegrationCredentials(session, resolver).record(
+            OPERATOR,
+            RecordSecretReference(
+                organization_id=first,
+                provider=IntegrationProvider.META_WHATSAPP,
+                reference="LAREVIA_META_ACCESS_TOKEN",
+                command_key=f"credential:{uuid.uuid4().hex}",
+                reason="Prueba E2E simultánea de la organización fundadora.",
+            ),
+        )
+        await session.commit()
+
+    moment = datetime.now(tz=UTC)
+    messages = (
+        InboundMessage(
+            wamid=f"e2e-larevia-{uuid.uuid4().hex}",
+            from_wa_id="5213311111111",
+            phone_number_id=commercial.TEST_PHONE_NUMBER_ID,
+            message_type="text",
+            sent_at=moment,
+            text="Busco una casa de Larevia",
+            profile_name="Cliente Larevia",
+            raw={},
+        ),
+        InboundMessage(
+            wamid=f"e2e-segunda-{uuid.uuid4().hex}",
+            from_wa_id="5213322222222",
+            phone_number_id=SECOND_PHONE_NUMBER_ID,
+            message_type="text",
+            sent_at=moment,
+            text="Busco una casa de Segunda",
+            profile_name="Cliente Segunda",
+            raw={},
+        ),
+    )
+
+    async def accept(message: InboundMessage):  # noqa: ANN202
+        async with database.session_scope() as session:
+            accepted = await InboxService(session).accept(message)
+            await session.commit()
+            return accepted
+
+    accepted = await asyncio.gather(*(accept(message) for message in messages))
+    async with database.session_scope() as session:
+        accepted_organizations = set(
+            await session.scalars(
+                select(Conversation.organization_id).where(
+                    Conversation.id.in_([item.conversation_id for item in accepted])
+                )
+            )
+        )
+    assert accepted_organizations == {first, second}
+
+    async def queue(index: int) -> None:
+        item = accepted[index]
+        async with database.session_scope() as session:
+            conversation = await session.get(Conversation, item.conversation_id)
+            assert conversation is not None
+            result = await OutboundMessaging(session).request(
+                OutboundIntent(
+                    conversation=conversation,
+                    body=f"Respuesta exclusiva {index}",
+                    purpose=Purpose.AGENT_REPLY,
+                    initiation=OutboundInitiation.REACTIVE,
+                    idempotency_key=f"stage9-e2e:{index}:{uuid.uuid4().hex}",
+                    trigger_inbox_ids=(item.inbox_id,),
+                )
+            )
+            assert isinstance(result, Queued)
+            await session.commit()
+
+    await asyncio.gather(queue(0), queue(1))
+
+    delivered: list[tuple[str, str, str]] = []
+
+    class Client:
+        def __init__(self, **kwargs) -> None:
+            self.token = kwargs["access_token"]
+            self.phone = kwargs["phone_number_id"]
+
+        async def send_text(self, _to: str, body: str) -> SendResult:
+            delivered.append((self.token, self.phone, body))
+            return SendResult(
+                SendOutcome.SENT,
+                provider_message_id=f"sent-{len(delivered)}",
+            )
+
+        async def send_template(self, *_args, **_kwargs) -> SendResult:
+            raise AssertionError("The simultaneous reactive rehearsal uses text")
+
+        async def aclose(self) -> None:
+            return None
+
+    directory = OrganizationWhatsAppClients(
+        resolver,
+        client_factory=Client,  # type: ignore[arg-type]
+    )
+    worker = WhatsAppWorker(
+        database,
+        object(),  # type: ignore[arg-type]
+        directory,
+        sales_profile="sales",
+        schedule=SCHEDULE,
+    )
+    await worker._drain_outbox()
+
+    assert set(delivered) == {
+        (
+            "larevia-token",
+            commercial.TEST_PHONE_NUMBER_ID,
+            "Respuesta exclusiva 0",
+        ),
+        (
+            "segunda-token",
+            SECOND_PHONE_NUMBER_ID,
+            "Respuesta exclusiva 1",
+        ),
+    }
+    async with database.session_scope() as session:
+        rows = list(
+            await session.scalars(
+                select(OutboxMessage).where(
+                    OutboxMessage.idempotency_key.like("stage9-e2e:%")
+                )
+            )
+        )
+        assert {row.organization_id for row in rows} == {first, second}
+        assert {row.status for row in rows} == {OutboxStatus.SENT.value}
+    await directory.aclose()
+
+
+async def test_bounded_two_organization_intake_capacity_rehearsal(
+    two_organizations,
+) -> None:
+    """A local contention rehearsal, not a production throughput claim."""
+    from datetime import UTC, datetime
+    from time import monotonic
+
+    from realestate.channels.whatsapp.payload import InboundMessage
+
+    database, first, second, _key, _resolver = two_organizations
+    per_organization = 50
+    gate = asyncio.Semaphore(10)
+
+    async def accept(index: int, *, second_organization: bool) -> None:
+        prefix = "second" if second_organization else "first"
+        phone = (
+            SECOND_PHONE_NUMBER_ID
+            if second_organization
+            else commercial.TEST_PHONE_NUMBER_ID
+        )
+        message = InboundMessage(
+            wamid=f"stage9-load-{prefix}-{index}",
+            from_wa_id=f"52133{2 if second_organization else 1}{index:07d}",
+            phone_number_id=phone,
+            message_type="text",
+            sent_at=datetime.now(tz=UTC),
+            text=f"Consulta sintética {prefix} {index}",
+            profile_name=f"Carga {prefix} {index}",
+            raw={},
+        )
+        async with gate:
+            async with database.session_scope() as session:
+                await InboxService(session).accept(message)
+                await session.commit()
+
+    started = monotonic()
+    await asyncio.gather(
+        *(
+            accept(index, second_organization=second_organization)
+            for second_organization in (False, True)
+            for index in range(per_organization)
+        )
+    )
+    elapsed = monotonic() - started
+
+    async with database.session_scope() as session:
+        counts = dict(
+            (
+                await session.execute(
+                    select(InboxMessage.organization_id, func.count(InboxMessage.id))
+                    .where(InboxMessage.wamid.like("stage9-load-%"))
+                    .group_by(InboxMessage.organization_id)
+                )
+            ).all()
+        )
+    assert counts == {first: per_organization, second: per_organization}
+    # A broad local regression guard only. It intentionally does not translate
+    # into a customer-facing capacity or latency promise.
+    assert elapsed < 30
+
+
 async def test_a_credential_is_never_written_to_a_row_or_an_audit_event(
     two_organizations,
 ) -> None:
@@ -650,9 +1113,17 @@ async def test_a_credential_is_never_written_to_a_row_or_an_audit_event(
                 "WHERE organization_id = :org"
             ).bindparams(org=second)
         )
+        expected_references = {
+            "SEGUNDA_META_ACCESS_TOKEN",
+            "SEGUNDA_TELEGRAM_BOT_TOKEN",
+        }
+        seen_references: set[str] = set()
         for reference, fingerprint in rows:
-            assert reference == "SEGUNDA_META_ACCESS_TOKEN"
+            assert reference in expected_references
+            seen_references.add(reference)
             assert "segunda-token" not in (fingerprint or "")
+            assert "second-secret" not in (fingerprint or "")
+        assert seen_references == expected_references
         audits = await session.execute(
             text(
                 "SELECT details::text FROM audit_events WHERE organization_id = :org"
@@ -828,6 +1299,20 @@ async def test_no_scoped_table_holds_a_row_without_an_organization(
         assert offenders == [], (
             "These tables hold rows with no Organization: " + ", ".join(offenders)
         )
+
+
+async def test_a_conversation_cannot_name_parents_from_another_organization(
+    two_organizations,
+) -> None:
+    database, first, second, _key, _resolver = two_organizations
+    async with database.session_scope() as session:
+        lead = await _lead_for(session, first, "5213399990000")
+        conversation = await commercial.make_conversation(session, lead)
+        await session.commit()
+        conversation.organization_id = second
+        with pytest.raises(IntegrityError):
+            await session.commit()
+        await session.rollback()
 
 
 async def test_a_suspended_organizations_members_cannot_log_in(

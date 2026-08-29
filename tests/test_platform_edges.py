@@ -545,10 +545,10 @@ async def test_the_bootstrap_leaves_another_organizations_identifier_alone(
     assert "belongs to a different" in caplog.text
 
 
-async def test_the_bootstrap_puts_a_half_provisioned_founding_organization_in_service(
+async def test_the_bootstrap_never_activates_a_half_provisioned_organization(
     database,
 ) -> None:
-    """A database restored from an older dump must not start up unusable."""
+    """Only the final provisioning step may make an Organization operable."""
     async with database.session_scope() as session:
         organization_id = await commercial.organization_id(session)
         organization = await session.get(Organization, organization_id)
@@ -563,7 +563,7 @@ async def test_the_bootstrap_puts_a_half_provisioned_founding_organization_in_se
     async with database.session_scope() as session:
         organization = await session.get(Organization, organization_id)
         assert organization is not None
-        assert organization.status == OrganizationStatus.ACTIVE.value
+        assert organization.status == OrganizationStatus.PROVISIONING.value
         organization.status = previous
         await session.commit()
 

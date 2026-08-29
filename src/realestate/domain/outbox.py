@@ -157,6 +157,10 @@ class OutboxService:
         Expressed in terms of :meth:`stage` rather than repeating it: the row
         this writes and the row the gate writes must not be able to differ.
         """
+        # Rollback expires ORM instances. Keep the trusted scope as a scalar so
+        # the insert-race recovery below never tries implicit async IO merely by
+        # reading ``conversation.organization_id`` after the rollback.
+        organization_id = conversation.organization_id
         try:
             staged = await self.stage(
                 conversation=conversation,
@@ -177,7 +181,8 @@ class OutboxService:
             await self._session.rollback()
             again = await self._session.scalar(
                 select(OutboxMessage).where(
-                    OutboxMessage.idempotency_key == idempotency_key
+                    OutboxMessage.organization_id == organization_id,
+                    OutboxMessage.idempotency_key == idempotency_key,
                 )
             )
             if again is None:  # pragma: no cover - the key just conflicted

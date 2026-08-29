@@ -96,10 +96,20 @@ def _issues(codes: tuple[str, ...]) -> str:
     return ", ".join(_label(ISSUE_LABELS, code) for code in codes)
 
 
-def _inventory(
+async def _inventory(
     request: Request, session: AsyncSession, actor: Actor
 ) -> ExternalInventory:
-    return ExternalInventory(session, actor, request.app.state.easybroker)
+    sources = getattr(
+        request.app.state,
+        "easybroker_sources",
+        request.app.state.easybroker,
+    )
+    source = (
+        await sources.for_organization(session, actor.organization_id)
+        if hasattr(sources, "for_organization")
+        else sources
+    )
+    return ExternalInventory(session, actor, source)
 
 
 def _page(
@@ -193,7 +203,16 @@ async def external_inventory_page(
     error: str = "",
 ) -> HTMLResponse:
     async with request.app.state.database.session_scope() as session:
-        source = request.app.state.easybroker
+        sources = getattr(
+            request.app.state,
+            "easybroker_sources",
+            request.app.state.easybroker,
+        )
+        source = (
+            await sources.for_organization(session, actor.organization_id)
+            if hasattr(sources, "for_organization")
+            else sources
+        )
         health = await InventorySourceHealth(
             session,
             actor,
@@ -201,7 +220,7 @@ async def external_inventory_page(
             mls_access_confirmed=source.mls_access_confirmed,
             retention_permission_confirmed=source.retention_permission_confirmed,
         ).read(source.source_name)
-        rows = await _inventory(request, session, actor).list_for_administration()
+        rows = await (await _inventory(request, session, actor)).list_for_administration()
     return _page(actor, health, rows, message=guardado or None, error=error or None)
 
 
@@ -210,7 +229,7 @@ async def synchronize_external_inventory(
     request: Request, actor: Actor = Depends(require_administrator)
 ) -> RedirectResponse:
     async with request.app.state.database.session_scope() as session:
-        result = await _inventory(request, session, actor).synchronize(
+        result = await (await _inventory(request, session, actor)).synchronize(
             ExternalInventoryScope.COLLABORATOR, at=utc_now()
         )
     return redirect_back(
@@ -230,7 +249,7 @@ async def refresh_external_candidate(
 ) -> RedirectResponse:
     try:
         async with request.app.state.database.session_scope() as session:
-            result = await _inventory(request, session, actor).refresh_candidate(
+            result = await (await _inventory(request, session, actor)).refresh_candidate(
                 listing_id, at=utc_now()
             )
     except NotFound as exc:
@@ -264,7 +283,7 @@ async def confirm_external_evidence(
         }
     try:
         async with request.app.state.database.session_scope() as session:
-            await _inventory(request, session, actor).confirm_evidence(
+            await (await _inventory(request, session, actor)).confirm_evidence(
                 listing_id,
                 authority_evidence=evidence,
                 attribution=attribution,
@@ -283,5 +302,5 @@ async def cleanup_external_cache(
     request: Request, actor: Actor = Depends(require_administrator)
 ) -> RedirectResponse:
     async with request.app.state.database.session_scope() as session:
-        count = await _inventory(request, session, actor).purge_due(at=utc_now())
+        count = await (await _inventory(request, session, actor)).purge_due(at=utc_now())
     return redirect_back(ACTIVE, saved=f"{count} candidatos retirados limpiados")

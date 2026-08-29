@@ -1198,10 +1198,10 @@ Not yet proven or claimed:
   Provisioning refuses a taken login by name rather than attaching it to the wrong
   brokerage, but the collision itself discloses that some other Organization holds
   it. A per-Organization login namespace needs a different authentication scheme.
-- **One administrative Telegram bot per process.** The worker polls a single token,
-  so the administrative channel belongs to exactly one Organization — resolved from
-  its `TelegramBotId` binding, and doing nothing when unbound. A second
-  Organization needs its own token and a change to that worker.
+- **Telegram is separated per Organization.** Product resolves one token reference
+  and active `TelegramBotId` binding per Organization, verifies they name the same
+  bot, and gives that worker only the Organization's active Administrator chat ids.
+  Missing or mismatched configuration fails closed.
 - **One public-site process per public origin.** The site tells Product which
   hostname it serves; two brands means two site processes today.
 - Google Calendar separates per Advisor calendar, but the service account is one
@@ -1213,9 +1213,10 @@ Not yet proven or claimed:
   Organization.** Bounded to read-only, expiring within eight hours, named,
   counted and visible on the customer's own page — but real, and stated rather
   than implied (ADR-0054).
-- **Load has not been measured.** The isolation matrix runs two synthetic
-  Organizations concurrently, which proves the boundary and says nothing about
-  throughput. No capacity claim is made.
+- **Only bounded local load has been measured.** The isolation matrix accepts
+  100 synthetic inquiries across two Organizations with concurrency ten and a
+  broad 30-second regression guard. It catches contention and scope regressions;
+  no production throughput or latency claim is made.
 - Analytics retention remains unresolved (ADR-0044). Deletion can now remove
   analytics rows on request, which is not an expiry policy.
 - Provisioning reports whether a credential *reference resolves*, never whether
@@ -1453,10 +1454,10 @@ These are decisions the implementation deliberately did not take, phrased so a
    refuses a taken login by name, but the collision discloses that somebody else
    holds it. Accept, or is a per-Organization authentication scheme the next
    stage's work?
-5. **One administrative Telegram bot and one public-site process per
-   Organization.** Both are operating limits rather than design. Accept for the
-   second Organization, or make the Telegram worker poll several tokens before
-   onboarding anybody?
+5. **One public-site process per Organization.** Telegram now polls separate bots
+   inside Product, but each branded public origin still needs its own `site`
+   process. Accept that deployment shape for the accompanied onboarding, or put
+   hostname dispatch inside one site process?
 6. **Support access remains grantable by any platform operator** to any
    Organization — bounded, expiring, counted and visible to the customer, but
    real. Is that the promise to make in writing, or does a customer-approval step
@@ -1464,9 +1465,9 @@ These are decisions the implementation deliberately did not take, phrased so a
 7. **Analytics retention is still unresolved** (ADR-0044). Deletion can now remove
    analytics rows on request; an expiry policy is a different decision and is
    still owed.
-8. **No load has been measured.** The isolation matrix runs two synthetic
-   Organizations; that proves the boundary and nothing about throughput. Is a
-   capacity rehearsal a gate before a real second customer?
+8. **Only local contention has been measured.** The 100-inquiry rehearsal is a
+   regression guard, not a deployment benchmark. What target environment and
+   workload must be measured before a real second customer?
 9. **Deprovisioning retains data by default.** Removal is a separate, separately
    authorised request bounded by retention holds. Confirm that default, and
    confirm who inside Maia may authorise a deletion.

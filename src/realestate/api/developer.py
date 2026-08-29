@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from realestate.config import get_settings
 from realestate.domain.commercial.actors import Actor
+from realestate.domain.platform.support import SUPPORT_LOGIN_PREFIX
 from realestate.domain.properties import PropertyService
 
 _basic = HTTPBasic(auto_error=False)
@@ -73,18 +74,39 @@ def require_developer(
     )
     if credentials is None:
         raise unauthorized
+    supplied_username = credentials.username
+    supplied_password = credentials.password
+    # HTTP Basic separates the user name and password at the first colon.  The
+    # auditable support identity deliberately contains colons, so Starlette
+    # initially exposes it as user ``soporte`` and puts the rest in the password
+    # field. Reconstruct that qualified identity before authenticating the
+    # engineer's own configured credential.
+    if (
+        supplied_username == SUPPORT_LOGIN_PREFIX.removesuffix(":")
+        and ":" in supplied_password
+    ):
+        qualified_tail, supplied_password = supplied_password.rsplit(":", 1)
+        supplied_username = f"{SUPPORT_LOGIN_PREFIX}{qualified_tail}"
+    credential_username = (
+        supplied_username.rsplit(":", 1)[-1]
+        if supplied_username.startswith(SUPPORT_LOGIN_PREFIX)
+        else supplied_username
+    )
     authenticated = any(
         hmac.compare_digest(
-            credentials.username.encode("utf-8"), username.encode("utf-8")
+            credential_username.encode("utf-8"), username.encode("utf-8")
         )
         and hmac.compare_digest(
-            credentials.password.encode("utf-8"), password.encode("utf-8")
+            supplied_password.encode("utf-8"), password.encode("utf-8")
         )
         for username, password in _configured_developers().items()
     )
     if not authenticated:
         raise unauthorized
-    return credentials.username
+    # Preserve the qualified support login for authorization. Only the password
+    # is inherited from the engineer's own configured internal credential; the
+    # Organization and expiry still come from the live support grant.
+    return supplied_username
 
 
 def property_writer(
