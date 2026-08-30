@@ -1530,5 +1530,7 @@ These are decisions the implementation deliberately did not take, phrased so a
   project moves beyond this port.
 - Decide whether the first public demo should use synthetic property fixtures,
   screenshots, or a short architecture walkthrough.
-- Add deployment documentation only after a live target exists and has been
-  tested.
+- `docs/run/deployment.md` and ADR-0060 now describe the three Deployment
+  Environments and the Sandbox/Pilot targets. They are a plan, not a verified
+  runbook: correct both from what actually happens as each environment is stood
+  up.

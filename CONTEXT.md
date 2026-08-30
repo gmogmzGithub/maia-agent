@@ -855,6 +855,24 @@ accompaniment rather than by self-service signup.
 _Avoid_: Tenant system, marketplace, SaaS signup, dedicated deployment per
 customer
 
+**Platform Vendor**:
+The company that builds and operates the Managed Platform, distinct from every
+Brokerage Organization on it. It employs the Platform Operators, holds the
+platform's own domain and the Maia Agent's identity, and is never a party to a
+customer conversation. Its name is not yet settled.
+_Avoid_: Brokerage Organization, Brokerage Brand, Maia Agent, hosting provider,
+Santiago
+
+**Deployment Environment**:
+One of exactly three installations of the Managed Platform, distinguished by who
+may reach it and whose data it holds: **Sandbox**, reachable only by the team and
+holding synthetic Contacts and approved test documents; **Pilot**, reachable by a
+small invited audience, holding real Contacts and real leads, and withheld from
+organic discovery; **Public**, open to organic discovery on the Brokerage Brand's
+own domain. An installation has an environment; a Brokerage Organization, a
+Contact or a row never does.
+_Avoid_: Staging, production, dev, test mode, tenant, environment column
+
 **Founding Organization**:
 The one Brokerage Organization whose numbers, tokens, calendars and behaviour the
 process environment describes, named explicitly in configuration. It is the only

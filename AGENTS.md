@@ -89,7 +89,8 @@ In practice, when you touch this codebase:
 - a configuration document never contains a credential. Store a reference.
 
 See `docs/architecture/architecture.md` and ADR-0033 through ADR-0055 for the
-reasoning and the operating limits.
+reasoning and the operating limits, and `docs/run/deployment.md` for the three
+Deployment Environments and which provider identity belongs to which.
 
 ## Implementation Style
 
