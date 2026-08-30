@@ -20,7 +20,7 @@ concurrency:
 jobs:
   tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v7
@@ -71,23 +71,23 @@ jobs:
       - name: Type-check
         run: docker compose exec -T product mypy
 
-      # The measured packages and the coverage floor live in pyproject.toml so
-      # this command and the one in docs/testing.md cannot drift apart.
-      - name: Run every token-free test
+      - name: Run PR smoke tests
         run: |
           docker compose exec -T product pytest \
             -m 'not live_provider and not live_external_inventory' \
             --strict-markers \
+            -ra \
+            --durations=20 \
             --junitxml=/tmp/token-free-junit.xml \
-            --cov \
-            --cov-report=term \
-            --cov-report=xml:/tmp/token-free-coverage.xml
+            tests/api/test_health_api.py \
+            tests/api/test_platform_api.py \
+            tests/domain/test_platform_isolation.py \
+            tests/integration/test_token_free_system_flow.py \
+            tests/migrations
 
       - name: Copy test reports
         if: always()
-        run: |
-          docker compose cp product:/tmp/token-free-junit.xml token-free-junit.xml
-          docker compose cp product:/tmp/token-free-coverage.xml token-free-coverage.xml
+        run: docker compose cp product:/tmp/token-free-junit.xml token-free-junit.xml
 
       # A skip means a required service never came up, so an integration
       # scenario that proves nothing would otherwise report green.
@@ -104,13 +104,94 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: token-free-test-reports
+          path: token-free-junit.xml
+          if-no-files-found: ignore
+
+      # Tailed deliberately: LOG_LEVEL is DEBUG and Compose keeps up to 30MB
+      # per service, so an untrimmed dump buries the lines that matter.
+      - name: Show runtime logs after failure
+        if: failure()
+        run: docker compose logs --no-color --timestamps --tail 300
+
+      - name: Stop the CI runtime
+        if: always()
+        run: docker compose down -v
+
+  full-token-free-tests:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Create credential-free CI environment
+        run: |
+          cp .env.example .env
+          cat >> .env <<'ENV'
+          WORKER_ENABLED=false
+          HERMES_DASHBOARD_SESSION_TOKEN=ci-hermes-token
+          PLUGIN_API_TOKEN=ci-plugin-token
+          DEVELOPER_BASIC_PASSWORD=ci-developer-password
+          META_VERIFY_TOKEN=ci-verify-token
+          META_APP_SECRET=ci-app-secret
+          META_ACCESS_TOKEN=
+          META_PHONE_NUMBER_ID=
+          ANTHROPIC_API_KEY=
+          TELEGRAM_BOT_TOKEN=
+          TELEGRAM_ADMIN_IDS=
+          GOOGLE_CALENDAR_CREDENTIALS=
+          GOOGLE_CALENDAR_ID=
+          RUN_CONVERSATION_TESTS=0
+          ENV
+
+      - name: Validate Compose configuration
+        run: docker compose config --quiet
+
+      - name: Build the complete runtime
+        run: docker compose build product hermes
+
+      - name: Start Product, Hermes, and PostgreSQL
+        run: docker compose up -d --wait --wait-timeout 180 db product hermes
+
+      # The measured packages and the coverage floor live in pyproject.toml so
+      # this command and the one in docs/run/everything-locally.md cannot drift apart.
+      - name: Run every token-free test with coverage
+        run: |
+          docker compose exec -T product pytest \
+            -m 'not live_provider and not live_external_inventory' \
+            --strict-markers \
+            -ra \
+            --durations=30 \
+            --junitxml=/tmp/token-free-junit.xml \
+            --cov \
+            --cov-report=term \
+            --cov-report=xml:/tmp/token-free-coverage.xml
+
+      - name: Copy test reports
+        if: always()
+        run: |
+          docker compose cp product:/tmp/token-free-junit.xml token-free-junit.xml
+          docker compose cp product:/tmp/token-free-coverage.xml token-free-coverage.xml
+
+      - name: Refuse silently skipped scenarios
+        run: |
+          if grep -q '<skipped' token-free-junit.xml; then
+            grep -o 'name="[^"]*"[^>]*>\s*<skipped' token-free-junit.xml || true
+            echo "::error::token-free CI skipped at least one scenario"
+            exit 1
+          fi
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: full-token-free-test-reports
           path: |
             token-free-junit.xml
             token-free-coverage.xml
           if-no-files-found: ignore
 
-      # Tailed deliberately: LOG_LEVEL is DEBUG and Compose keeps up to 30MB
-      # per service, so an untrimmed dump buries the lines that matter.
       - name: Show runtime logs after failure
         if: failure()
         run: docker compose logs --no-color --timestamps --tail 300
