@@ -81,6 +81,9 @@ authorization, persistence, delivery, retries, and business authority.
 - Recovery-oriented tests around persistence, sessions, tools, workers,
   webhooks, and channel clients.
 
+For the source, test, documentation, migration, asset, and generated-artifact
+layout, see `docs/architecture/repository-layout.md`.
+
 ## Architecture
 
 Maia has three deliberately separated runtime responsibilities:
@@ -275,28 +278,12 @@ docker compose exec product pytest  # run the token-free test suite in Docker
 ```
 
 The required CI gate runs without Meta, Anthropic, Google, or Telegram
-credentials. See [Testing Maia without provider credentials](docs/testing.md)
-for the exact coverage, commands, and optional live-provider layer. See the
-[Stage 0 release checklist](docs/stage-0-release-checklist.md) for the final
-local acceptance and recovery rehearsal, and [repository governance](docs/repository-governance.md)
-for the branch and protection strategy. The [Stage 5 public-site guide](docs/public-site.md)
-documents its routes, authority contracts, privacy boundary, visual system, and
-manual acceptance path. The [Stage 6 external-inventory guide](docs/external-inventory.md)
-documents the EasyBroker adapter boundary, mapping, revalidation, cleanup, test
-levels, and activation gates. The [Stage 7 engagement guide](docs/reactivation-campaigns.md)
-documents reviewed reactivation, explicit Development audiences, consent and
-template evidence, execution limits, and why real dispatch remains denied. The
-[Stage 8 BI and sponsorship guide](docs/bi-and-sponsorship.md) documents the event
-dictionary, the versioned measurement definitions and their exact borders, the
-projection and its invalid-traffic reporting, the privacy boundary, the paid
-delivery rules, pricing and quoting, the two report audiences, and the commercial
-decisions that remain open. The [Stage 9 managed-platform guide](docs/managed-platform.md)
-documents the isolation threat model, the scoping table, provisioning,
-configuration, entitlements, credentials, support access, the data lifecycle,
-what each provider does and does not allow us to separate, and the operating
-limits — with the five operational runbooks in [docs/runbooks](docs/runbooks).
-The [Stage 10 Customer Experience and Market Intelligence guide](docs/customer-experience-and-market-intelligence.md)
-documents the buyer Journey, minimum sale facts, direct-SQL correction
-propagation, privacy-bounded shared dataset, analyst authority, comparable-report
-thresholds, and the operational activation gates that remain after local
-implementation.
+credentials. See [Run Everything Locally](docs/run/everything-locally.md) for
+the exact local setup, test commands, acceptance path, and provider-credential
+boundaries. The current architectural map lives in
+[Maia Architecture](docs/architecture/architecture.md), and the managed-platform
+boundary is captured in the ADR series, especially
+[ADR-0033](docs/adr/0033-build-a-managed-real-estate-platform-not-a-general-crm.md)
+through [ADR-0055](docs/adr/0055-onboard-and-offboard-organizations-as-resumable-reversible-runs.md).
+Open business questions for Santiago live in
+[Santiago Review](docs/open-questions/SANTIAGO_REAL_ESTATE_REVIEW.md).

@@ -64,7 +64,7 @@ re-run the disclosure test specifically:
 
 ```bash
 docker compose exec -e RUN_CONVERSATION_TESTS=1 product pytest \
-  tests/test_sales_conversation.py -k inactive
+  tests/integration/test_sales_conversation.py -k inactive
 ```
 
 ## The Administrative Role
@@ -80,7 +80,7 @@ Both suites are opt-in because they call the real model:
 
 ```bash
 docker compose exec -e RUN_CONVERSATION_TESTS=1 product pytest \
-  tests/test_sales_conversation.py tests/test_admin_conversation.py
+  tests/integration/test_sales_conversation.py tests/integration/test_admin_conversation.py
 ```
 
 Behaviour is probabilistic. A single run is an anecdote — run a check four or
