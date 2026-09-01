@@ -14,8 +14,8 @@ customer records, Opportunities, consent records, and configurations.
 _Avoid_: Tenant, account, Santiago, deployment
 
 **Brokerage Brand**:
-The public customer-facing identity of the Brokerage Organization. Its working
-name is **Larevia**, pending formal trademark clearance.
+The public customer-facing identity of the Brokerage Organization. The founding
+Brokerage Organization's brand is **Larevia**.
 _Avoid_: Maia Agent, platform brand, legal entity by assumption
 
 **Maia Agent**:
@@ -859,7 +859,7 @@ customer
 The company that builds and operates the Managed Platform, distinct from every
 Brokerage Organization on it. It employs the Platform Operators, holds the
 platform's own domain and the Maia Agent's identity, and is never a party to a
-customer conversation. Its name is not yet settled.
+customer conversation.
 _Avoid_: Brokerage Organization, Brokerage Brand, Maia Agent, hosting provider,
 Santiago
 

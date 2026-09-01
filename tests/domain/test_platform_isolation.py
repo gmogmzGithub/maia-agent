@@ -185,7 +185,7 @@ async def _second_organization(session, resolver: SecretResolver) -> uuid.UUID:
             slug=SECOND_SLUG,
             display_name="Segunda Inmobiliaria",
             configuration={
-                "brand": {"working_name": "Segunda"},
+                "brand": {"name": "Segunda"},
                 "service_area": {"municipalities": ["Tlaquepaque"]},
                 "scheduling": {
                     "time_zone": "America/Mexico_City",
@@ -652,6 +652,20 @@ async def test_a_credential_recorded_by_provisioning_resolves_only_for_its_owner
     two_organizations,
 ) -> None:
     database, first, second, _key, resolver = two_organizations
+    # The local demo can legitimately leave Larevia's own provider reference in
+    # the shared integration database. State the no-reference precondition this
+    # scenario is proving instead of depending on the database being pristine.
+    async with database.session_scope() as session:
+        await session.execute(
+            text(
+                "DELETE FROM organization_secret_references "
+                "WHERE organization_id = :organization_id AND provider = :provider"
+            ).bindparams(
+                organization_id=first,
+                provider=IntegrationProvider.META_WHATSAPP.value,
+            )
+        )
+        await session.commit()
     async with database.session_scope() as session:
         credentials = IntegrationCredentials(session, resolver)
         theirs = await credentials.resolve(
@@ -1146,9 +1160,13 @@ async def test_a_configuration_document_cannot_carry_a_credential() -> None:
         )
     with pytest.raises(InvalidConfiguration):
         validate_document({"integrations": {"easybroker_api_key": "abc"}})
+    with pytest.raises(InvalidConfiguration, match="brand.name"):
+        validate_document({"brand": {"working_name": "Acme"}})
+    with pytest.raises(InvalidConfiguration, match="brand.name"):
+        validate_document({"brand": {"name": "   "}})
     # A legitimate document is accepted unchanged.
-    assert validate_document({"brand": {"working_name": "Acme"}}) == {
-        "brand": {"working_name": "Acme"}
+    assert validate_document({"brand": {"name": "Acme"}}) == {
+        "brand": {"name": "Acme"}
     }
 
 

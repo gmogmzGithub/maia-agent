@@ -19,6 +19,7 @@ The binding is keyed on ``stored_session_id`` for that reason.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 import uuid
@@ -44,6 +45,11 @@ SALES_FRESHNESS_CONTEXT = (
     "cualquier dato de una propiedad, llama a get_property_information antes "
     "de responder. Los datos de turnos anteriores no están vigentes hasta "
     "revalidarlos con esa herramienta en este turno.]"
+)
+SALES_FRESHNESS_TOOL = "get_property_information"
+SALES_FRESHNESS_FALLBACK = (
+    "No puedo confirmar la información de esa propiedad en este momento. "
+    "Si quieres, le pido al concierge que te contacte."
 )
 
 # What the Product restates to a Role on every turn, keyed by Role so adding one
@@ -131,7 +137,12 @@ def dated_prompt(text: str, *, today: date) -> str:
     return f"[Contexto del producto — hoy es {stamp}]\n{text}"
 
 
-def role_prompt(text: str, *, role: AgentRole) -> str:
+def role_prompt(
+    text: str,
+    *,
+    role: AgentRole,
+    required_property_reference: str | None = None,
+) -> str:
     """Prefix one turn with the Role's standing Product context, if it has one.
 
     Repeated every turn rather than stated once: a Property Document or status
@@ -140,8 +151,29 @@ def role_prompt(text: str, *, role: AgentRole) -> str:
     earlier in a long conversation. The Lead's own words are untouched below it.
     """
     if context := ROLE_TURN_CONTEXT.get(role):
+        if reference := (required_property_reference or "").strip():
+            encoded = json.dumps(reference, ensure_ascii=False)
+            context = (
+                f"{context}\n"
+                "[Alcance autoritativo del producto para este turno: la "
+                f"conversación está vinculada a la propiedad {encoded}. Debes "
+                f"llamar a {SALES_FRESHNESS_TOOL} con esa referencia antes de "
+                "responder; el producto rechazará un borrador que no la "
+                "revalide.]"
+            )
         return f"{context}\n{text}"
     return text
+
+
+def _freshness_correction(reference: str) -> str:
+    encoded = json.dumps(reference, ensure_ascii=False)
+    return (
+        "[Corrección obligatoria del producto: el borrador anterior no se "
+        "entregará. La conversación está vinculada a la propiedad "
+        f"{encoded}. Llama ahora a {SALES_FRESHNESS_TOOL} con esa referencia "
+        "y después responde de nuevo al mensaje original usando únicamente el "
+        "resultado vigente. No menciones esta corrección.]"
+    )
 
 
 async def _attach(
@@ -399,6 +431,7 @@ async def run_turn(
     on_poll: "Callable[[], Awaitable[str | None]] | None" = None,
     on_adopted: "Callable[[], Awaitable[None]] | None" = None,
     seed: list[dict[str, str]] | None = None,
+    required_property_reference: str | None = None,
     minimum_history_messages: int = 0,
     window_seconds: float = 0.0,
     poll_interval: float = 0.4,
@@ -418,7 +451,16 @@ async def run_turn(
     next poll. That ordering matters: without it the same still-pending message
     would be seen again on the following poll and injected twice.
     """
-    prompt_text = role_prompt(text, role=session.role)
+    required_reference = (
+        (required_property_reference or "").strip()
+        if session.role is AgentRole.SALES
+        else ""
+    )
+    prompt_text = role_prompt(
+        text,
+        role=session.role,
+        required_property_reference=required_reference or None,
+    )
     async with client.session() as rpc:
         logger.info(
             "Starting Hermes turn "
@@ -466,6 +508,7 @@ async def run_turn(
         deltas: list[str] = []
         tools_used: list[str] = []
         injected: list[str] = []
+        freshness_retry = False
 
         while True:
             params = await rpc.receive_event_or_none(poll_interval)
@@ -479,7 +522,11 @@ async def run_turn(
                         time.monotonic() - started,
                     )
                     raise SessionError("Hermes did not complete the turn in time")
-                if on_poll is not None and (time.monotonic() - started) < window_seconds:
+                if (
+                    not freshness_retry
+                    and on_poll is not None
+                    and (time.monotonic() - started) < window_seconds
+                ):
                     late = await on_poll()
                     if late:
                         logger.debug(
@@ -532,6 +579,48 @@ async def run_turn(
                         f"Hermes turn failed: {payload.get('error') or payload}"
                     )
                 text_out = str(payload.get("text") or "".join(deltas))
+                if required_reference and SALES_FRESHNESS_TOOL not in tools_used:
+                    if not freshness_retry:
+                        logger.warning(
+                            "Withholding unverified Sales draft and requiring "
+                            "property revalidation (gateway=%s, durable=%s)",
+                            sid,
+                            durable,
+                        )
+                        frame = await rpc.call(
+                            "prompt.submit",
+                            {
+                                "session_id": sid,
+                                "text": _freshness_correction(required_reference),
+                            },
+                        )
+                        if error := frame.get("error"):
+                            logger.error(
+                                "Hermes freshness correction failed "
+                                "(gateway=%s, error=%s)",
+                                sid,
+                                error,
+                            )
+                            raise SessionError(
+                                f"freshness correction failed: {error}"
+                            )
+                        freshness_retry = True
+                        deltas.clear()
+                        started = time.monotonic()
+                        continue
+                    logger.error(
+                        "Sales turn omitted required property revalidation twice; "
+                        "returning deterministic safe reply "
+                        "(gateway=%s, durable=%s)",
+                        sid,
+                        durable,
+                    )
+                    return TurnResult(
+                        text=SALES_FRESHNESS_FALLBACK,
+                        tools_used=tools_used,
+                        injected=injected,
+                        hermes_session_id=durable,
+                    )
                 logger.info(
                     "Hermes turn complete "
                     "(gateway=%s, durable=%s, response_chars=%d, tools=%s, injected=%d)",
@@ -610,6 +699,7 @@ async def submit_prompt(
     *,
     profile: str = "sales",
     on_attached: "Callable[[str], Awaitable[None]] | None" = None,
+    required_property_reference: str | None = None,
 ) -> TurnResult:
     """Send one turn with no reconciliation window.
 
@@ -618,5 +708,10 @@ async def submit_prompt(
     lifecycle as the worker.
     """
     return await run_turn(
-        client, session, text, profile=profile, on_attached=on_attached
+        client,
+        session,
+        text,
+        profile=profile,
+        on_attached=on_attached,
+        required_property_reference=required_property_reference,
     )

@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlparse
 
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import (
@@ -26,7 +26,6 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image, UnidentifiedImageError
 
 from realestate.config import Settings, get_settings
-from realestate.site.design_demo import DesignDemoGateway
 from realestate.site.gateway import (
     GatewayResponse,
     HttpProductSiteGateway,
@@ -175,7 +174,9 @@ def _measurement_headers(
     return headers
 
 
-def _set_session_cookie(response: Response, request: Request) -> str:
+def _set_session_cookie(
+    response: Response, request: Request, *, secure: bool
+) -> str:
     """Ensure the browser has a capping reference, minting one if needed."""
     existing = request.cookies.get(SESSION_COOKIE)
     if existing:
@@ -185,7 +186,7 @@ def _set_session_cookie(response: Response, request: Request) -> str:
         SESSION_COOKIE,
         minted,
         max_age=SESSION_COOKIE_MAX_AGE,
-        secure=True,
+        secure=secure,
         httponly=True,
         samesite="lax",
         path="/",
@@ -193,13 +194,15 @@ def _set_session_cookie(response: Response, request: Request) -> str:
     return minted
 
 
-def _set_cookie(response: Response, name: str, token: str | None) -> None:
+def _set_cookie(
+    response: Response, name: str, token: str | None, *, secure: bool
+) -> None:
     if token:
         response.set_cookie(
             name,
             token,
             max_age=COOKIE_MAX_AGE,
-            secure=True,
+            secure=secure,
             httponly=True,
             samesite="lax",
             path="/",
@@ -210,15 +213,14 @@ def create_site_app(
     settings: Settings | None = None, gateway: ProductSiteGateway | None = None
 ) -> FastAPI:
     configuration = settings or get_settings()
+    secure_cookies = urlparse(configuration.site_public_origin).scheme == "https"
     owns_gateway = gateway is None
     product: ProductSiteGateway = gateway or HttpProductSiteGateway(
         configuration.product_internal_base_url,
         configuration.site_internal_token,
         site_host=host_of(configuration.site_public_origin),
     )
-    if configuration.site_design_demo:
-        product = DesignDemoGateway(product)
-    document = partial(document_template, demo=configuration.site_design_demo)
+    document = partial(document_template)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -276,7 +278,7 @@ def create_site_app(
                 structured_data=structured,
             )
         )
-        _set_session_cookie(response, request)
+        _set_session_cookie(response, request, secure=secure_cookies)
         return response
 
     @site.get("/propiedades", response_class=HTMLResponse)
@@ -331,7 +333,7 @@ def create_site_app(
             ),
             noindex=dynamic,
         )
-        _set_session_cookie(response, request)
+        _set_session_cookie(response, request, secure=secure_cookies)
         return response
 
     @site.get("/zonas/{zone_slug}", response_class=HTMLResponse)
@@ -422,7 +424,7 @@ def create_site_app(
                 preload_image=f"{primary}?w=960" if primary else None,
             )
         )
-        _set_session_cookie(response, request)
+        _set_session_cookie(response, request, secure=secure_cookies)
         return response
 
     @site.get("/propiedades/{slug}/galeria", response_class=HTMLResponse)
@@ -566,7 +568,12 @@ def create_site_app(
         if body["action"] == "Delete":
             response.delete_cookie(SAVED_COOKIE, path="/")
         else:
-            _set_cookie(response, SAVED_COOKIE, data.get("collection_token"))
+            _set_cookie(
+                response,
+                SAVED_COOKIE,
+                data.get("collection_token"),
+                secure=secure_cookies,
+            )
         return response
 
     @site.get("/selecciones/{token}", response_class=HTMLResponse)
@@ -695,7 +702,12 @@ def create_site_app(
             private=True,
             noindex=True,
         )
-        _set_cookie(response, CONVERSATION_COOKIE, data.get("conversation_token"))
+        _set_cookie(
+            response,
+            CONVERSATION_COOKIE,
+            data.get("conversation_token"),
+            secure=secure_cookies,
+        )
         return response
 
     @site.post("/handoffs")
@@ -989,7 +1001,6 @@ def _not_found(settings: Settings) -> HTMLResponse:
             origin=settings.site_public_origin,
             canonical_path="/",
             indexable=False,
-            demo=settings.site_design_demo,
         ),
         status_code=404,
         noindex=True,

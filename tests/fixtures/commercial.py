@@ -431,7 +431,7 @@ async def ensure_configuration(
             organization_id=target,
             document={
                 "origin": "process-environment",
-                "brand": {"working_name": "Larevia"},
+                "brand": {"name": "Larevia"},
                 "notes": {
                     "test_harness": (
                         "Configuración restaurada para aislar las suites locales."

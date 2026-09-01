@@ -96,19 +96,6 @@ summary:focus-visible {
   border: 0;
 }
 
-.demo-ribbon {
-  min-height: 1.75rem;
-  display: grid;
-  place-items: center;
-  padding: .25rem 1rem;
-  color: var(--tinta);
-  background: var(--maiz);
-  font-size: .75rem;
-  font-weight: 750;
-  letter-spacing: .04em;
-  text-align: center;
-}
-
 .site-header {
   position: sticky;
   z-index: 90;
@@ -123,7 +110,6 @@ summary:focus-visible {
   border-bottom: 1px solid var(--line-quiet);
   backdrop-filter: blur(16px);
 }
-.is-demo .site-header { top: 0; }
 .wordmark {
   color: var(--tinta);
   font: 650 1.65rem/1 var(--serif);
@@ -144,6 +130,11 @@ summary:focus-visible {
   border-bottom: 1px solid transparent;
 }
 .site-header nav a:hover { border-color: var(--tinta); }
+.site-header .nav-admin {
+  padding-inline: .85rem;
+  border: 1px solid var(--agave);
+  border-radius: .5rem;
+}
 .site-header .nav-maia {
   padding-inline: 1rem;
   color: var(--blanco);
@@ -400,7 +391,6 @@ summary:focus-visible {
 .results-toolbar { display: flex; align-items: end; justify-content: space-between; gap: 2rem; margin-bottom: 1.5rem; }
 .results-toolbar h2 { margin: 0; font: 600 1.35rem var(--sans); }
 .results-toolbar p { margin: .25rem 0 0; color: var(--muted); font-size: .8rem; }
-.view-controls button { min-height: 44px; display: inline-flex; align-items: center; gap: .45rem; padding: .55rem .8rem; color: var(--muted); background: transparent; border: 1px solid var(--line); border-radius: .5rem; }
 .load-more { display: flex; width: max-content; margin: 2rem auto 0; }
 
 .detail-heading { display: grid; grid-template-columns: 1fr auto; gap: 1rem 3rem; align-items: end; padding-block: 2.5rem 1.5rem; }
@@ -646,7 +636,7 @@ summary:focus-visible {
 }
 
 @media print {
-  .demo-ribbon, .site-header, .site-footer, .report-actions { display: none !important; }
+  .site-header, .site-footer, .report-actions { display: none !important; }
   body { background: white; color: black; }
   .report-shell { width: 100%; padding: 0; }
   .report-hero { color: black; background: white; border: 1px solid #555; }

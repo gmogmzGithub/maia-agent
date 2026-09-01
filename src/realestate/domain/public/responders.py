@@ -91,6 +91,12 @@ class HermesWebsiteResponder:
             profile=self._profile,
             on_attached=bind,
             seed=seed,
+            required_property_reference=(
+                turn.listings[0].physical_name
+                if len(turn.listings) == 1
+                and turn.listings[0].property_id is not None
+                else None
+            ),
         )
         return WebsiteReply(result.text, result.hermes_session_id)
 

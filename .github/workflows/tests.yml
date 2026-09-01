@@ -37,6 +37,10 @@ jobs:
           WORKER_ENABLED=false
           HERMES_DASHBOARD_SESSION_TOKEN=ci-hermes-token
           PLUGIN_API_TOKEN=ci-plugin-token
+          OBJECT_STORAGE_ROOT_USER=ci-minio-root
+          OBJECT_STORAGE_ROOT_PASSWORD=ci-minio-root-secret
+          OBJECT_STORAGE_ACCESS_KEY_ID=ci-object-access
+          OBJECT_STORAGE_SECRET_ACCESS_KEY=ci-object-secret
           DEVELOPER_BASIC_PASSWORD=ci-developer-password
           META_VERIFY_TOKEN=ci-verify-token
           META_APP_SECRET=ci-app-secret
@@ -59,7 +63,7 @@ jobs:
       # --wait holds until Compose's own healthchecks pass, which are the
       # loopback probes of Product's /live and Hermes's /api/health. Reaching
       # this step is the proof that the private Product-to-Hermes path works.
-      - name: Start Product, Hermes, and PostgreSQL
+      - name: Start Product, Hermes, PostgreSQL, and object storage
         run: docker compose up -d --wait --wait-timeout 180 db product hermes
 
       - name: Lint
@@ -132,6 +136,10 @@ jobs:
           WORKER_ENABLED=false
           HERMES_DASHBOARD_SESSION_TOKEN=ci-hermes-token
           PLUGIN_API_TOKEN=ci-plugin-token
+          OBJECT_STORAGE_ROOT_USER=ci-minio-root
+          OBJECT_STORAGE_ROOT_PASSWORD=ci-minio-root-secret
+          OBJECT_STORAGE_ACCESS_KEY_ID=ci-object-access
+          OBJECT_STORAGE_SECRET_ACCESS_KEY=ci-object-secret
           DEVELOPER_BASIC_PASSWORD=ci-developer-password
           META_VERIFY_TOKEN=ci-verify-token
           META_APP_SECRET=ci-app-secret
@@ -151,7 +159,7 @@ jobs:
       - name: Build the complete runtime
         run: docker compose build product hermes
 
-      - name: Start Product, Hermes, and PostgreSQL
+      - name: Start Product, Hermes, PostgreSQL, and object storage
         run: docker compose up -d --wait --wait-timeout 180 db product hermes
 
       # The measured packages and the coverage floor live in pyproject.toml so

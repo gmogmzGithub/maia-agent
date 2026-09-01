@@ -14,7 +14,6 @@ from PIL import Image
 
 from realestate.config import Settings
 from realestate.site.app import CONVERSATION_COOKIE, SAVED_COOKIE, create_site_app
-from realestate.site.design_demo import DEMO_PROPERTY_IMAGES
 from realestate.site.gateway import GatewayResponse
 
 LISTING_ID = str(uuid.UUID("11111111-1111-4111-8111-111111111111"))
@@ -88,6 +87,7 @@ class FakeProductGateway:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
         self.collection_token = "sc-server-confirmed"
+        self.conversation_token = "wc-server-confirmed"
         self.saved_items: list[dict[str, Any]] = []
         self.listing = copy.deepcopy(LISTING)
         image = Image.new("RGB", (1800, 1200), color=(191, 118, 74))
@@ -194,7 +194,7 @@ class FakeProductGateway:
                 200,
                 {
                     "conversation_id": "55555555-5555-4555-8555-555555555555",
-                    "conversation_token": "wc-server-confirmed",
+                    "conversation_token": self.conversation_token,
                     "reply": "Puedo ayudarte a comparar opciones.",
                     "messages": [
                         {"role": "Customer", "body": body["message"]},
@@ -286,20 +286,19 @@ class PaginatedProductGateway(FakeProductGateway):
         )
 
 
-def settings(*, whatsapp: str = "", design_demo: bool = False) -> Settings:
+def settings(*, whatsapp: str = "") -> Settings:
     return Settings(
         _env_file=None,
         PLUGIN_API_TOKEN="test-token",
         SITE_PUBLIC_ORIGIN="https://larevia.test",
-        SITE_DESIGN_DEMO=design_demo,
         OFFICIAL_WHATSAPP_NUMBER=whatsapp,
     )
 
 
 async def client_for(
-    gateway: FakeProductGateway, *, whatsapp: str = "", design_demo: bool = False
+    gateway: FakeProductGateway, *, whatsapp: str = ""
 ) -> httpx.AsyncClient:
-    app = create_site_app(settings(whatsapp=whatsapp, design_demo=design_demo), gateway)
+    app = create_site_app(settings(whatsapp=whatsapp), gateway)
     return httpx.AsyncClient(
         transport=ASGITransport(app=app),
         base_url="https://larevia.test",
@@ -307,16 +306,20 @@ async def client_for(
     )
 
 
-async def test_local_design_demo_labels_and_uses_the_complete_photo_set() -> None:
+async def test_public_shell_links_the_real_inventory_and_uses_production_copy() -> None:
     gateway = FakeProductGateway()
-    async with await client_for(gateway, design_demo=True) as client:
-        sheet = await client.get("/propiedades/casa-encino-larevia")
-        gallery = await client.get("/propiedades/casa-encino-larevia/galeria")
+    async with await client_for(gateway) as client:
+        home = await client.get("/")
 
-    assert "Demostración local · propiedades e imágenes ficticias" in sheet.text
-    assert gallery.text.count('class="gallery-slide"') == len(DEMO_PROPERTY_IMAGES)
-    for filename in DEMO_PROPERTY_IMAGES:
-        assert f"/assets/demo/properties/{filename}" in gallery.text
+    assert 'href="/admin/properties"' in home.text
+    for non_production_copy in (
+        "Demostración local",
+        "propiedades e imágenes ficticias",
+        "nombre de trabajo pendiente de validación de marca",
+        "Especialista de demostración",
+        "La identidad real se mostrará sólo con autorización",
+    ):
+        assert non_production_copy not in home.text
 
 
 async def test_server_rendered_search_detail_gallery_and_local_discovery() -> None:
@@ -399,6 +402,62 @@ async def test_saved_collection_uses_server_confirmation_secure_cookie_and_delet
     assert deleted.status_code == 303
     assert f"{SAVED_COOKIE}=\"\"" in deleted.headers["set-cookie"]
     assert "Max-Age=0" in deleted.headers["set-cookie"]
+
+
+async def test_local_http_keeps_saved_and_conversation_cookies_usable() -> None:
+    gateway = FakeProductGateway()
+    local = Settings(
+        _env_file=None,
+        PLUGIN_API_TOKEN="test-token",
+        SITE_PUBLIC_ORIGIN="http://localhost:8080",
+    )
+    app = create_site_app(local, gateway)
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://localhost:8080",
+        follow_redirects=False,
+    ) as client:
+        added = await client.post(
+            "/guardadas",
+            data={
+                "action": "Add",
+                "command_key": "local-save-command",
+                "listing_id": LISTING_ID,
+            },
+        )
+        await client.get("/guardadas")
+        turn = await client.post(
+            "/maia",
+            data={
+                "message": "¿Sigue disponible?",
+                "command_key": "local-conversation-command",
+                "listing_ids": LISTING_ID,
+            },
+        )
+        await client.get("/maia")
+
+    assert "Secure" not in added.headers["set-cookie"]
+    assert "Secure" not in turn.headers["set-cookie"]
+    saved_get = next(
+        call
+        for call in gateway.calls
+        if call["path"] == "/internal/public-site/saved"
+        and call["method"] == "GET"
+    )
+    assert saved_get["token_header"] == (
+        "X-Collection-Token",
+        gateway.collection_token,
+    )
+    conversation_get = next(
+        call
+        for call in gateway.calls
+        if call["path"] == "/internal/public-site/conversation"
+        and call["method"] == "GET"
+    )
+    assert conversation_get["token_header"] == (
+        "X-Conversation-Token",
+        gateway.conversation_token,
+    )
 
 
 async def test_anonymous_maia_and_appointment_request_only_create_channel_handoff() -> None:

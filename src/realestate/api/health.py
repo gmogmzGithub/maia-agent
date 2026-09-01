@@ -25,11 +25,12 @@ async def live() -> dict[str, str]:
 @router.get("/health")
 async def health(request: Request, response: Response) -> dict[str, object]:
     state = request.app.state
-    # Five independent dependencies, each a network round trip. Probed
+    # Six independent dependencies, each a network round trip. Probed
     # concurrently so an operator waits for the slowest, not for their sum.
-    database, hermes, whatsapp, telegram, calendar = await asyncio.gather(
+    database, hermes, media_storage, whatsapp, telegram, calendar = await asyncio.gather(
         state.database.check_health(),
         state.hermes.check_health(),
+        state.media_storage.check_health(),
         state.whatsapp.check_health(),
         state.telegram.check_health(),
         state.calendar.check_health(),
@@ -39,7 +40,7 @@ async def health(request: Request, response: Response) -> dict[str, object]:
     # WhatsApp is reported but does not gate the aggregate: an expired
     # test-number token is an expected Stage 0 condition, not an outage, and the
     # rest of the system stays usable without it.
-    healthy = database.ok and hermes.ok and loop_state.running
+    healthy = database.ok and hermes.ok and media_storage.ok and loop_state.running
     if not healthy:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
 
@@ -48,6 +49,7 @@ async def health(request: Request, response: Response) -> dict[str, object]:
         "components": {
             "database": database.as_dict(),
             "hermes": hermes.as_dict(),
+            "media_storage": media_storage.as_dict(),
             "whatsapp": whatsapp,
             "telegram": telegram,
             "calendar": calendar,

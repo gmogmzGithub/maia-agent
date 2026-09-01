@@ -59,9 +59,6 @@ class Settings(BaseSettings):
     site_public_origin: str = Field(
         default="http://localhost:8080", alias="SITE_PUBLIC_ORIGIN"
     )
-    # A local-review affordance only. Public deployments leave this false so
-    # fictional design fixtures can never be mistaken for live inventory.
-    site_design_demo: bool = Field(default=False, alias="SITE_DESIGN_DEMO")
     official_whatsapp_number: str = Field(
         default="", alias="OFFICIAL_WHATSAPP_NUMBER"
     )
@@ -174,13 +171,26 @@ class Settings(BaseSettings):
     property_catalog_root: str = Field(
         default="src/properties", alias="PROPERTY_CATALOG_ROOT"
     )
-    # Approved Listing media and its derived local cache. These are storage
-    # locations, not credentials; Compose mounts both under one durable volume.
-    listing_media_root: str = Field(
-        default="var/listing-media/originals", alias="LISTING_MEDIA_ROOT"
+    # Listing Media bytes live in private S3-compatible object storage. Product
+    # alone receives the credential; PostgreSQL remains authoritative for
+    # identity, checksum, provenance, publication and revocation.
+    object_storage_endpoint_url: str = Field(
+        default="http://127.0.0.1:9000", alias="OBJECT_STORAGE_ENDPOINT_URL"
     )
-    listing_media_cache_root: str = Field(
-        default="var/listing-media/cache", alias="LISTING_MEDIA_CACHE_ROOT"
+    object_storage_region: str = Field(
+        default="us-east-1", alias="OBJECT_STORAGE_REGION"
+    )
+    object_storage_originals_bucket: str = Field(
+        default="maia-listing-media", alias="OBJECT_STORAGE_ORIGINALS_BUCKET"
+    )
+    object_storage_cache_bucket: str = Field(
+        default="maia-listing-renditions", alias="OBJECT_STORAGE_CACHE_BUCKET"
+    )
+    object_storage_access_key_id: str = Field(
+        default="", alias="OBJECT_STORAGE_ACCESS_KEY_ID"
+    )
+    object_storage_secret_access_key: str = Field(
+        default="", alias="OBJECT_STORAGE_SECRET_ACCESS_KEY"
     )
 
     # --- EasyBroker read-only adapter (Stage 6) -----------------------------

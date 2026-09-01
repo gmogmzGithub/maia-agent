@@ -438,6 +438,7 @@ async def test_the_agenda_distinguishes_confirmed_from_needing_review(
 
     assert response.status_code == 200
     assert "Confirmada" in response.text
+    assert "Casa Roble" in response.text
     assert "Sólo una cita" in response.text
     assert built.advisor.display_name in response.text
 

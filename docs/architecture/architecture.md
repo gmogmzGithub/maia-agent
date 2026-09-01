@@ -131,6 +131,33 @@ so without the guard the pass would scan roughly 86,400 times a day to discover
 there was nothing to do — the same reason the Broker notifier owns its own
 cadence.
 
+## Listing Media Storage
+
+Listing Media crosses one narrow storage Seam. PostgreSQL owns the business
+truth — Organization, Listing, checksum, provenance, authority, order and
+revocation — while a private object store owns only bytes. The domain depends on
+the `MediaStorage` Interface; the runtime Implementation is an S3-compatible
+Adapter and tests use an in-memory Adapter. This keeps provider retries,
+checksums, endpoints and credentials local to one Module.
+The Sandbox initializer holds the MinIO root identity long enough to create the
+private buckets and policy; Product receives a different identity scoped to only
+those buckets, and Site receives neither one.
+
+```mermaid
+flowchart LR
+    Admin["Organization Administrator"] -->|"upload / revoke"| Product["Product authority"]
+    Site["Public Site<br/>no storage credential"] -->|"authenticated media request"| Product
+    Product <--> DB[("PostgreSQL<br/>metadata + authority")]
+    Product <--> Objects[("Private object storage<br/>image bytes")]
+    Product -->|"only after eligibility"| Site
+```
+
+Sandbox runs persistent MinIO in Compose as the S3-compatible emulator. The
+same Adapter can target AWS S3 later without changing media commands or public
+eligibility. Source-controlled Sandbox photographs are bootstrap import inputs,
+not runtime assets: only the seed command reads them, and it writes them through
+`MediaAdministration` into object storage.
+
 Stage 7 engagement is a Product workflow, not a Hermes campaign agent. Matching
 is a pure, versioned comparison of authorized Listing facts against confirmed
 Property Need criteria; it emits criterion-level explanations and refuses stale
@@ -395,21 +422,25 @@ That keeps the agent interface clear:
 
 ## Current Local Topology
 
-Docker Compose runs the topology as four containers:
+Docker Compose runs five long-lived containers plus one idempotent bucket
+initializer:
 
 - `db`: PostgreSQL and the durable Product state;
 - `product`: FastAPI and the in-process background workers;
 - `site`: the public server-rendered experience with no database or provider credential;
 - `hermes`: the pinned Hermes runtime with the standalone Maia plugin.
+- `object-storage`: private, persistent S3-compatible Listing Media bytes;
+- `object-storage-init`: creates the two private buckets and then exits.
 
 Product, Site, and Hermes share a private network namespace so their authenticated
 JSON-RPC WebSocket remains loopback-only. They are still separate processes and
-containers. Product reaches PostgreSQL through the private Compose network.
-Only Product port 8080 is published to the host.
+containers. Product reaches PostgreSQL and object storage through the private
+Compose network. Product port 8080 is the only customer/application entry point;
+the object-storage API and console bind to host loopback for local administration.
 
 Runtime configuration lives in one ignored `.env`. Docker volumes retain
-PostgreSQL data, Hermes profile state, accepted Property Documents, Listing media
-and per-Organization export artifacts. No local Python virtual environment or
+PostgreSQL data, Hermes profile state, accepted Property Documents, private
+object-storage data and per-Organization export artifacts. No local Python virtual environment or
 sibling Hermes checkout is part of the operator workflow.
 
 Since Stage 9 that `.env` describes exactly one Brokerage Organization — the

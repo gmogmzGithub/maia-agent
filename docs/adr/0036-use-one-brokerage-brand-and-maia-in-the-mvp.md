@@ -5,18 +5,18 @@ status: accepted
 # Use one Brokerage Brand and Maia in the MVP
 
 Customers see one Brokerage Brand, **Larevia**, and one named assistant,
-**Maia**. Larevia remains a working name until formal trademark clearance. The
-future B2B platform is not given a separate public brand during the brokerage
-MVP, and internal architecture or product names are not exposed in customer
-copy. A Platform Brand will be selected only after the external platform offer
-has been validated with prospective brokerage customers.
+**Maia**. Larevia is the production Brokerage Brand. The future B2B platform is
+not given a separate public brand during the brokerage MVP, and internal
+architecture or product names are not exposed in customer copy. A Platform Brand
+will be selected only after the external platform offer has been validated with
+prospective brokerage customers.
 
 This reduces customer confusion, avoids spending brand capital on an unproven
 B2B offer, and does not change the modular product boundaries needed for a later
 multi-organization platform.
 
-Larevia's working central promise is **Acompañamiento inmobiliario que sí
-continúa**. The public team is presented as **Especialistas inmobiliarios**, and a
+Larevia's central promise is **Acompañamiento inmobiliario que sí continúa**. The
+public team is presented as **Especialistas inmobiliarios**, and a
 Listing's Property Expert appears as **Tu especialista en esta propiedad**. These
 phrases establish a distinct service posture without copying another brokerage's
 identity or making the brand exclusive to high-value properties.

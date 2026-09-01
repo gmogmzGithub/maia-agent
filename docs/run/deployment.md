@@ -41,8 +41,8 @@ resolving it to a default.
 | Model key | its own Anthropic key | its own Anthropic key | its own Anthropic key |
 | Calendars | test calendars | the Advisors' real calendars | real |
 | PostgreSQL | container on the Mac mini | container on the EC2 host | RDS with PITR |
+| Listing Media bytes | private MinIO volume | private AWS S3 bucket | private AWS S3 bucket + CloudFront |
 | Discovery | withheld | withheld | published |
-| `SITE_DESIGN_DEMO` | `false` | `false` | `false` |
 | Operator surfaces | Cloudflare Access + credential | Cloudflare Access + credential | to be decided |
 
 `SITE_PUBLIC_ORIGIN` must equal the environment's own hostname. It is what
@@ -86,17 +86,23 @@ one-time-pin for the two of us. It must **not** cover `/` or
 `/webhooks/whatsapp`: Meta cannot complete a login flow, and the webhook already
 authenticates itself by `META_APP_SECRET` signature.
 
+Listing Media already uses the cloud-shaped storage boundary: Product writes
+checksummed objects to two private MinIO buckets through the AWS S3 client, while
+PostgreSQL owns authority and provenance. The Site has no storage credential.
+MinIO's named Docker volume is operational storage; `bootstrap/sandbox/` is only
+the explicit source for a fresh synthetic import and is never served directly.
+
 Because the Mac mini is expected to stay up unattended:
 
-- `restart: unless-stopped` on all four Compose services;
+- `restart: unless-stopped` on every long-lived Compose service;
 - `pmset` set never to sleep, and to restart after a power failure;
 - automatic login, with Docker set to start at login;
 - `cloudflared` installed as a system service, not left in a terminal;
 - an external uptime check on `/live` alerting both of us — `/live` is a bare
   liveness probe, which is why it is the one that stays open;
-- a nightly `pg_dump` written off the Mac mini. The Contacts are synthetic, but
-  the property documents and catalog work are real effort and that disk is
-  currently their only copy.
+- a nightly `pg_dump` plus an object-storage backup written off the Mac mini.
+  The Contacts are synthetic, but the property documents and catalog work are
+  real effort and that disk must not be their only copy.
 
 Deploys are by hand: `git pull && docker compose up -d --build`. Keep the test
 dependencies in the Sandbox image —
@@ -129,6 +135,8 @@ Provisioning Run (ADR-0055), which is also the first time that resumable,
 reversible sequence is exercised against something real. Real
 property documents are uploaded deliberately. **No Sandbox dump is ever restored
 into Pilot** — after that nobody could say which Opportunities had been real.
+Listing Media uses a private AWS S3 bucket through the same Adapter exercised in
+Sandbox; only endpoint and credential configuration changes.
 
 Backups, meeting the Pilot recovery objective of RPO 24h / RTO 2h: nightly
 encrypted `pg_dump` to object storage with 30-day retention, plus a daily EBS
@@ -156,9 +164,10 @@ The shape this is aimed at, so Pilot choices do not block it:
 - **Secrets Manager**, resolved through the existing Secret Reference indirection
   (ADR-0052) — Product already stores the name of the place a value lives, which
   is exactly a secret ARN;
-- **S3 for property documents, listing media and Organization exports**, behind a
-  storage port. EFS would avoid the code change; S3 is the better engineering and
-  the thing an interviewer will ask about;
+- **S3 for property documents, Listing Media and Organization exports**. The
+  Listing Media port and Adapter already exist; the other artifact types still
+  need migration. EFS would avoid those remaining code changes, but would also
+  preserve host-filesystem coupling;
 - ALB + ACM, CloudFront over listing media, WAF on the operator paths,
   CloudWatch alarms on the health endpoint, and **no NAT Gateway** — it alone
   would cost more than the whole Pilot host.
@@ -169,13 +178,14 @@ becomes discoverable for the first time.
 ## Single instance, deliberately
 
 Product runs as exactly one instance in every environment up to Public. The
-background workers are in-process, artifacts are on local volumes, and
+background workers are in-process, Property Documents and export artifacts are
+on local volumes, and
 `alembic upgrade head` runs at container start. Two instances would race the
 migration and duplicate paced work — broker digests, reminders, upkeep passes —
 and `PROJECT_MEMORY.md` already notes an internal alert can double-deliver. The
 cost is a deploy interruption of under a minute, absorbed by Meta's webhook
-retries. Splitting web from worker and moving artifacts to S3 is Public-phase
-work, not a fix for an accident.
+retries. Splitting web from worker and moving the remaining artifacts to S3 is
+Public-phase work, not a fix for an accident.
 
 ## Promotion gates
 
@@ -199,15 +209,13 @@ Code, all small and all required by the move to a public origin:
   withheld. Per-page `noindex` exists already; the environment-level rule does
   not;
 - `/health` behind the same authentication as `/crm`. It currently enumerates
-  five dependencies to anonymous callers, which tells a stranger which provider
-  credentials exist and how they are failing. `/live` stays open;
+  six dependencies, including private object storage, to anonymous callers,
+  which tells a stranger which provider credentials exist and how they are
+  failing; `/live` stays open;
 - uvicorn `--proxy-headers` with trusted forwarding, `TrustedHostMiddleware`
   pinned to the environment hostname, and HSTS. Without the first, the app sees
   the tunnel as the client and believes every request is plain HTTP — and the
   public site's cookies are `secure=True`;
-- `SITE_DESIGN_DEMO` explicitly `false`. Compose currently defaults it to `true`
-  while the code default is `false`, so the site serves a labelled fictional
-  catalog until told otherwise;
 - `restart: unless-stopped` on every service;
 - a production image target without dev dependencies or tests.
 
@@ -216,7 +224,7 @@ Code, all small and all required by the move to a public origin:
 - the Brokerage Brand's domain chosen and bought, and the cutover planned with a
   lowered DNS TTL and a rollback;
 - discovery enabled for the first time, on that domain only;
-- RDS with PITR, and the artifact storage port;
+- RDS with PITR, and object-storage Adapters for the remaining artifact types;
 - the measured question Pilot existed to answer, answered.
 
 ## Deliberately open

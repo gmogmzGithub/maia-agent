@@ -131,7 +131,12 @@ def _page(
         f"<p><strong>Conteos</strong><br>{health.fetched_count} leídos · {health.accepted_count} en zona · {health.rejected_count} rechazados</p>"
         "</div>"
         '<form method="post" action="/crm/inventario-externo/sincronizar">'
-        '<button>Sincronizar colaboradores de sólo lectura</button></form>'
+        f'<input type="hidden" name="alcance" value="{ExternalInventoryScope.ORGANIZATION.value}">'
+        '<button>Sincronizar inventario propio de EasyBroker</button></form>'
+        '<p class="hint">El inventario propio usa el acceso API normal de la cuenta; no requiere API MLS. El permiso de retención sigue siendo obligatorio.</p>'
+        '<form method="post" action="/crm/inventario-externo/sincronizar">'
+        f'<input type="hidden" name="alcance" value="{ExternalInventoryScope.COLLABORATOR.value}">'
+        '<button class="secondary">Sincronizar colaboradores de sólo lectura</button></form>'
         '<form method="post" action="/crm/inventario-externo/limpiar" class="inline">'
         '<button class="secondary">Limpiar caché retirada cuyo plazo venció</button></form>'
         '<p class="hint">La llave nunca se muestra. Sin acceso MLS y permiso de retención confirmados, Product rechaza la consulta antes de llamar al proveedor.</p></section>'
@@ -228,13 +233,25 @@ async def external_inventory_page(
 async def synchronize_external_inventory(
     request: Request, actor: Actor = Depends(require_administrator)
 ) -> RedirectResponse:
+    form = await request.form()
+    raw_scope = str(
+        form.get("alcance") or ExternalInventoryScope.COLLABORATOR.value
+    )
+    try:
+        scope = ExternalInventoryScope(raw_scope)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El alcance de EasyBroker no es válido.",
+        ) from exc
     async with request.app.state.database.session_scope() as session:
         result = await (await _inventory(request, session, actor)).synchronize(
-            ExternalInventoryScope.COLLABORATOR, at=utc_now()
+            scope, at=utc_now()
         )
     return redirect_back(
         ACTIVE,
         saved=(
+            f"{_label(SCOPE_LABELS, scope.value)} · "
             f"{_label(STATUS_LABELS, result.status)}: {result.accepted} en zona, "
             f"{result.rejected} rechazados"
         ),

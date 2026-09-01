@@ -139,7 +139,7 @@ async def _organization(database, resolver: SecretResolver | None = None):
             ProvisionOrganization(
                 slug=SLUG,
                 display_name="Bordes",
-                configuration={"brand": {"working_name": "Bordes"}},
+                configuration={"brand": {"name": "Bordes"}},
                 administrators=(ADMIN,),
                 credentials=(),
                 reason=REASON,
@@ -589,7 +589,7 @@ async def test_provisioning_needs_a_command_key_and_an_administrator(
                 ProvisionOrganization(
                     slug=SLUG,
                     display_name="Bordes",
-                    configuration={"brand": {}},
+                    configuration={"brand": {"name": "Bordes"}},
                     administrators=(ADMIN,),
                     reason=REASON,
                     command_key="   ",
@@ -601,7 +601,7 @@ async def test_provisioning_needs_a_command_key_and_an_administrator(
                 ProvisionOrganization(
                     slug=SLUG,
                     display_name="Bordes",
-                    configuration={"brand": {}},
+                    configuration={"brand": {"name": "Bordes"}},
                     administrators=(),
                     reason=REASON,
                     command_key=f"edges:{uuid.uuid4().hex}",
@@ -625,7 +625,7 @@ async def test_one_command_key_cannot_serve_two_different_runs(database) -> None
                 ProvisionOrganization(
                     slug="otro-slug",
                     display_name="Otro",
-                    configuration={"brand": {}},
+                    configuration={"brand": {"name": "Otro"}},
                     administrators=(ADMIN,),
                     reason=REASON,
                     command_key=key,
@@ -700,7 +700,7 @@ async def test_reading_a_configuration_section_tolerates_an_absent_one(
         view = await OrganizationConfiguration(session).current(
             result.organization_id
         )
-        assert view.section("brand") == {"working_name": "Bordes"}
+        assert view.section("brand") == {"name": "Bordes"}
         # Absent, and absent is a valid document rather than an error.
         assert view.section("limits") == {}
 
@@ -739,7 +739,7 @@ async def test_a_replayed_configuration_command_returns_its_own_version(
             OPERATOR,
             RecordConfiguration(
                 organization_id=result.organization_id,
-                document={"brand": {"working_name": "Bordes"}, "notes": {"a": "b"}},
+                document={"brand": {"name": "Bordes"}, "notes": {"a": "b"}},
                 reason="Se añade una nota operativa a la configuración.",
                 command_key=key,
             ),
@@ -750,7 +750,7 @@ async def test_a_replayed_configuration_command_returns_its_own_version(
             RecordConfiguration(
                 organization_id=result.organization_id,
                 # A different document under the same key replays the first.
-                document={"brand": {"working_name": "Otro"}},
+                document={"brand": {"name": "Otro"}},
                 reason="Reenvío del mismo formulario.",
                 command_key=key,
             ),
