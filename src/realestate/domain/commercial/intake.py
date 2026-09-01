@@ -23,6 +23,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from realestate.db.models import (
@@ -30,6 +31,7 @@ from realestate.db.models import (
     Lead,
     Opportunity,
     OpportunityKind,
+    OpportunityOrigin,
     OpportunityOriginSource,
     OpportunityStage,
 )
@@ -73,9 +75,9 @@ class CommercialIntake:
     ) -> IntakeResult:
         """Resolve the Contact and its Opportunity for one inbound message.
 
-        Never commits. Idempotent: the command keys are derived from the Inbox
-        row, so a webhook Meta delivers twice produces one Contact, one
-        Opportunity and one stage transition.
+        Never commits. Idempotent: the opening command is scoped to the
+        Conversation and the advancement command to the Inbox row, so Meta
+        redelivery produces one Contact, one Opportunity and one transition.
         """
         actor = Actor.product(lead.organization_id, "CommercialIntake")
         engagement_origin = await engagement_origin_for_lead(self._session, lead.id)
@@ -89,7 +91,10 @@ class CommercialIntake:
         )
 
         management = OpportunityManagement(self._session)
-        existing = await management.open_demand_for_contact(resolved.contact_id)
+        # A later message in the same Conversation still belongs to the
+        # pursuit that Conversation opened, even after the pursuit became
+        # Dormant, Lost or Won. Only a later Conversation may open a new one.
+        existing = await self.opportunity_for_conversation(conversation)
         if existing is None:
             need = await PropertyNeeds(self._session).open(
                 actor, contact_id=resolved.contact_id
@@ -116,9 +121,14 @@ class CommercialIntake:
                         first_conversation_id=conversation.id,
                         first_inbox_id=inbox_id,
                     ),
-                    # Keyed on the Contact, not the message: the first message
-                    # opens the pursuit and every later one continues it.
-                    command_key=f"intake-open:{resolved.contact_id}",
+                    # One Conversation opens at most one pursuit. A later
+                    # Conversation for the same Contact may legitimately open
+                    # another after the earlier Opportunity closed; keying on
+                    # Contact alone made that re-entry collide with the first
+                    # Opportunity's immutable transition.
+                    command_key=(
+                        f"intake-open:{resolved.contact_id}:{conversation.id}"
+                    ),
                 ),
             )
             opportunity_id = opened.opportunity_id
@@ -157,6 +167,21 @@ class CommercialIntake:
         self, conversation: Conversation
     ) -> Opportunity | None:
         """The Opportunity a conversation currently belongs to, if any."""
+        originated = await self._session.scalar(
+            select(Opportunity)
+            .join(
+                OpportunityOrigin,
+                OpportunityOrigin.opportunity_id == Opportunity.id,
+            )
+            .where(
+                Opportunity.organization_id == conversation.organization_id,
+                OpportunityOrigin.organization_id == conversation.organization_id,
+                OpportunityOrigin.first_conversation_id == conversation.id,
+            )
+            .limit(1)
+        )
+        if originated is not None:
+            return originated
         contact_id = await CommercialIdentity(self._session).contact_for_lead(
             conversation.lead_id
         )

@@ -127,7 +127,7 @@ ADVISOR = "ana@operaciones.test"
 REASON = "Prueba de operaciones de plataforma en la suite automatizada."
 
 CONFIGURATION = {
-    "brand": {"working_name": "Operaciones"},
+    "brand": {"name": "Operaciones"},
     "service_area": {"municipalities": ["Guadalajara"]},
     "scheduling": {"time_zone": "America/Mexico_City", "visit_minutes": 90},
 }

@@ -12,6 +12,7 @@ from realestate.app import create_app
 from realestate.config import Settings
 from realestate.db.engine import DatabaseHealth
 from realestate.hermes import HermesHealth, HermesStatus
+from realestate.domain.catalog.storage import MediaStorageHealth
 from realestate.worker.loop import BackgroundLoopState
 
 
@@ -66,6 +67,7 @@ def build_client(
     hermes: HermesHealth,
     loop_running: bool = True,
     whatsapp: dict | None = None,
+    media_storage: MediaStorageHealth | None = None,
 ) -> httpx.AsyncClient:
     """An app wired to stub dependencies.
 
@@ -76,6 +78,9 @@ def build_client(
     app = create_app(Settings(WORKER_ENABLED=False))  # type: ignore[call-arg]
     app.state.database = StubDatabase(database)
     app.state.hermes = StubHermes(hermes)
+    app.state.media_storage = StubChannel(
+        media_storage or MediaStorageHealth(True, "Object storage available")
+    )
     app.state.whatsapp = StubChannel(whatsapp or HEALTHY_WHATSAPP)
     app.state.telegram = StubChannel(HEALTHY_TELEGRAM)
     app.state.calendar = StubChannel(HEALTHY_CALENDAR)
@@ -112,6 +117,7 @@ async def test_health_is_ok_when_every_component_is_ok() -> None:
     assert body["status"] == "ok"
     assert body["components"]["database"]["status"] == "ok"
     assert body["components"]["hermes"]["status"] == "ok"
+    assert body["components"]["media_storage"]["status"] == "ok"
     assert body["components"]["background_loop"]["running"] is True
 
 
@@ -148,6 +154,24 @@ async def test_an_unavailable_database_makes_health_degraded() -> None:
 
     assert response.status_code == 503
     assert response.json()["components"]["database"]["status"] == "unavailable"
+
+
+async def test_unavailable_object_storage_makes_health_degraded() -> None:
+    unavailable = MediaStorageHealth(False, "Object storage is not reachable")
+
+    async with build_client(
+        database=HEALTHY_DB,
+        hermes=HEALTHY_HERMES,
+        media_storage=unavailable,
+    ) as client:
+        response = await client.get("/health")
+
+    assert response.status_code == 503
+    component = response.json()["components"]["media_storage"]
+    assert component == {
+        "status": "unavailable",
+        "detail": "Object storage is not reachable",
+    }
 
 
 async def test_a_stopped_background_loop_makes_health_degraded() -> None:

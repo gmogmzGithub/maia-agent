@@ -28,6 +28,7 @@ from realestate.db.models import (
     AuditEvent,
     Contact,
     ContactChannelIdentity,
+    LeadEngagementCycle,
     NextAction,
     NextActionKind,
     NextActionOutcome,
@@ -49,8 +50,10 @@ from realestate.domain.commercial.next_actions import (
 )
 from realestate.domain.commercial.opportunities import (
     AdvanceStage,
+    LostReason,
     OpportunityManagement,
     QualificationAction,
+    RecordLost,
 )
 from realestate.domain.commercial.views import CommercialInbox, InboxFilters
 from realestate.domain.inbox import InboxService
@@ -197,6 +200,87 @@ async def test_a_second_message_continues_the_same_pursuit(wired) -> None:
             OpportunityStage.IN_CONVERSATION.value,
             OpportunityStage.NEW.value,
         ]
+
+
+async def test_a_new_conversation_after_a_closed_pursuit_opens_another(
+    wired,
+) -> None:
+    client, database = wired
+    await _deliver(client, "Hola", wamid="wamid.flow.1")
+
+    async with database.session_scope() as session:
+        opportunity = await session.scalar(select(Opportunity))
+        cycle = await session.scalar(select(LeadEngagementCycle))
+        assert opportunity is not None and cycle is not None
+        admin = await commercial.actor_for(session, commercial.ADMIN_LOGIN)
+        await OpportunityManagement(session).record(
+            admin,
+            RecordLost(
+                opportunity_id=opportunity.id,
+                reason=LostReason.NOT_INTERESTED,
+                detail="La primera búsqueda terminó.",
+                command_key="close-first-pursuit",
+                at=datetime.now(tz=UTC),
+            ),
+        )
+        cycle.expires_at = datetime.now(tz=UTC) - timedelta(seconds=1)
+        await session.commit()
+
+    response = await _deliver(
+        client,
+        "Hola de nuevo, quiero iniciar otra búsqueda.",
+        wamid="wamid.flow.reentry",
+    )
+    assert response.status_code == 200
+
+    async with database.session_scope() as session:
+        opportunities = list(
+            await session.scalars(
+                select(Opportunity).order_by(Opportunity.created_at)
+            )
+        )
+        assert [row.stage for row in opportunities] == [
+            OpportunityStage.LOST.value,
+            OpportunityStage.IN_CONVERSATION.value,
+        ]
+        origins = list(await session.scalars(select(OpportunityOrigin)))
+        assert len({row.first_conversation_id for row in origins}) == 2
+
+
+async def test_a_later_message_in_the_same_closed_conversation_stays_attached(
+    wired,
+) -> None:
+    client, database = wired
+    await _deliver(client, "Hola", wamid="wamid.flow.1")
+
+    async with database.session_scope() as session:
+        opportunity = await session.scalar(select(Opportunity))
+        assert opportunity is not None
+        admin = await commercial.actor_for(session, commercial.ADMIN_LOGIN)
+        await OpportunityManagement(session).record(
+            admin,
+            RecordLost(
+                opportunity_id=opportunity.id,
+                reason=LostReason.NOT_INTERESTED,
+                detail="La búsqueda terminó dentro de la conversación vigente.",
+                command_key="close-current-conversation",
+                at=datetime.now(tz=UTC),
+            ),
+        )
+        await session.commit()
+
+    response = await _deliver(
+        client,
+        "Tengo una última pregunta sobre esta búsqueda.",
+        wamid="wamid.flow.same-conversation",
+    )
+    assert response.status_code == 200
+
+    async with database.session_scope() as session:
+        opportunities = list(await session.scalars(select(Opportunity)))
+        assert len(opportunities) == 1
+        assert opportunities[0].stage == OpportunityStage.LOST.value
+        assert await session.scalar(select(func.count(PropertyNeed.id))) == 1
 
 
 async def test_a_redelivered_webhook_creates_nothing_twice(wired) -> None:

@@ -198,7 +198,8 @@ Not claimed yet:
 
 ## Run Maia
 
-The complete local system runs in four Docker containers:
+The complete local system runs in five long-lived Docker containers plus an
+idempotent bucket initializer:
 
 ```mermaid
 flowchart LR
@@ -208,19 +209,22 @@ flowchart LR
         Site["site<br/>public SSR experience"]
         Hermes["hermes<br/>conversation runtime"]
         DB[("db<br/>PostgreSQL")]
+        Objects[("object-storage<br/>private S3-compatible media")]
         Product <-->|"private loopback link"| Hermes
         Product <-->|"authenticated loopback contracts"| Site
         Product <--> DB
+        Product <--> Objects
     end
     Host --> Product
 ```
 
 Hermes, Product, and the public Site are separate containers that share a private
-network namespace. Product is the only host-published process: it serves its API
+network namespace. Product is the only customer/application entry point: it serves its API
 and proxies approved public paths to Site. Site calls Product through a dedicated
 authenticated loopback contract and has no database access. PostgreSQL is reached
-as `db` on the private Compose network. Site, Hermes, and PostgreSQL are not
-exposed to the host.
+as `db` on the private Compose network. Listing Media bytes are reached through
+the private S3-compatible service; PostgreSQL still owns authority and metadata.
+The object-storage API and console bind only to host loopback for local operation.
 
 Prerequisite: Docker with Docker Compose.
 
@@ -236,13 +240,17 @@ Create the one local environment file:
 cp .env.example .env
 ```
 
-In `.env`, fill the three shared local secrets with different values from
+In `.env`, fill the shared local secrets with different values from
 `openssl rand -hex 32`, then configure at least one local Basic-auth account:
 
 ```text
 HERMES_DASHBOARD_SESSION_TOKEN=
 PLUGIN_API_TOKEN=
 SITE_PRODUCT_API_TOKEN=
+OBJECT_STORAGE_ROOT_USER=
+OBJECT_STORAGE_ROOT_PASSWORD=
+OBJECT_STORAGE_ACCESS_KEY_ID=
+OBJECT_STORAGE_SECRET_ACCESS_KEY=
 DEVELOPER_BASIC_CREDENTIALS_JSON={"developer":"replace-with-a-secret"}
 ```
 

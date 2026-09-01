@@ -34,6 +34,7 @@ from realestate.db.models import (
     OutboundInitiation,
     OutboxMessage,
     OutboxStatus,
+    Property,
 )
 from realestate.domain.appointments import (
     LeadNotice,
@@ -222,6 +223,19 @@ class WhatsAppWorker:
             )
             offered.clear()
 
+        conversation = await session.scalar(
+            select(Conversation)
+            .where(Conversation.organization_id == cycle.organization_id)
+            .where(Conversation.id == group.conversation_id)
+        )
+        required_property_reference: str | None = None
+        if conversation is not None and conversation.property_uuid is not None:
+            required_property_reference = await session.scalar(
+                select(Property.property_key)
+                .where(Property.organization_id == cycle.organization_id)
+                .where(Property.id == conversation.property_uuid)
+            )
+
         turn = await run_turn(
             self._hermes,
             role_session,
@@ -239,6 +253,7 @@ class WhatsAppWorker:
             # Applied only when this cycle's session is created. The Model
             # cannot learn the WhatsApp profile name any other way.
             seed=seed,
+            required_property_reference=required_property_reference,
             minimum_history_messages=recovered_messages,
             window_seconds=RECONCILIATION_WINDOW_SECONDS,
         )

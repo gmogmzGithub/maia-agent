@@ -111,6 +111,18 @@ async def test_create_is_atomic_pending_and_idempotent(wired) -> None:
     assert offers[0].availability == "Unknown"
 
 
+async def test_admin_properties_reflects_the_authoritative_catalog(wired) -> None:
+    client, _, _ = wired
+    listing_id = await create_listing(client)
+
+    inventory = await client.get("/admin/properties", auth=ADMIN)
+
+    assert inventory.status_code == 200
+    assert "Casa API" in inventory.text
+    assert f'href="/crm/catalogo/{listing_id}"' in inventory.text
+    assert 'href="/admin/properties/new"' in inventory.text
+
+
 async def test_failed_publication_does_not_claim_success_or_change_state(wired) -> None:
     client, _, database = wired
     listing_id = await create_listing(client)

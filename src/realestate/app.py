@@ -58,12 +58,12 @@ from realestate.domain.platform.whatsapp import (
     OrganizationWhatsAppClients,
 )
 from realestate.db.models import IntegrationProvider
-from realestate.domain.catalog.storage import LocalMediaStorage
 from realestate.domain.external_inventory.easybroker import EasyBrokerAdapter
 from realestate.domain.scheduling.calendars import GoogleCalendarDirectory
 from realestate.domain.properties import ArtifactStore, CatalogStore
 from realestate.hermes import HermesClient
 from realestate.hosts import host_of as site_host_of
+from realestate.infrastructure.media_storage import media_storage_from_settings
 from realestate.worker.broker import OrganizationBrokerNotifiers
 from realestate.worker.external_inventory import ExternalInventoryCleanupWorker
 from realestate.worker.analytics import AnalyticsWorker
@@ -188,11 +188,12 @@ async def _log_startup_report(app: FastAPI) -> None:
     error: the product must still start so an operator can reach /health and
     read the reason.
     """
-    # Both probes are network round trips and neither depends on the other, so
-    # they do not need to be added to each other's startup latency.
-    database, hermes = await asyncio.gather(
+    # Independent network round trips run concurrently, so startup waits for
+    # the slowest dependency rather than their sum.
+    database, hermes, media_storage = await asyncio.gather(
         app.state.database.check_health(),
         app.state.hermes.check_health(),
+        app.state.media_storage.check_health(),
     )
     if database.ok:
         logger.info("PostgreSQL: %s", database.detail)
@@ -206,6 +207,11 @@ async def _log_startup_report(app: FastAPI) -> None:
         # In Compose, Hermes also starts just after Product because it joins
         # Product's network namespace, so this can be a harmless startup race.
         logger.warning("Hermes Runtime [%s]: %s", hermes.status.value, hermes.detail)
+
+    if media_storage.ok:
+        logger.info("Listing Media: %s", media_storage.detail)
+    else:
+        logger.error("Listing Media: %s", media_storage.detail)
 
 
 @asynccontextmanager
@@ -232,9 +238,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.database = Database(settings.database_url)
     app.state.artifacts = ArtifactStore(Path(settings.artifact_root))
     app.state.property_catalog = CatalogStore(Path(settings.property_catalog_root))
-    app.state.media_storage = LocalMediaStorage(
-        Path(settings.listing_media_root), Path(settings.listing_media_cache_root)
-    )
+    app.state.media_storage = media_storage_from_settings(settings)
     app.state.easybroker = EasyBrokerAdapter(
         api_key=settings.easybroker_api_key,
         base_url=settings.easybroker_base_url,

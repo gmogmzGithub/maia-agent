@@ -16,6 +16,8 @@ cover and gallery order. Videos, 360-degree tours, interactive renders,
 downloadable plans, PDF media, and WhatsApp gallery delivery are deferred. When a
 Listing is unpublished its media disappears from public surfaces immediately;
 revocation of media authority also requires storage and cache deletion.
+ADR-0061 places those bytes in private S3-compatible object storage without
+changing Product's authority over publication or revocation.
 
 The public experience separates a shareable, mobile-first Listing Gallery from a
 structured Listing Technical Sheet and links them in both directions. The Gallery

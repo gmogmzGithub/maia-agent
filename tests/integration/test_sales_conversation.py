@@ -104,7 +104,9 @@ async def sales():
     await database.dispose()
 
 
-async def ask(sales, text: str) -> str:
+async def ask(
+    sales, text: str, *, required_property_reference: str | None = None
+) -> str:
     """One turn on the shared Sales session, keeping its durable id pinned."""
     client, state, database = sales
     settings = get_settings()
@@ -112,7 +114,10 @@ async def ask(sales, text: str) -> str:
     async def bind(hermes_session_id: str) -> None:
         async with database.session_scope() as db:
             await bind_role_session(
-                db, role=AgentRole.SALES, hermes_session_id=hermes_session_id
+                db,
+                organization_id=await commercial.organization_id(db),
+                role=AgentRole.SALES,
+                hermes_session_id=hermes_session_id,
             )
         state["session"] = RoleSession(
             gateway_session_id="",
@@ -126,6 +131,7 @@ async def ask(sales, text: str) -> str:
         text,
         profile=settings.sales_profile,
         on_attached=bind,
+        required_property_reference=required_property_reference,
     )
     return turn.text
 
@@ -184,7 +190,10 @@ async def test_the_agent_actually_consults_the_document(sales) -> None:
         seen["id"] = hermes_session_id
         async with database.session_scope() as db:
             await bind_role_session(
-                db, role=AgentRole.SALES, hermes_session_id=hermes_session_id
+                db,
+                organization_id=await commercial.organization_id(db),
+                role=AgentRole.SALES,
+                hermes_session_id=hermes_session_id,
             )
 
     blank = RoleSession(
@@ -255,7 +264,10 @@ async def test_an_unidentified_property_produces_the_deterministic_question(
     async def bind(hermes_session_id: str) -> None:
         async with database.session_scope() as db:
             await bind_role_session(
-                db, role=AgentRole.SALES, hermes_session_id=hermes_session_id
+                db,
+                organization_id=await commercial.organization_id(db),
+                role=AgentRole.SALES,
+                hermes_session_id=hermes_session_id,
             )
 
     blank = RoleSession(
@@ -345,7 +357,11 @@ async def test_an_inactive_property_discloses_nothing(sales) -> None:
     from realestate.db.models import PropertyStatus as _Status
 
     _, _, database = sales
-    priming_reply = await ask(sales, "cuánto cuesta Casa Roble y tiene alberca?")
+    priming_reply = await ask(
+        sales,
+        "cuánto cuesta Casa Roble y tiene alberca?",
+        required_property_reference="casa-roble",
+    )
     assert mentions_price(priming_reply), priming_reply
     calls_before = len(await tool_calls(sales))
     async with database.session_scope() as db:
@@ -358,7 +374,11 @@ async def test_an_inactive_property_discloses_nothing(sales) -> None:
         await db.commit()
 
     try:
-        reply = await ask(sales, "me interesa Casa Roble, cuánto cuesta y tiene alberca?")
+        reply = await ask(
+            sales,
+            "me interesa Casa Roble, cuánto cuesta y tiene alberca?",
+            required_property_reference="casa-roble",
+        )
     finally:
         async with database.session_scope() as db:
             prop = (

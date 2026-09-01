@@ -19,6 +19,8 @@ from realestate.domain.administration import (
     Administrator,
     VALID_INACTIVE_REASONS,
 )
+from realestate.domain.catalog.projection import CatalogProjection
+from realestate.domain.clock import utc_now
 from realestate.domain.properties import accepted_version, resolve_property
 from realestate.domain.property_document import (
     COMMUNITY_AMENITIES,
@@ -195,6 +197,7 @@ propertyName.addEventListener('input',updatePropertyId); updatePropertyId();
 """
     content = f"""
 {error_box}
+<section class="card"><h2>Captura guiada</h2><p>No necesitas escribir JSON ni Markdown. Este formulario valida los datos, genera el documento aprobado y crea el borrador correspondiente en el catálogo autoritativo.</p></section>
 <form method="post" action="{_e(action)}">
 <section class="card"><h2>Identidad y operación</h2><div class="grid">
 <label>Nombre *<input id="property-name" name="name" value="{_e(values.get("name"))}" required></label>
@@ -393,11 +396,25 @@ async def inventory(
                 actor.organization_id
             )
         )["properties"]
+        catalog_rows = await CatalogProjection(
+            session, actor
+        ).list_for_administration(utc_now())
+    catalog_by_property: dict[str, list[tuple[str, str]]] = {}
+    for listing in catalog_rows:
+        catalog_by_property.setdefault(listing.physical_key, []).append(
+            (str(listing.listing_id), listing.title)
+        )
     filtered = [
         row for row in records if view == "all" or row["status"].casefold() == view
     ]
     cells = []
     for row in filtered:
+        catalog_links = " · ".join(
+            f'<a href="/crm/catalogo/{_e(listing_id)}" title="{_e(title)}">Catálogo</a>'
+            for listing_id, title in catalog_by_property.get(row["property_id"], [])
+        )
+        if catalog_links:
+            catalog_links = f" · {catalog_links}"
         reason = REASON_LABELS.get(row["inactive_reason"], "—")
         price = (
             f"${format_amount(row['price_amount'])} {row['price_currency']}"
@@ -409,7 +426,7 @@ async def inventory(
         else:
             status_action = f'<form class="inline" method="post" action="/admin/properties/{_e(row["property_id"])}/status"><input type="hidden" name="status" value="Active"><button onclick="return confirm(\'¿Reactivar esta propiedad?\')">Reactivar</button></form>'
         cells.append(
-            f"<tr><td><strong>{_e(row['name'])}</strong><br><span class='muted'>{_e(row['property_id'])}</span></td><td>{_e(TYPE_LABELS.get(row['property_type'], row['property_type']))}<br>{_e(OPERATION_LABELS.get(row['operation'], row['operation']))}</td><td>{_e(price)}</td><td><span class='status {_e(row['status'])}'>{_e(row['status'])}</span><br>{_e(reason)}</td><td>v{row['document_version']}<br><span class='muted'>{_e(row['updated_at'][:10])}</span></td><td>{row['confirmed_appointments']}</td><td><a href='/admin/properties/{_e(row['property_id'])}'>Ver</a> · <a href='/admin/properties/{_e(row['property_id'])}/edit'>Editar</a><br>{status_action}</td></tr>"
+            f"<tr><td><strong>{_e(row['name'])}</strong><br><span class='muted'>{_e(row['property_id'])}</span></td><td>{_e(TYPE_LABELS.get(row['property_type'], row['property_type']))}<br>{_e(OPERATION_LABELS.get(row['operation'], row['operation']))}</td><td>{_e(price)}</td><td><span class='status {_e(row['status'])}'>{_e(row['status'])}</span><br>{_e(reason)}</td><td>v{row['document_version']}<br><span class='muted'>{_e(row['updated_at'][:10])}</span></td><td>{row['confirmed_appointments']}</td><td><a href='/admin/properties/{_e(row['property_id'])}'>Ver</a> · <a href='/admin/properties/{_e(row['property_id'])}/edit'>Editar</a>{catalog_links}<br>{status_action}</td></tr>"
         )
     rows = (
         "".join(cells)
@@ -426,7 +443,8 @@ async def inventory(
     return _layout(
         "Propiedades",
         f'<div class="actions"><a class="button" href="/admin/properties/new">'
-        'Agregar propiedad</a><a class="button secondary" href="/upload">'
+        'Agregar propiedad</a><a class="button secondary" href="/crm/catalogo">'
+        'Catálogo autoritativo</a><a class="button secondary" href="/upload">'
         "Carga Markdown avanzada</a></div>"
         f'<div class="tabs">{tabs}</div><div class="card table-scroll">'
         "<table><caption>Inventario de propiedades de la organización</caption>"

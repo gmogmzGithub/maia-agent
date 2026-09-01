@@ -9,13 +9,25 @@ import pytest
 from httpx import ASGITransport, BasicAuth
 from sqlalchemy import delete, select
 
+from realestate.api.plugin import SESSION_HEADER
 from realestate.app import create_app
 from realestate.config import get_settings
 from realestate.db.engine import Database
-from realestate.db.models import AuditEvent, Property, PropertyDocumentVersion
+from realestate.db.models import (
+    AgentRole,
+    AgentSession,
+    AuditEvent,
+    CatalogListing,
+    ListingOffer,
+    ListingPublicationState,
+    Property,
+    PropertyDocumentVersion,
+)
 from realestate.domain.properties import ArtifactStore, CatalogStore
 from tests.conftest import (
     DATABASE_URL,
+    env,
+    larevia_organization_id,
     provision_property_administrator,
     requires_postgres,
     reset_property_inventory,
@@ -24,6 +36,7 @@ from tests.conftest import (
 pytestmark = requires_postgres
 
 DEVELOPER = BasicAuth("developer", "test-developer-password")
+SALES_SESSION = "sess-admin-property-sales"
 
 
 def property_form(**overrides: object) -> dict[str, object]:
@@ -110,8 +123,17 @@ async def wired(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     async with database.session_scope() as session:
         await reset_property_inventory(session)
         await session.execute(delete(AuditEvent))
+        await session.execute(delete(AgentSession))
         await session.commit()
         await provision_property_administrator(session)
+        session.add(
+            AgentSession(
+                organization_id=await larevia_organization_id(session),
+                hermes_session_id=SALES_SESSION,
+                role=AgentRole.SALES.value,
+            )
+        )
+        await session.commit()
 
     app = create_app(get_settings())
     app.state.database = database
@@ -215,6 +237,48 @@ async def test_create_accepts_version_one_active_and_writes_the_catalog(wired) -
     assert prop.inactive_reason is None
     assert prop.visit_address == "Calle Privada 123, Zapopan, Jalisco"
     assert version.version == 1
+
+
+async def test_create_reaches_postgres_and_the_maia_sales_tools(wired) -> None:
+    client, app, _ = wired
+
+    created = await client.post(
+        "/admin/properties", auth=DEVELOPER, data=property_form()
+    )
+
+    assert created.status_code == 303
+    async with app.state.database.session_scope() as session:
+        prop = (await session.execute(select(Property))).scalar_one()
+        version = (await session.execute(select(PropertyDocumentVersion))).scalar_one()
+        listing = (await session.execute(select(CatalogListing))).scalar_one()
+        offer = (await session.execute(select(ListingOffer))).scalar_one()
+    assert version.property_uuid == prop.id
+    assert listing.property_uuid == prop.id
+    assert listing.publication_state == ListingPublicationState.DRAFT.value
+    assert offer.listing_id == listing.id
+
+    headers = {
+        "Authorization": f"Bearer {env('PLUGIN_API_TOKEN')}",
+        SESSION_HEADER: SALES_SESSION,
+    }
+    inventory = await client.post(
+        "/internal/plugin/tools/list_properties", headers=headers, json={}
+    )
+    information = await client.post(
+        "/internal/plugin/tools/get_property_information",
+        headers=headers,
+        json={"reference": "casa-manual"},
+    )
+
+    assert inventory.status_code == 200
+    assert [
+        row["property_id"] for row in inventory.json()["properties"]
+    ] == ["casa-manual"]
+    assert information.status_code == 200
+    assert information.json()["result"] == "found"
+    assert "Publicación autorizada: `casa-manual-legacy`" in information.json()[
+        "document_markdown"
+    ]
 
 
 async def test_create_land_hides_residential_fields_from_the_document(wired) -> None:

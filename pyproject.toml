@@ -17,6 +17,9 @@ dependencies = [
     "python-multipart==0.0.32",
     "pyyaml==6.0.3",
     "pillow==12.3.0",
+    # AWS's S3 client also targets the private S3-compatible Sandbox service,
+    # keeping local pre-prod and cloud deployment behind the same Adapter.
+    "boto3==1.43.79",
     # Google Calendar is the authoritative source of Broker availability (S-007).
     "google-api-python-client==2.189.0",
     "google-auth==2.42.1",
@@ -60,6 +63,12 @@ pretty = true
 # to the two boundary modules that actually touch them, so an untyped value
 # cannot silently spread into the domain.
 module = ["googleapiclient.*", "google.oauth2.*", "google.auth.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# boto3 generates clients dynamically. Its untyped surface is confined to the
+# single object-storage Adapter; domain modules depend only on MediaStorage.
+module = ["boto3.*", "botocore.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

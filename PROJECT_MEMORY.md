@@ -487,11 +487,11 @@ silently deletes Contact identity, Conversations, Opportunities, consent, or oth
 records governed by separate retention and data-rights processes.
 
 The consumer-facing brand architecture is deliberately simple: customers see
-**Larevia** as the Brokerage Brand and **Maia** as the named assistant. Larevia is
-a working name pending formal trademark clearance. The future B2B Platform Brand
-remains unnamed and invisible during the brokerage MVP; `Product` is only an
-internal generic label, not customer-facing copy. A separate platform name should
-be selected only after a real external platform offer has been validated.
+**Larevia** as the production Brokerage Brand and **Maia** as the named assistant.
+The future B2B Platform Brand remains unnamed and invisible during the brokerage
+MVP; `Product` is only an internal generic label, not customer-facing copy. A
+separate platform name should be selected only after a real external platform
+offer has been validated.
 
 The Larevia site must have a recognizable, more-premium service personality while
 remaining plain, welcoming, and usable across ages and socioeconomic contexts.
@@ -500,8 +500,8 @@ visible trust; Vecore is a reference for naming a human service posture. Neither
 site is a template, specification, or source of copy. Larevia will not copy
 Vecore's `Consejeros Inmobiliarios` identity or TuHabi's direct-purchase promise.
 
-Larevia's working central promise is **Acompañamiento inmobiliario que sí
-continúa**. It expresses the operation's differentiator—persistent, accountable
+Larevia's central promise is **Acompañamiento inmobiliario que sí continúa**. It
+expresses the operation's differentiator—persistent, accountable
 follow-up—without implying that Larevia buys properties, guarantees a transaction,
 or serves only affluent customers. Publicly, the team is described as
 **Especialistas inmobiliarios** and a designated Property Expert appears on a
@@ -955,9 +955,9 @@ Implemented locally:
 - independent Listing Availability, Publication State and Authority, with
   evidence, freshness/revalidation, deterministic presentation readiness,
   automatic tiers and auditable Administrator overrides;
-- a recoverable media lifecycle for JPG/PNG/WebP whose local Compose adapter
-  stores originals durably, revokes public eligibility before cleanup, and
-  resumes storage/cache deletion idempotently after restart;
+- a recoverable media lifecycle for JPG/PNG/WebP whose private S3-compatible
+  Adapter stores checksummed originals durably, revokes public eligibility before
+  cleanup, and resumes storage/cache deletion idempotently after restart;
 - Mexican Spanish catalog administration where Advisors have read-only access
   only to Properties for which they are currently designated experts, while
   only Administrators can change catalog state;
@@ -998,6 +998,9 @@ Implemented locally:
   Guadalajara/Zapopan/Tlaquepaque filter, lossless candidate Listing/Offer
   mapping, page/cursor translation, bounded retry/rate-limit handling, and
   sanitized source health;
+- separate Administrator synchronization controls for the account's own
+  EasyBroker `/properties` and collaborator `/mls_properties`; the former does
+  not imply MLS access, while both remain fail-closed on retention permission;
 - Organization-first authorized search, with external candidates only as a
   fallback and exact versus approximate results made explicit;
 - use-time refresh and recorded `Eligible`/`Pending`/`Denied` decisions for each

@@ -13,7 +13,7 @@ from sqlalchemy import select, text
 from realestate.app import create_app
 from realestate.config import get_settings
 from realestate.db.engine import Database
-from realestate.db.models import ExternalListingCandidate
+from realestate.db.models import ExternalInventoryScope, ExternalListingCandidate
 from realestate.domain.external_inventory.ports import SourceNotFound
 from tests.conftest import DATABASE_URL, requires_postgres
 from tests.fixtures import commercial
@@ -82,6 +82,9 @@ async def test_health_sync_and_evidence_controls_never_render_a_secret(wired) ->
     assert "Configurada" in page.text
     assert "Acceso API MLS" in page.text
     assert "Permiso de retención" in page.text
+    assert "Sincronizar inventario propio de EasyBroker" in page.text
+    assert 'name="alcance" value="Organization"' in page.text
+    assert 'name="alcance" value="Collaborator"' in page.text
     assert "EB-FAKE-001" in page.text
     assert "must-never-appear" not in page.text
     async with database.session_scope() as session:
@@ -106,6 +109,34 @@ async def test_health_sync_and_evidence_controls_never_render_a_secret(wired) ->
         assert candidate is not None
         assert candidate.authority_state == "Authorized"
         assert candidate.commission_known
+
+
+async def test_own_inventory_sync_does_not_require_mls_access(wired) -> None:
+    client, _, source = wired
+    source.mls_access_confirmed = False
+
+    synced = await client.post(
+        "/crm/inventario-externo/sincronizar",
+        auth=ADMIN,
+        data={"alcance": ExternalInventoryScope.ORGANIZATION.value},
+    )
+
+    assert synced.status_code == 303
+    assert source.list_calls[0][0] is ExternalInventoryScope.ORGANIZATION
+    assert source.retrieve_calls[0][0] is ExternalInventoryScope.ORGANIZATION
+
+
+async def test_invalid_external_inventory_scope_is_refused(wired) -> None:
+    client, _, source = wired
+
+    invalid = await client.post(
+        "/crm/inventario-externo/sincronizar",
+        auth=ADMIN,
+        data={"alcance": "EveryAccount"},
+    )
+
+    assert invalid.status_code == 400
+    assert source.list_calls == []
 
 
 async def test_refresh_withdrawal_cleanup_and_invalid_admin_controls(wired) -> None:

@@ -20,6 +20,7 @@ from __future__ import annotations
 import pytest
 
 from realestate.hermes.sessions import (
+    SALES_FRESHNESS_FALLBACK,
     TURN_TIMEOUT_SECONDS,
     SessionError,
     RoleSession,
@@ -177,6 +178,64 @@ def test_only_sales_turns_receive_the_property_freshness_context() -> None:
     assert "get_property_information" in sales
     assert sales.endswith("\nhola")
     assert role_prompt("hola", role=AgentRole.ADMINISTRATIVE) == "hola"
+
+
+def test_a_trusted_property_reference_is_restated_in_the_sales_turn() -> None:
+    prompt = role_prompt(
+        "¿y el precio?",
+        role=AgentRole.SALES,
+        required_property_reference="casa-roble",
+    )
+
+    assert '"casa-roble"' in prompt
+    assert "producto rechazará un borrador" in prompt
+    assert prompt.endswith("\n¿y el precio?")
+
+
+async def test_an_unverified_property_draft_is_replaced_after_a_tool_retry() -> None:
+    client, rpc = turn(
+        [
+            event("message.complete", text="Cuesta lo que recuerdo."),
+            event("tool.start", name="get_property_information"),
+            event("message.complete", text="Ahora no está disponible."),
+        ],
+        **{"prompt.submit": [SUBMITTED, SUBMITTED]},
+    )
+
+    result = await run_turn(
+        client,
+        unbound(),
+        "¿y el precio?",
+        profile="sales",
+        required_property_reference="casa-roble",
+    )
+
+    submissions = [params for method, params in rpc.calls if method == "prompt.submit"]
+    assert result.text == "Ahora no está disponible."
+    assert result.tools_used == ["get_property_information"]
+    assert len(submissions) == 2
+    assert "borrador anterior no se entregará" in submissions[1]["text"]
+
+
+async def test_a_second_unverified_property_draft_fails_closed() -> None:
+    client, rpc = turn(
+        [
+            event("message.complete", text="Cuesta lo que recuerdo."),
+            event("message.complete", text="Insisto en el dato viejo."),
+        ],
+        **{"prompt.submit": [SUBMITTED, SUBMITTED]},
+    )
+
+    result = await run_turn(
+        client,
+        unbound(),
+        "¿y el precio?",
+        profile="sales",
+        required_property_reference="casa-roble",
+    )
+
+    assert result.text == SALES_FRESHNESS_FALLBACK
+    assert rpc.methods.count("prompt.submit") == 2
 
 
 async def test_events_for_another_session_on_the_socket_are_ignored() -> None:

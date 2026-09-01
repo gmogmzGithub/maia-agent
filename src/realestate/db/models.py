@@ -1711,7 +1711,7 @@ PROPERTY_NEED_STALE_DAYS = 90
 CONVERSATION_CONTENT_RETENTION_DAYS = 90
 
 # The slug of the Brokerage Organization the migration creates. Larevia is the
-# documented working brand (CONTEXT.md), not customer data.
+# documented production Brokerage Brand (CONTEXT.md), not customer data.
 LAREVIA_SLUG = "larevia"
 
 

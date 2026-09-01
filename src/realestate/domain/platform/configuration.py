@@ -59,7 +59,7 @@ logger = logging.getLogger(__name__)
 #: rendered, and cannot be told apart from a place somebody put a secret.
 ALLOWED_SECTIONS = frozenset(
     {
-        # Public identity: working name, legal name, the site's public origin.
+        # Public identity: brand name, legal name, the site's public origin.
         "brand",
         # Where the Organization operates: municipalities, the service-area note.
         "service_area",
@@ -208,6 +208,22 @@ def validate_document(document: Mapping[str, Any]) -> dict[str, Any]:
             + ", ".join(sorted(ALLOWED_SECTIONS))
             + "."
         )
+    brand = document.get("brand")
+    if brand is not None:
+        if not isinstance(brand, Mapping):
+            raise InvalidConfiguration(
+                "La sección brand debe ser un objeto con un nombre público."
+            )
+        if "working_name" in brand:
+            raise InvalidConfiguration(
+                "La marca debe usar brand.name; los nombres provisionales no "
+                "forman parte de la configuración de producción."
+            )
+        name = brand.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise InvalidConfiguration(
+                "La sección brand requiere un valor no vacío en brand.name."
+            )
     _reject_credentials(document)
     # Round-tripped through JSON so what is stored is exactly what was
     # validated: a value the serialiser would coerce must be coerced *before*

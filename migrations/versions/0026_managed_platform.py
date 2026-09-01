@@ -1143,12 +1143,15 @@ def upgrade() -> None:
             document=json.dumps(
                 {
                     "origin": "process-environment",
-                    "brand": {"working_name": "Larevia"},
-                    "note": (
-                        "La configuración operativa de esta organización sigue "
-                        "viniendo del entorno del proceso. Ninguna otra "
-                        "organización puede usar ese entorno como respaldo."
-                    ),
+                    "brand": {"name": "Larevia"},
+                    "notes": {
+                        "bootstrap": (
+                            "La configuración operativa de esta organización "
+                            "sigue viniendo del entorno del proceso. Ninguna "
+                            "otra organización puede usar ese entorno como "
+                            "respaldo."
+                        )
+                    },
                 },
                 sort_keys=True,
                 separators=(",", ":"),

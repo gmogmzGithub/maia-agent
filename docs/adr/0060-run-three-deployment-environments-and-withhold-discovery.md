@@ -11,10 +11,10 @@ hosting, holds synthetic Contacts, and serves the operator surfaces behind
 Cloudflare Access in addition to the existing credential. Pilot runs on one small
 AWS host, holds real Contacts and real leads from Santiago's Meta ads, and is
 served from a subdomain of the Platform Vendor's own domain rather than from a
-brokerage domain, because the brand name is not yet settled and an indexed
-throwaway hostname is expensive to unwind. Public moves the public site to the
-Brokerage Brand's own domain and is the first environment permitted to publish a
-sitemap.
+brokerage domain, because Pilot is a restricted validation environment and an
+indexed temporary hostname is expensive to unwind. Public moves the public site
+to the Brokerage Brand's own domain and is the first environment permitted to
+publish a sitemap.
 
 Two rules carry more weight than the hosting choices and are the reason this is an
 ADR rather than a paragraph in a runbook.
@@ -38,13 +38,14 @@ discoverable only by explicit setting.
 ## Considered options
 
 Buying the Brokerage Brand's domain now and running Pilot on it was rejected
-because the brand name is pending trademark clearance and the project and agent
-names may still change; the cost of deferring is one deliberate cutover, and the
-cost of guessing is a brand domain we abandon. Deploying Pilot on ECS Fargate
-with RDS was rejected as premature: it answers no question Pilot exists to ask,
-costs several times the single host, and delays the first real lead by weeks. A
-non-AWS VPS was rejected not on price but because Pilot holds real personal data
-and a later provider move would be a second live migration.
+because Pilot must remain outside organic discovery and separate from the Public
+publication contract; the cost of deferring is one deliberate cutover, while the
+cost of indexing Pilot is a hostname and content history that must later be
+unwound. Deploying Pilot on ECS Fargate with RDS was rejected as premature: it
+answers no question Pilot exists to ask, costs several times the single host, and
+delays the first real lead by weeks. A non-AWS VPS was rejected not on price but
+because Pilot holds real personal data and a later provider move would be a
+second live migration.
 
 ## Consequences
 

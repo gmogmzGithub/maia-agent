@@ -7,7 +7,7 @@ demand, and production code should not ship branches whose only job is to raise.
 
 from __future__ import annotations
 
-from realestate.domain.catalog.storage import MediaStorageError
+from realestate.domain.catalog.storage import MediaStorageError, MediaStorageHealth
 
 
 class InMemoryMediaStorage:
@@ -39,3 +39,6 @@ class InMemoryMediaStorage:
             self.fail_cache_once = False
             raise MediaStorageError("Falla de prueba al purgar cache.")
         self.cache_objects.difference_update(keys)
+
+    async def check_health(self) -> MediaStorageHealth:
+        return MediaStorageHealth(True, "Almacenamiento en memoria disponible.")

@@ -103,7 +103,7 @@ def _provision_body(**overrides) -> dict:
         "slug": SLUG,
         "display_name": "API Plataforma",
         "configuration": {
-            "brand": {"working_name": "ApiPlat"},
+            "brand": {"name": "ApiPlat"},
             "service_area": {"municipalities": ["Zapopan"]},
         },
         "administrators": [ADMIN],
@@ -312,7 +312,7 @@ async def test_configuration_is_recorded_and_read_back_as_versions(wired) -> Non
         f"/platform/organizations/{organization_id}/configuration",
         json={
             "document": {
-                "brand": {"working_name": "ApiPlat"},
+                "brand": {"name": "ApiPlat"},
                 "limits": {"campaign_recipients": 25},
             },
             "reason": "El cliente pidió bajar el tope de destinatarios.",

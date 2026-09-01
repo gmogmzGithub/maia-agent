@@ -13,6 +13,7 @@ RUN apt-get update \
 
 COPY pyproject.toml README.md ./
 COPY src ./src
+COPY bootstrap ./bootstrap
 COPY migrations ./migrations
 COPY alembic.ini ./
 
@@ -23,6 +24,7 @@ RUN python -m pip install --no-cache-dir ".[dev]"
 COPY plugin ./plugin
 COPY roles ./roles
 COPY docker/hermes-entrypoint.sh ./docker/hermes-entrypoint.sh
+COPY docker/minio-media-policy.json ./docker/minio-media-policy.json
 COPY tests ./tests
 
 CMD ["sh", "-c", "alembic upgrade head && exec uvicorn realestate.app:app --host 0.0.0.0 --port 8080"]

@@ -30,6 +30,7 @@ from typing import cast
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from realestate.api.operator import (
@@ -66,6 +67,7 @@ from realestate.db.models import (
     MemberRole,
     NextActionKind,
     OrganizationMember,
+    Property,
     PropertyExpertRole,
 )
 from realestate.domain.appointments import AppointmentPolicy
@@ -784,6 +786,16 @@ async def agenda(
             for view in await TeamAdministration(session).team(actor, now=moment)
         }
         notices = await reminders.for_appointments([visit.id for visit in upcoming])
+        property_ids = {visit.property_uuid for visit in upcoming}
+        properties = {
+            prop.id: prop
+            for prop in await session.scalars(
+                select(Property).where(
+                    Property.organization_id == actor.organization_id,
+                    Property.id.in_(property_ids),
+                )
+            )
+        }
         rows = [(visit, notices.get(visit.id, [])) for visit in upcoming]
         unowned = (
             await visits.unowned(actor) if actor.is_administrator else []
@@ -792,7 +804,10 @@ async def agenda(
     listing = table(
         f"{len(rows)} cita(s)",
         ("Cuándo", "Propiedad", "Responsable", "Estado", "Recordatorios", "Resultado"),
-        "".join(_visit_row(visit, notices, members, moment) for visit, notices in rows),
+        "".join(
+            _visit_row(visit, notices, members, properties, moment)
+            for visit, notices in rows
+        ),
         empty_message="No hay citas en este periodo.",
         empty_hint="Maia agenda las visitas desde la conversación de WhatsApp.",
     )
@@ -836,6 +851,7 @@ def _visit_row(
     visit: Appointment,
     notices: list[AppointmentReminder],
     members: dict[uuid.UUID, OrganizationMember],
+    properties: dict[uuid.UUID, Property],
     moment: datetime,
 ) -> str:
     # Both are nullable: a pre-Stage-3 row has no owner, and a conducting
@@ -906,10 +922,18 @@ def _visit_row(
     else:
         result = "—"
 
+    prop = properties.get(visit.property_uuid)
+    property_cell = (
+        f"<strong>{escape(prop.name)}</strong><br>"
+        f"<span class='muted'>{escape(visit.reference)}</span>"
+        if prop is not None
+        else escape(visit.reference)
+    )
+
     return (
         f"<tr><td>{escape(local(visit.starts_at))}<br>"
         f"<span class='muted'>{escape(relative(visit.starts_at, now=moment))}</span></td>"
-        f"<td>{escape(visit.reference)}</td>"
+        f"<td>{property_cell}</td>"
         f"<td>{who}</td><td>{state}</td><td>{reminder_cell}</td>"
         f"<td>{result}</td></tr>"
     )

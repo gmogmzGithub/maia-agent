@@ -14,6 +14,7 @@ generic buckets such as `services`, `controllers`, or `utils`.
 | `docker/` | Product and Hermes container definitions plus the Hermes entrypoint. |
 | `docs/` | Public-safe architecture, runbooks, decisions, research, and operating notes. |
 | `roles/` | Hermes role/profile material that is safe to keep in source control. |
+| `bootstrap/` | Public-safe Sandbox import inputs; never a runtime catalog or storage location. |
 | `src/properties/` | Public-safe accepted property catalog fixtures for local operation. |
 | `secrets/` | Local-only secret mount point. Only `.gitkeep` belongs in Git. |
 
@@ -32,6 +33,7 @@ The source package mirrors Maia's runtime split:
 | `realestate.worker` | Background workers and polling loops. |
 | `realestate.channels` | External channel adapters for WhatsApp, Telegram, and Google Calendar. |
 | `realestate.hermes` | Product-side Hermes runtime client and session binding. |
+| `realestate.infrastructure` | Provider-specific implementations of domain ports, including S3-compatible Listing Media storage. |
 | `realestate.site` | Public-site SSR app, templates, static assets, and Product gateway. This is the GUI/web frontend layer. |
 
 When adding code, first ask which responsibility owns the decision. Do not place

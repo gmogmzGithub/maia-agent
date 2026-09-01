@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from realestate.domain.catalog.storage import LocalMediaStorage, MediaStorageError
+from realestate.domain.catalog.storage import MediaStorageError
+from realestate.infrastructure.media_storage import LocalMediaStorage
 
 
 async def test_local_storage_put_delete_and_cache_purge(tmp_path: Path) -> None:

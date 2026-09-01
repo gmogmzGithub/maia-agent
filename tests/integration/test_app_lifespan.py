@@ -39,6 +39,8 @@ def settings(**overrides: object) -> Settings:
         "TELEGRAM_BOT_TOKEN": "",
         "GOOGLE_CALENDAR_CREDENTIALS": "",
         "GOOGLE_CALENDAR_ID": "",
+        "OBJECT_STORAGE_ACCESS_KEY_ID": "test-access",
+        "OBJECT_STORAGE_SECRET_ACCESS_KEY": "test-secret",
         "WORKER_ENABLED": False,
     }
     base.update(overrides)
@@ -70,6 +72,7 @@ async def test_the_lifespan_wires_every_dependency_onto_the_app() -> None:
         for attribute in (
             "database",
             "artifacts",
+            "media_storage",
             "hermes",
             "whatsapp",
             "calendar",
@@ -242,6 +245,7 @@ async def test_a_healthy_startup_reports_each_dependency_at_info(
     app = create_app(settings())
     app.state.database = Probe(Report(True, "PostgreSQL reachable"))
     app.state.hermes = Probe(Report(True, "Hermes 0.20.0 reachable"))
+    app.state.media_storage = Probe(Report(True, "Object storage reachable"))
 
     with caplog.at_level(logging.INFO, logger="realestate.app"):
         await _log_startup_report(app)
@@ -261,6 +265,7 @@ async def test_an_unreachable_hermes_is_a_warning_not_a_refusal_to_start(
     app.state.hermes = Probe(
         Report(False, "nothing answered", status=HermesStatus.UNREACHABLE)
     )
+    app.state.media_storage = Probe(Report(False, "Object storage unreachable"))
 
     with caplog.at_level(logging.WARNING, logger="realestate.app"):
         await _log_startup_report(app)

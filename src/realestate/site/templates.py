@@ -67,7 +67,6 @@ def document(
     primary_image: str | None = None,
     tier: str = "Larevia",
     preload_image: str | None = None,
-    demo: bool = False,
 ) -> str:
     canonical = absolute(origin, canonical_path)
     robots = "index,follow,max-image-preview:large" if indexable else "noindex,follow"
@@ -89,15 +88,8 @@ def document(
         if preload_image
         else ""
     )
-    demo_ribbon = (
-        '<div class="demo-ribbon" role="status">Demostración local · '
-        "propiedades e imágenes ficticias</div>"
-        if demo
-        else ""
-    )
-    demo_class = "is-demo" if demo else ""
     return f"""<!doctype html>
-<html lang="es-MX" data-tier="{escape(tier)}" class="{demo_class}">
+<html lang="es-MX" data-tier="{escape(tier)}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -120,13 +112,14 @@ def document(
 <title>{escape(title)}</title>
 {structured}
 </head>
-<body>{demo_ribbon}
+<body>
 <a class="skip-link" href="#contenido">Ir al contenido principal</a>
 <header class="site-header" data-site-header>
   <a class="wordmark" href="/" aria-label="Larevia, inicio">Larevia</a>
   <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="navegacion-principal" data-nav-toggle>{icon("menu")}<span>Menú</span></button>
   <nav id="navegacion-principal" aria-label="Navegación principal" data-site-nav>
     <a href="/propiedades">Propiedades</a><a href="/#zonas">Zonas</a><a href="/#como-funciona">Cómo funciona</a><a href="/guardadas">Guardadas</a>
+    <a class="nav-admin" href="/admin/properties">Administrar propiedades</a>
     <a class="nav-maia" href="/maia">{icon("message")} Hablar con Maia</a>
   </nav>
 </header>
@@ -134,7 +127,7 @@ def document(
 <footer class="site-footer">
   <div class="footer-brand"><a class="wordmark wordmark-footer" href="/">Larevia</a><p>Acompañamiento inmobiliario que sí continúa.</p></div>
   <nav aria-label="Navegación secundaria"><a href="/propiedades">Propiedades</a><a href="/#zonas">Zonas</a><a href="/maia">Maia</a><a href="/#vende">Vende o renta</a></nav>
-  <div class="footer-meta"><p>Guadalajara · Zapopan · Tlaquepaque</p><p class="fine-print">Larevia es un nombre de trabajo pendiente de validación de marca.</p></div>
+  <div class="footer-meta"><p>Guadalajara · Zapopan · Tlaquepaque</p></div>
 </footer>
 <div class="sr-only" id="live-region" role="status" aria-live="polite"></div>
 </body>
@@ -199,7 +192,7 @@ def home(
 <section class="section-shell zones-section" id="zonas" aria-labelledby="zonas-title"><div class="section-heading"><div><p class="eyebrow">Tres municipios, una búsqueda clara</p><h2 id="zonas-title">Explora por zona</h2></div></div>{zone_cards(listings)}</section>
 <section class="process-section" id="como-funciona" aria-labelledby="proceso-title"><div class="section-shell process-layout"><div><p class="eyebrow">Acompañamiento inmobiliario que sí continúa</p><h2 id="proceso-title">De la búsqueda a una visita verificada.</h2><p>Maia ayuda a precisar la necesidad; Product conserva la verdad de inventario, disponibilidad y citas.</p></div><ol class="steps"><li><span>01</span><strong>Explora</strong><p>Consulta propiedades y datos autorizados.</p></li><li><span>02</span><strong>Conversa</strong><p>Maia conserva el contexto sin pedir una cuenta.</p></li><li><span>03</span><strong>Verifica</strong><p>La visita se confirma por el WhatsApp oficial.</p></li></ol></div></section>
 <section class="section-shell seller-section" id="vende"><div><p class="eyebrow">Para propietarios</p><h2>Vende o renta tu propiedad con una ruta humana.</h2><p>Maia reúne lo esencial y entrega la conversación al equipo de Larevia para continuar.</p></div><a class="button button-secondary" href="/maia?motivo=publicar">Quiero hablar de mi propiedad</a></section>
-<section class="section-shell experts-section" aria-labelledby="expertos-title"><div><p class="eyebrow">Especialistas inmobiliarios</p><h2 id="expertos-title">La tecnología acompaña. Las personas responden.</h2></div><article class="expert-card demo-expert"><span aria-hidden="true">EL</span><div><strong>Equipo Larevia</strong><p>Especialista de demostración</p><small>La identidad real se mostrará sólo con autorización.</small></div></article></section>
+<section class="section-shell experts-section" aria-labelledby="expertos-title"><div><p class="eyebrow">Especialistas inmobiliarios</p><h2 id="expertos-title">La tecnología acompaña. Las personas responden.</h2></div><article class="expert-card"><span aria-hidden="true">EL</span><div><strong>Equipo Larevia</strong><p>Asesoría inmobiliaria personalizada</p><small>Atención en español para comprar, vender o rentar.</small></div></article></section>
 {sponsored_section(sponsored or {})}
 <section class="closing-cta"><div><p class="eyebrow">Empieza por lo que ya sabes</p><h2>Una zona, un presupuesto o simplemente una idea.</h2></div><a class="button button-primary" href="/propiedades">Explorar propiedades</a></section>"""
 
@@ -269,7 +262,7 @@ def search_page(
         next_query["page"] = int(query.get("page") or 1) + 1
         params = escape(urlencode(_query_params(next_query)))
         more = f'<a class="button button-secondary load-more" href="/propiedades?{params}">Mostrar más</a>'
-    return f"""<header class="catalog-hero section-shell"><nav class="breadcrumbs" aria-label="Ruta"><a href="/">Inicio</a><span>/</span><span>Propiedades</span></nav><p class="eyebrow">Inventario autorizado</p><h1>{escape(heading)}</h1><p>Decisiones claras, información actual y ninguna personalización oculta.</p></header><section class="search-shell" aria-label="Buscar propiedades"><div class="section-shell">{search_form(query)}</div></section><section class="results-shell" aria-labelledby="resultados"><div class="results-toolbar"><div><h2 id="resultados">{total} resultado{"s" if total != 1 else ""}</h2><p>{escape(_criteria_summary(query))}</p></div><div class="view-controls"><button type="button" disabled aria-describedby="mapa-pendiente">{icon("map")} Mapa</button><span id="mapa-pendiente" class="sr-only">El mapa estará disponible cuando use ubicaciones públicas verificadas.</span></div></div><div class="listing-grid">{results}</div>{more}</section>"""
+    return f"""<header class="catalog-hero section-shell"><nav class="breadcrumbs" aria-label="Ruta"><a href="/">Inicio</a><span>/</span><span>Propiedades</span></nav><p class="eyebrow">Inventario autorizado</p><h1>{escape(heading)}</h1><p>Decisiones claras, información actual y ninguna personalización oculta.</p></header><section class="search-shell" aria-label="Buscar propiedades"><div class="section-shell">{search_form(query)}</div></section><section class="results-shell" aria-labelledby="resultados"><div class="results-toolbar"><div><h2 id="resultados">{total} resultado{"s" if total != 1 else ""}</h2><p>{escape(_criteria_summary(query))}</p></div></div><div class="listing-grid">{results}</div>{more}</section>"""
 
 
 def search_form(query: dict[str, Any]) -> str:
@@ -393,7 +386,7 @@ def technical_sheet(
         return_to=f"/propiedades/{slug}{sponsorship_query}",
         already_saved=bool(listing.get("_saved")),
     )
-    return f"""<article class="listing-detail tier-{escape(tier.lower())}"><header class="detail-heading section-shell"><nav class="breadcrumbs" aria-label="Ruta"><a href="/">Inicio</a><span>/</span><a href="/propiedades">Propiedades</a><span>/</span><span aria-current="page">{escape(listing.get("title"))}</span></nav><div><p class="sr-only">Presentación {escape(tier_label)}</p><p class="detail-location">{escape(listing.get("public_location"))}</p><h1>{escape(listing.get("title"))}</h1></div><div class="detail-heading-actions">{save}<button class="text-button" type="button" data-share-page data-share-title="{escape(listing.get("title"))}">Compartir</button></div></header>{media_mosaic(media, listing.get("title"), slug, sponsorship_query)}<nav class="detail-subnav" aria-label="Secciones de la propiedad"><a href="#resumen">Resumen</a><a href="#datos">Características</a><a href="#especialista">Especialista</a><a href="#publicacion">Publicación</a></nav><div class="detail-layout section-shell"><main><section id="resumen" class="detail-summary"><p class="eyebrow">La propiedad</p><h2>Lo esencial, sin ruido.</h2>{highlights}<p class="detail-description">{escape(description)}</p></section><section id="datos" class="facts-section"><p class="eyebrow">Ficha técnica</p><h2>Datos autorizados</h2>{facts}</section><section id="especialista" class="property-expert"><span class="expert-initials" aria-hidden="true">EL</span><div><p class="eyebrow">Tu especialista en esta propiedad</p><h2>Equipo Larevia</h2><p>Especialista de demostración · Atención en español</p><small>La identidad real sólo se publica con autorización.</small></div></section></main><aside class="interest-rail"><div class="rail-card"><div class="offers offers-large">{offers}</div><h2>¿Te interesa esta propiedad?</h2><p>Maia conserva el contexto y te acompaña hacia el WhatsApp oficial cuando necesites verificar una visita.</p>{interest_actions(listing, sponsored_exposure=sponsored_exposure)}</div></aside></div><section id="publicacion" class="section-shell attribution"><p class="eyebrow">Publicación</p><h2>Origen y autoridad</h2><p>{escape(listing.get("attribution"))}</p><p class="muted">Fuente: {escape(listing.get("source_name"))}</p></section></article>"""
+    return f"""<article class="listing-detail tier-{escape(tier.lower())}"><header class="detail-heading section-shell"><nav class="breadcrumbs" aria-label="Ruta"><a href="/">Inicio</a><span>/</span><a href="/propiedades">Propiedades</a><span>/</span><span aria-current="page">{escape(listing.get("title"))}</span></nav><div><p class="sr-only">Presentación {escape(tier_label)}</p><p class="detail-location">{escape(listing.get("public_location"))}</p><h1>{escape(listing.get("title"))}</h1></div><div class="detail-heading-actions">{save}<button class="text-button" type="button" data-share-page data-share-title="{escape(listing.get("title"))}">Compartir</button></div></header>{media_mosaic(media, listing.get("title"), slug, sponsorship_query)}<nav class="detail-subnav" aria-label="Secciones de la propiedad"><a href="#resumen">Resumen</a><a href="#datos">Características</a><a href="#especialista">Especialista</a><a href="#publicacion">Publicación</a></nav><div class="detail-layout section-shell"><main><section id="resumen" class="detail-summary"><p class="eyebrow">La propiedad</p><h2>Lo esencial, sin ruido.</h2>{highlights}<p class="detail-description">{escape(description)}</p></section><section id="datos" class="facts-section"><p class="eyebrow">Ficha técnica</p><h2>Datos autorizados</h2>{facts}</section><section id="especialista" class="property-expert"><span class="expert-initials" aria-hidden="true">EL</span><div><p class="eyebrow">Tu especialista en esta propiedad</p><h2>Equipo Larevia</h2><p>Asesoría inmobiliaria personalizada · Atención en español</p><small>Te acompañamos para verificar disponibilidad y coordinar la visita.</small></div></section></main><aside class="interest-rail"><div class="rail-card"><div class="offers offers-large">{offers}</div><h2>¿Te interesa esta propiedad?</h2><p>Maia conserva el contexto y te acompaña hacia el WhatsApp oficial cuando necesites verificar una visita.</p>{interest_actions(listing, sponsored_exposure=sponsored_exposure)}</div></aside></div><section id="publicacion" class="section-shell attribution"><p class="eyebrow">Publicación</p><h2>Origen y autoridad</h2><p>{escape(listing.get("attribution"))}</p><p class="muted">Fuente: {escape(listing.get("source_name"))}</p></section></article>"""
 
 
 def media_mosaic(

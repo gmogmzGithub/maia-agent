@@ -817,6 +817,7 @@ async def test_hermes_website_responder_seeds_only_authorized_context(
     assert args[2].endswith("¿Cuál es el precio?")
     assert '"listing_id"' in args[2]
     assert kwargs["profile"] == "sales-profile"
+    assert kwargs["required_property_reference"] == publication.listing.physical_name
     assert kwargs["seed"][1:] == [
         {"role": "user", "content": "Hola"},
         {"role": "assistant", "content": "Hola, ¿cómo te ayudo?"},
