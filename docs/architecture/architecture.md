@@ -375,6 +375,9 @@ The panel reports Follow-up Coverage with its gaps attached. The Inbox,
 Opportunities, Contacts and Assignment Queue read exclusively through
 `CommercialInbox`, which is also where Organization scoping, role visibility,
 expired message bodies and communication restrictions are applied once.
+Its current-funnel counts come from the same Product-owned Opportunity rows;
+historical conversion remains an analytics projection, so operational state is
+immediate without turning reporting into a second source of truth.
 
 Stage 3 adds Team, Absences, Specialists, the visit Calendar and the pending-work
 list, in `api/operations.py`. They exist to make four things impossible to miss:
@@ -419,6 +422,18 @@ That keeps the agent interface clear:
 - Hermes sees stable tool contracts.
 - Maia keeps deterministic policy.
 - Tests can cover the product behavior without mocking the model.
+
+The Sales role may submit bounded Property Need interpretations through
+`record_property_need`. Product resolves Organization, Conversation,
+Opportunity and Need from the trusted Hermes session. It confirms a
+`ContactStated` value only when the supplied evidence exists in a retained
+inbound message; unsupported claims and `ModelInferred` values remain Pending.
+Product normalizes only the reviewed transaction-intent vocabulary (including
+its Spanish display labels) to `Buy`, `Rent`, `Sell` or `LeaseOut`; it does not
+interpret arbitrary free text. The CRM translates those canonical values back
+to friendly Spanish labels.
+The tool cannot qualify an Opportunity, change its stage, assign an Advisor or
+send a message (ADR-0031).
 
 ## Current Local Topology
 

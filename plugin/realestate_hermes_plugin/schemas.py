@@ -19,6 +19,14 @@ PROPERTY_INACTIVE_REASONS = (
     "Unspecified",
 )
 
+PROPERTY_NEED_CRITERIA = (
+    "transaction_intent",
+    "service_area",
+    "economic_range",
+    "horizon",
+    "essential_requirements",
+)
+
 GET_TRANSACTION_JOURNEY = {
     "name": "get_transaction_journey",
     "description": (
@@ -134,6 +142,78 @@ LIST_PROPERTIES = {
 }
 
 
+RECORD_PROPERTY_NEED = {
+    "name": "record_property_need",
+    "description": (
+        "Keep the current Contact's property need synchronized with what this "
+        "conversation establishes. Call after the Contact states, corrects, or "
+        "confirms any of: transaction intent, acceptable area, economic range, "
+        "approximate horizon, or essential requirements. Also call when you form "
+        "a useful interpretation that the Contact has not confirmed yet.\n\n"
+        "For each value, use source 'ContactStated' only when the Contact said it "
+        "explicitly and copy the exact supporting excerpt into evidence. Use "
+        "'ModelInferred' for every interpretation or normalization that still "
+        "needs confirmation. Never use placeholders such as unknown, flexible, "
+        "or not provided. Product resolves the Contact, Opportunity and "
+        "Organization from the trusted Sales session; never ask for or supply "
+        "their identifiers.\n\n"
+        "This records qualification facts only. It does not qualify the lead, "
+        "change the funnel stage, assign an advisor, or send a message. If "
+        "evidence for a ContactStated value cannot be found in retained inbound "
+        "messages, Product safely records it as Pending and lists it in "
+        "evidence_downgraded. Use missing_required and pending_required to choose "
+        "one useful next question."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "criteria": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 5,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "enum": list(PROPERTY_NEED_CRITERIA),
+                        },
+                        "value": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 300,
+                            "description": (
+                                "The concise criterion value. When name is "
+                                "transaction_intent, use exactly Buy, Rent, Sell, "
+                                "or LeaseOut; Maia renders the customer-facing "
+                                "Spanish label separately."
+                            ),
+                        },
+                        "source": {
+                            "type": "string",
+                            "enum": ["ContactStated", "ModelInferred"],
+                        },
+                        "evidence": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 500,
+                            "description": (
+                                "An exact excerpt from the Contact's message that "
+                                "supports the value or inference."
+                            ),
+                        },
+                    },
+                    "required": ["name", "value", "source", "evidence"],
+                    "additionalProperties": False,
+                },
+            }
+        },
+        "required": ["criteria"],
+        "additionalProperties": False,
+    },
+}
+
+
 GET_AVAILABLE_SLOTS = {
     "name": "get_available_slots",
     "description": (
@@ -160,10 +240,22 @@ GET_AVAILABLE_SLOTS = {
                 "type": "string",
                 "description": "The property key or exact property name.",
             },
-            "date_from": {"type": "string", "description": "Inclusive local date, YYYY-MM-DD."},
-            "date_to": {"type": "string", "description": "Inclusive local date, YYYY-MM-DD."},
-            "time_from": {"type": "string", "description": "Earliest local start, HH:MM 24h."},
-            "time_to": {"type": "string", "description": "Latest local start, HH:MM 24h."},
+            "date_from": {
+                "type": "string",
+                "description": "Inclusive local date, YYYY-MM-DD.",
+            },
+            "date_to": {
+                "type": "string",
+                "description": "Inclusive local date, YYYY-MM-DD.",
+            },
+            "time_from": {
+                "type": "string",
+                "description": "Earliest local start, HH:MM 24h.",
+            },
+            "time_to": {
+                "type": "string",
+                "description": "Latest local start, HH:MM 24h.",
+            },
         },
         "required": ["reference"],
         "additionalProperties": False,

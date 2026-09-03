@@ -13,6 +13,7 @@ import pytest
 
 from realestate.api.ui import (
     OPERATION_TIMEZONE,
+    counted,
     datetime_input_value,
     empty,
     errors_box,
@@ -24,6 +25,7 @@ from realestate.api.ui import (
     parse_datetime_input,
     relative,
 )
+from realestate.config import Settings
 
 NOON_UTC = datetime(2026, 9, 1, 18, 0, tzinfo=UTC)
 
@@ -86,6 +88,17 @@ def test_escaping_covers_attributes_and_none() -> None:
     assert escape(7) == "7"
 
 
+def test_counts_read_like_spanish_instead_of_database_copy() -> None:
+    assert counted(1, "conversación", "conversaciones") == "1 conversación"
+    assert counted(3, "conversación", "conversaciones") == "3 conversaciones"
+
+
+def test_administrative_chat_ids_are_trimmed_and_deduplicated() -> None:
+    configuration = Settings(_env_file=None, TELEGRAM_ADMIN_IDS=" 1, ,2,1 ")
+
+    assert configuration.admin_user_ids == frozenset({"1", "2"})
+
+
 def test_a_status_region_is_announced_or_absent() -> None:
     assert flash(None) == ""
     rendered = flash("Se guardó.", "ok")
@@ -107,7 +120,7 @@ def test_an_empty_state_can_carry_a_hint_or_not() -> None:
     assert "Agrega una." in empty("Nada aquí.", "Agrega una.")
     plain = empty("Nada aquí.")
     assert "Nada aquí." in plain
-    assert "<p class=\"hint\">" not in plain
+    assert '<p class="hint">' not in plain
 
 
 def test_options_select_the_current_value_and_use_its_label() -> None:

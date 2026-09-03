@@ -979,11 +979,15 @@ def test_no_product_code_reaches_the_outbox_without_a_decision() -> None:
         and "OutboxService" in ast_imported_names(path)
     )
 
-    # Claiming, draining and reconciling rows that already exist is fine — both
-    # of these do only that. Bringing a new one into being is what must go
-    # through the gate, and neither of them can: staging is not exported.
+    # Claiming, draining and reconciling rows that already exist is fine. The
+    # Sandbox seed is the third explicit reconciler: it first requests every
+    # fictional reply through ``OutboundMessaging`` and then records a clearly
+    # synthetic provider success without contacting Meta. Bringing a new row
+    # into being is what must go through the gate, and none of these importers
+    # can bypass it: staging is not exported.
     assert importers == [
         "src/realestate/api/webhooks.py",
+        "src/realestate/sandbox_seed.py",
         "src/realestate/worker/whatsapp.py",
     ]
 

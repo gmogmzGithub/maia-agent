@@ -39,6 +39,7 @@ from realestate.api.operator import (
 )
 from realestate.api.ui import (
     checkbox,
+    counted,
     datetime_input_value,
     empty,
     errors_box,
@@ -267,12 +268,18 @@ def _restriction_note(restriction: RestrictionView) -> str:
             "Restricción de comunicación activa",
         )
         parts.append(
-            tag("No contactar", "bad")
-            + f" <span class='muted'>{escape(reason)}</span>"
+            tag("No contactar", "bad") + f" <span class='muted'>{escape(reason)}</span>"
         )
     if restriction.denied_count:
         parts.append(
-            tag(f"{restriction.denied_count} envío(s) no permitido(s)", "warn")
+            tag(
+                counted(
+                    restriction.denied_count,
+                    "envío no permitido",
+                    "envíos no permitidos",
+                ),
+                "warn",
+            )
         )
     return "<br>".join(parts)
 
@@ -324,6 +331,7 @@ async def panel(
     async with request.app.state.database.session_scope() as session:
         views = CommercialInbox(session)
         coverage = await views.coverage(actor, now=moment)
+        funnel = await views.funnel(actor)
         inbox_rows = await views.query(
             actor, InboxFilters(needs_reply=True, limit=20), now=moment
         )
@@ -369,9 +377,7 @@ async def panel(
         _PriorityItem(
             label="Ahora",
             kind="now",
-            reason=(
-                f"{entry.contact_name or 'Un contacto'} espera respuesta"
-            ),
+            reason=(f"{entry.contact_name or 'Un contacto'} espera respuesta"),
             detail=(
                 f"Bandeja · {relative(entry.last_inbound_at, now=moment)} · "
                 f"{STAGE_LABELS.get(entry.stage or '', 'Sin etapa')}"
@@ -451,7 +457,7 @@ async def panel(
         f'<div class="stat"><div class="muted">{escape(label)}</div>'
         f'<div class="value">{escape(value)}</div>'
         f'<div class="muted">{escape(note)} · {escape(metric_scope)} · '
-        f'Estado actual · Consultado {escape(metric_freshness)}</div>'
+        f"Estado actual · Consultado {escape(metric_freshness)}</div>"
         f'<a href="{escape(href)}">Ver trabajo</a></div>'
         for label, value, note, href in (
             (
@@ -490,9 +496,15 @@ async def panel(
     elif coverage.active == 0:
         banner = flash("Todavía no hay oportunidades calificadas activas.", "warn")
     else:
+        uncovered = coverage.active - coverage.covered
         banner = flash(
-            f"{coverage.active - coverage.covered} oportunidad(es) calificada(s) activa(s) "
-            "no cumplen la promesa de seguimiento.",
+            counted(
+                uncovered,
+                "oportunidad calificada activa",
+                "oportunidades calificadas activas",
+            )
+            + (" no cumple" if uncovered == 1 else " no cumplen")
+            + " la promesa de seguimiento.",
             "warn",
         )
 
@@ -533,7 +545,8 @@ async def panel(
     queue_block = ""
     if actor.is_administrator:
         queue_block = "<h2>Cola de asignación</h2>" + (
-            f"<p>{len(queue)} oportunidad(es) esperan asignación manual. "
+            f"<p>{counted(len(queue), 'oportunidad', 'oportunidades')} "
+            f"{'espera' if len(queue) == 1 else 'esperan'} asignación manual. "
             f"<a href='/crm/asignacion'>Ir a la cola</a></p>"
             if queue
             else empty("La cola de asignación está vacía.")
@@ -543,41 +556,97 @@ async def panel(
         len(inbox_rows) + len(overdue_rows) + len(queue) + len(appointment_rows)
     )
     if issue_count:
+        waiting_count = len(inbox_rows)
+        overdue_count = len(overdue_rows)
+        queue_count = len(queue)
+        review_count = len(appointment_rows)
         summary = (
             '<div class="operational-summary"><strong>'
-            f"{issue_count} asunto{'s' if issue_count != 1 else ''} requieren atención"
-            "</strong>"
-            f"{len(inbox_rows)} persona(s) esperan · "
-            f"{len(overdue_rows)} acción(es) vencida(s) · "
-            f"{len(queue)} oportunidad(es) sin asesor · "
-            f"{len(appointment_rows)} visita(s) requieren revisión</div>"
+            f"{counted(issue_count, 'asunto', 'asuntos')} "
+            f"{'requiere' if issue_count == 1 else 'requieren'} atención"
+            "</strong><span>"
+            f"{counted(waiting_count, 'persona', 'personas')} "
+            f"{'espera' if waiting_count == 1 else 'esperan'} · "
+            f"{counted(overdue_count, 'acción vencida', 'acciones vencidas')} · "
+            f"{counted(queue_count, 'oportunidad sin asesor', 'oportunidades sin asesor')} · "
+            f"{counted(review_count, 'visita para revisar', 'visitas para revisar')}"
+            "</span></div>"
         )
     else:
         summary = (
             '<div class="ok" role="status"><strong>La operación está al día.</strong> '
             "No hay asuntos que requieran intervención dentro de tu alcance.</div>"
         )
+    visible_priority = priority[:10]
+    priority_more = (
+        '<p class="priority-more">Mostramos los 10 asuntos más urgentes. '
+        '<a href="/crm/bandeja">Ver Bandeja</a> · '
+        '<a href="/crm/oportunidades">Ver Oportunidades</a></p>'
+        if len(priority) > len(visible_priority)
+        else ""
+    )
     priority_block = (
         '<section class="work-section" aria-labelledby="prioridad">'
         '<div class="work-section-header"><div><h2 id="prioridad">'
-        + ("Prioridad de operación" if actor.is_administrator else "Lo siguiente")
-        + '</h2><p>Ordenada por urgencia, vencimiento y tiempo de espera.</p></div></div>'
-        + _priority_rows(priority)
+        + ("Lo más importante" if actor.is_administrator else "Lo siguiente")
+        + "</h2><p>Primero lo urgente; después, lo que puedes preparar.</p></div></div>"
+        + _priority_rows(visible_priority)
+        + priority_more
         + "</section>"
     )
+    active_funnel_stages = (
+        OpportunityStage.NEW,
+        OpportunityStage.IN_CONVERSATION,
+        OpportunityStage.QUALIFIED,
+        OpportunityStage.SEARCHING,
+        OpportunityStage.VISITING,
+        OpportunityStage.NEGOTIATING,
+    )
+    funnel_steps = "".join(
+        '<li class="funnel-step">'
+        f'<a href="/crm/oportunidades?stage={stage.value}">'
+        f'<span class="funnel-count">{funnel[stage.value]}</span>'
+        f'<span class="funnel-label">{escape(STAGE_LABELS[stage.value])}</span>'
+        "</a></li>"
+        for stage in active_funnel_stages
+    )
+    funnel_states = "".join(
+        '<a class="funnel-state" '
+        f'href="/crm/oportunidades?stage={stage.value}">'
+        f"<span>{escape(STAGE_LABELS[stage.value])}</span>"
+        f"<strong>{funnel[stage.value]}</strong></a>"
+        for stage in (
+            OpportunityStage.DORMANT,
+            OpportunityStage.WON,
+            OpportunityStage.LOST,
+        )
+    )
+    funnel_block = (
+        '<section class="work-section" aria-labelledby="embudo-comercial">'
+        '<div class="work-section-header"><div><h2 id="embudo-comercial">'
+        "Embudo comercial</h2><p>Estado actual de cada oportunidad dentro de tu alcance. "
+        "Selecciona una etapa para ver sus contactos.</p></div>"
+        '<a href="/crm/oportunidades">Ver todas</a></div>'
+        f'<ol class="funnel" aria-label="Etapas activas">{funnel_steps}</ol>'
+        f'<div class="funnel-states" aria-label="Oportunidades pausadas y cerradas">'
+        f"{funnel_states}</div></section>"
+    )
+    details = (
+        '<details class="secondary-work"><summary>Ver detalle operativo</summary>'
+        '<div class="secondary-work-content">'
+        f"<h2>Huecos de seguimiento</h2>{gaps_table}"
+        f"{overdue_block}{queue_block}</div></details>"
+    )
     content = (
-        f"{summary}{priority_block}"
+        f"{summary}{priority_block}{funnel_block}"
         '<section class="work-section" aria-labelledby="salud-operativa">'
         '<div class="work-section-header"><div><h2 id="salud-operativa">'
-        "Salud operativa</h2><p>Alcance actual · definición de cobertura de seguimiento.</p>"
+        "Resumen</h2><p>Una vista simple del seguimiento dentro de tu alcance.</p>"
         f"</div></div>{banner}<div class='stats'>{stats}</div></section>"
-        f"<h2>Huecos de seguimiento</h2>{gaps_table}"
-        f"{overdue_block}{queue_block}"
+        f"{details}"
     )
     title = (
-        f"Operación de {actor.organization_name}"
-        if actor.is_administrator
-        else "Mi trabajo"
+        f"Hoy en {actor.organization_name}" if actor.is_administrator else "Mi trabajo"
     )
     return shell(actor, title, content, active="/crm")
 
@@ -613,7 +682,7 @@ async def inbox(
         for entry in entries
     )
     listing = table(
-        f"{len(entries)} conversación(es)",
+        counted(len(entries), "conversación", "conversaciones"),
         (
             "Contacto",
             "Último mensaje",
@@ -670,9 +739,7 @@ _CONVERSATION_FLASH = {
     "atendiendo": "Ahora tú atiendes esta conversación. Maia dejó de responder.",
     "liberada": "Liberaste la conversación.",
     "enviado": "Se envió el mensaje por el canal oficial.",
-    "solicitud": (
-        "Confirmaste que ya atiendes la solicitud. Maia sigue pausada."
-    ),
+    "solicitud": ("Confirmaste que ya atiendes la solicitud. Maia sigue pausada."),
 }
 
 
@@ -900,7 +967,7 @@ async def opportunities(
         for row in rows
     )
     listing = table(
-        f"{len(rows)} oportunidad(es)",
+        counted(len(rows), "oportunidad", "oportunidades"),
         (
             "Contacto",
             "Tipo",
@@ -1031,14 +1098,11 @@ async def opportunity_detail(
             "ok",
         )
 
-    covered = (
-        opportunity.stage not in QUALIFIED_OR_BEYOND
-        or (
-            opportunity.responsible_advisor_id is not None
-            and (
-                (pending is not None and not overdue)
-                or (pending is None and exception is not None)
-            )
+    covered = opportunity.stage not in QUALIFIED_OR_BEYOND or (
+        opportunity.responsible_advisor_id is not None
+        and (
+            (pending is not None and not overdue)
+            or (pending is None and exception is not None)
         )
     )
     requires_review = bool(
@@ -1061,9 +1125,7 @@ async def opportunity_detail(
 </div>"""
     review_banner = ""
     if snapshot is not None and snapshot.pending:
-        pending_labels = ", ".join(
-            criterion_label(name) for name in snapshot.pending
-        )
+        pending_labels = ", ".join(criterion_label(name) for name in snapshot.pending)
         review_banner = (
             '<div class="warn" role="status"><strong>Hay criterios pendientes de '
             "confirmar.</strong> "
@@ -1099,9 +1161,7 @@ async def opportunity_detail(
         '<aside class="workspace-panel sticky-rail" aria-label="Acciones permitidas">'
         "<h2>Acciones</h2>"
         + _stage_card(opportunity, actor)
-        + _assignment_card(
-            opportunity, actor, advisors, advisor_names, assignments
-        )
+        + _assignment_card(opportunity, actor, advisors, advisor_names, assignments)
         + header
         + "</aside>"
     )
@@ -1268,9 +1328,7 @@ def _criteria_card(
             else ""
         )
         + (
-            '<h3>Pendiente</h3><div class="criteria-grid">'
-            + pending_items
-            + "</div>"
+            '<h3>Pendiente</h3><div class="criteria-grid">' + pending_items + "</div>"
             if pending_items
             else ""
         )
@@ -1459,7 +1517,8 @@ def _outcome_form(opportunity: Opportunity, form: _OutcomeForm) -> str:
     hint = f'<p class="hint">{escape(form.hint)}</p>' if form.hint else ""
     required = " required" if form.text_required else ""
     button_class = f' class="{form.button_class}"' if form.button_class else ""
-    return f"""<h3>{escape(form.heading)}</h3>{hint}
+    return f"""<details class="outcome-disclosure">
+<summary>{escape(form.heading)}</summary><div class="outcome-body">{hint}
 <form method="post" action="/crm/oportunidades/{opportunity.id}/etapa">
 <input type="hidden" name="intent" value="{escape(form.intent)}">{command_field()}
 <div class="grid">
@@ -1471,7 +1530,7 @@ def _outcome_form(opportunity: Opportunity, form: _OutcomeForm) -> str:
 </label>
 </div>
 <div class="actions"><button{button_class} type="submit">
-{escape(form.button)}</button></div></form>"""
+{escape(form.button)}</button></div></form></div></details>"""
 
 
 def _stage_card(opportunity: Opportunity, actor: Actor) -> str:
@@ -1668,9 +1727,11 @@ def _journey_card(
 ) -> str:
     heading = '<div class="card"><h2>Trámite y datos de venta</h2>'
     if opportunity.kind != OpportunityKind.DEMAND.value:
-        return heading + empty(
-            "La primera Jornada está disponible sólo para procesos de compra."
-        ) + "</div>"
+        return (
+            heading
+            + empty("La primera Jornada está disponible sólo para procesos de compra.")
+            + "</div>"
+        )
     if workspace is None:
         if template is None:
             controls = (
@@ -1683,10 +1744,15 @@ def _journey_card(
                     "warn",
                 )
             )
-            return heading + empty(
-                "Todavía no hay un template de compra.",
-                "Prepararlo no inicia ningún trámite ni envía mensajes.",
-            ) + controls + "</div>"
+            return (
+                heading
+                + empty(
+                    "Todavía no hay un template de compra.",
+                    "Prepararlo no inicia ningún trámite ni envía mensajes.",
+                )
+                + controls
+                + "</div>"
+            )
         plan = "".join(
             f"<li>{escape(item['name'])} · {escape(item['responsibility'])}</li>"
             for item in template.plan
@@ -1726,9 +1792,9 @@ def _journey_card(
 <form method="post" action="/crm/oportunidades/{opportunity.id}/tramite/hitos/{milestone.id}">
 {command_field()}<div class="grid">
 <label>Estado<select name="estado" required>{options(tuple(MILESTONE_STATE_LABELS), milestone.state, MILESTONE_STATE_LABELS)}</select></label>
-<label>Evidencia<input name="evidencia" maxlength="500" value="{escape(milestone.evidence or '')}"></label>
-<label>Motivo<input name="motivo" maxlength="500" value="{escape(milestone.reason or '')}"></label>
-<label>Vence<input type="datetime-local" name="vence" value="{escape(datetime_input_value(milestone.due_at) if milestone.due_at else '')}"></label>
+<label>Evidencia<input name="evidencia" maxlength="500" value="{escape(milestone.evidence or "")}"></label>
+<label>Motivo<input name="motivo" maxlength="500" value="{escape(milestone.reason or "")}"></label>
+<label>Vence<input type="datetime-local" name="vence" value="{escape(datetime_input_value(milestone.due_at) if milestone.due_at else "")}"></label>
 </div><div class="actions"><button type="submit">Guardar hito</button></div></form></li>"""
         for milestone in workspace.milestones
     )
@@ -1736,21 +1802,21 @@ def _journey_card(
     profile_form = f"""<details><summary>Perfil de compra</summary>
 <form method="post" action="/crm/oportunidades/{opportunity.id}/tramite/perfil">
 {command_field()}<div class="grid">
-<label>Año de nacimiento<input type="number" name="birth_year" min="1900" max="2100" value="{escape(_form_value(profile.birth_year))}">{_not_provided('birth_year', profile.field_states)}</label>
-<label>Ingreso mensual individual<input type="number" step="0.01" min="0" name="monthly_income" value="{escape(_form_value(profile.monthly_income))}">{_not_provided('monthly_income', profile.field_states)}</label>
+<label>Año de nacimiento<input type="number" name="birth_year" min="1900" max="2100" value="{escape(_form_value(profile.birth_year))}">{_not_provided("birth_year", profile.field_states)}</label>
+<label>Ingreso mensual individual<input type="number" step="0.01" min="0" name="monthly_income" value="{escape(_form_value(profile.monthly_income))}">{_not_provided("monthly_income", profile.field_states)}</label>
 <label>Moneda del ingreso<input name="income_currency" maxlength="3" value="{escape(_form_value(profile.income_currency))}"></label>
-<label>Adultos en el hogar<input type="number" min="1" name="adults" value="{escape(_form_value(profile.adults))}">{_not_provided('adults', profile.field_states)}</label>
-<label>Número de hijos<input type="number" min="0" name="children" value="{escape(_form_value(profile.children))}">{_not_provided('children', profile.field_states)}</label>
-<label>Dependientes financieros<input type="number" min="0" name="financial_dependants" value="{escape(_form_value(profile.financial_dependants))}">{_not_provided('financial_dependants', profile.field_states)}</label>
-<label>Co-compradores<input type="number" min="0" name="co_buyers" value="{escape(_form_value(profile.co_buyers))}">{_not_provided('co_buyers', profile.field_states)}</label>
-<label>Número de compra de vivienda<input type="number" min="1" name="home_purchase_number" value="{escape(_form_value(profile.home_purchase_number))}">{_not_provided('home_purchase_number', profile.field_states)}</label>
-<label>Forma de pago<select name="payment_path"><option value="">Sin capturar</option>{options(('Cash', 'Credit', 'Combined'), profile.payment_path or '', {'Cash':'Contado','Credit':'Crédito','Combined':'Combinado'})}</select>{_not_provided('payment_path', profile.field_states)}</label>
-<label>Institución o modalidad<input name="financing_modality" maxlength="200" value="{escape(_form_value(profile.financing_modality))}">{_not_provided('financing_modality', profile.field_states)}</label>
+<label>Adultos en el hogar<input type="number" min="1" name="adults" value="{escape(_form_value(profile.adults))}">{_not_provided("adults", profile.field_states)}</label>
+<label>Número de hijos<input type="number" min="0" name="children" value="{escape(_form_value(profile.children))}">{_not_provided("children", profile.field_states)}</label>
+<label>Dependientes financieros<input type="number" min="0" name="financial_dependants" value="{escape(_form_value(profile.financial_dependants))}">{_not_provided("financial_dependants", profile.field_states)}</label>
+<label>Co-compradores<input type="number" min="0" name="co_buyers" value="{escape(_form_value(profile.co_buyers))}">{_not_provided("co_buyers", profile.field_states)}</label>
+<label>Número de compra de vivienda<input type="number" min="1" name="home_purchase_number" value="{escape(_form_value(profile.home_purchase_number))}">{_not_provided("home_purchase_number", profile.field_states)}</label>
+<label>Forma de pago<select name="payment_path"><option value="">Sin capturar</option>{options(("Cash", "Credit", "Combined"), profile.payment_path or "", {"Cash": "Contado", "Credit": "Crédito", "Combined": "Combinado"})}</select>{_not_provided("payment_path", profile.field_states)}</label>
+<label>Institución o modalidad<input name="financing_modality" maxlength="200" value="{escape(_form_value(profile.financing_modality))}">{_not_provided("financing_modality", profile.field_states)}</label>
 <label>Enganche disponible<input type="number" step="0.01" min="0" name="down_payment" value="{escape(_form_value(profile.down_payment))}"></label>
 <label>Moneda del enganche<input name="down_payment_currency" maxlength="3" value="{escape(_form_value(profile.down_payment_currency))}"></label>
 <label>Pago mensual objetivo<input type="number" step="0.01" min="0" name="target_monthly_payment" value="{escape(_form_value(profile.target_monthly_payment))}"></label>
 <label>Moneda del pago objetivo<input name="target_payment_currency" maxlength="3" value="{escape(_form_value(profile.target_payment_currency))}"></label>
-<label>Preaprobación<select name="preapproval_state"><option value="">Sin capturar</option>{options(('NotStarted','InProgress','Preapproved','Denied','NotApplicable'), profile.preapproval_state or '', {'NotStarted':'No iniciada','InProgress':'En trámite','Preapproved':'Preaprobada','Denied':'Negada','NotApplicable':'No aplica'})}</select>{_not_provided('preapproval_state', profile.field_states)}</label>
+<label>Preaprobación<select name="preapproval_state"><option value="">Sin capturar</option>{options(("NotStarted", "InProgress", "Preapproved", "Denied", "NotApplicable"), profile.preapproval_state or "", {"NotStarted": "No iniciada", "InProgress": "En trámite", "Preapproved": "Preaprobada", "Denied": "Negada", "NotApplicable": "No aplica"})}</select>{_not_provided("preapproval_state", profile.field_states)}</label>
 </div><div class="actions"><button type="submit">Guardar perfil confirmado</button></div></form></details>"""
     sale = workspace.sale
     property_options = '<option value="">Selecciona una propiedad</option>' + "".join(
@@ -1764,22 +1830,22 @@ def _journey_card(
 <label>Propiedad<select name="property_uuid">{property_options}</select></label>
 <label>Tipo de propiedad<input name="property_type" maxlength="80" value="{escape(_form_value(sale.property_type))}"></label>
 <label>Municipio<input name="municipality" maxlength="120" value="{escape(_form_value(sale.municipality))}"></label>
-<label>Colonia<input name="colonia" maxlength="160" value="{escape(_form_value(sale.colonia))}">{_not_provided('colonia', sale.field_states)}</label>
-<label>Fecha de publicación<input type="date" name="publication_date" value="{escape(_form_value(sale.publication_date))}">{_not_provided('publication_date', sale.field_states)}</label>
+<label>Colonia<input name="colonia" maxlength="160" value="{escape(_form_value(sale.colonia))}">{_not_provided("colonia", sale.field_states)}</label>
+<label>Fecha de publicación<input type="date" name="publication_date" value="{escape(_form_value(sale.publication_date))}">{_not_provided("publication_date", sale.field_states)}</label>
 <label>Fecha de cierre<input type="date" name="completion_date" value="{escape(_form_value(sale.completion_date))}"></label>
-<label>Precio publicado<input type="number" step="0.01" min="0" name="published_price" value="{escape(_form_value(sale.published_price))}">{_not_provided('published_price', sale.field_states)}</label>
+<label>Precio publicado<input type="number" step="0.01" min="0" name="published_price" value="{escape(_form_value(sale.published_price))}">{_not_provided("published_price", sale.field_states)}</label>
 <label>Moneda publicada<input name="published_currency" maxlength="3" value="{escape(_form_value(sale.published_currency))}"></label>
-<label>Valor de avalúo<input type="number" step="0.01" min="0" name="appraisal_value" value="{escape(_form_value(sale.appraisal_value))}">{_not_provided('appraisal_value', sale.field_states)}</label>
+<label>Valor de avalúo<input type="number" step="0.01" min="0" name="appraisal_value" value="{escape(_form_value(sale.appraisal_value))}">{_not_provided("appraisal_value", sale.field_states)}</label>
 <label>Moneda del avalúo<input name="appraisal_currency" maxlength="3" value="{escape(_form_value(sale.appraisal_currency))}"></label>
 <label>Precio pagado<input type="number" step="0.01" min="0" name="paid_price" value="{escape(_form_value(sale.paid_price))}"></label>
 <label>Moneda pagada<input name="paid_currency" maxlength="3" value="{escape(_form_value(sale.paid_currency))}"></label>
-<label>Terreno m²<input type="number" step="0.01" min="0" name="land_area_sqm" value="{escape(_form_value(sale.land_area_sqm))}">{_not_provided('land_area_sqm', sale.field_states)}</label>
-<label>Construcción m²<input type="number" step="0.01" min="0" name="construction_area_sqm" value="{escape(_form_value(sale.construction_area_sqm))}">{_not_provided('construction_area_sqm', sale.field_states)}</label>
-<label>Recámaras<input type="number" min="0" name="bedrooms" value="{escape(_form_value(sale.bedrooms))}">{_not_provided('bedrooms', sale.field_states)}</label>
-<label>Baños<input type="number" step="0.5" min="0" name="bathrooms" value="{escape(_form_value(sale.bathrooms))}">{_not_provided('bathrooms', sale.field_states)}</label>
-<label>Estacionamientos<input type="number" min="0" name="parking_spaces" value="{escape(_form_value(sale.parking_spaces))}">{_not_provided('parking_spaces', sale.field_states)}</label>
-<label>Año de construcción<input type="number" min="1800" max="2100" name="construction_year" value="{escape(_form_value(sale.construction_year))}">{_not_provided('construction_year', sale.field_states)}</label>
-<label>Condición<select name="property_condition"><option value="">Sin capturar</option>{options(('New','Excellent','Good','NeedsImprovement'), sale.property_condition or '', {'New':'Nueva','Excellent':'Excelente','Good':'Buena','NeedsImprovement':'Requiere mejoras'})}</select>{_not_provided('property_condition', sale.field_states)}</label>
+<label>Terreno m²<input type="number" step="0.01" min="0" name="land_area_sqm" value="{escape(_form_value(sale.land_area_sqm))}">{_not_provided("land_area_sqm", sale.field_states)}</label>
+<label>Construcción m²<input type="number" step="0.01" min="0" name="construction_area_sqm" value="{escape(_form_value(sale.construction_area_sqm))}">{_not_provided("construction_area_sqm", sale.field_states)}</label>
+<label>Recámaras<input type="number" min="0" name="bedrooms" value="{escape(_form_value(sale.bedrooms))}">{_not_provided("bedrooms", sale.field_states)}</label>
+<label>Baños<input type="number" step="0.5" min="0" name="bathrooms" value="{escape(_form_value(sale.bathrooms))}">{_not_provided("bathrooms", sale.field_states)}</label>
+<label>Estacionamientos<input type="number" min="0" name="parking_spaces" value="{escape(_form_value(sale.parking_spaces))}">{_not_provided("parking_spaces", sale.field_states)}</label>
+<label>Año de construcción<input type="number" min="1800" max="2100" name="construction_year" value="{escape(_form_value(sale.construction_year))}">{_not_provided("construction_year", sale.field_states)}</label>
+<label>Condición<select name="property_condition"><option value="">Sin capturar</option>{options(("New", "Excellent", "Good", "NeedsImprovement"), sale.property_condition or "", {"New": "Nueva", "Excellent": "Excelente", "Good": "Buena", "NeedsImprovement": "Requiere mejoras"})}</select>{_not_provided("property_condition", sale.field_states)}</label>
 </div><div class="actions"><button type="submit">Guardar datos confirmados</button></div></form></details>"""
     conclude = ""
     if actor.is_administrator and journey.state == JourneyState.ACTIVE.value:
@@ -1995,12 +2061,8 @@ async def update_purchase_profile(
             "financing_modality": _form_text(form, "financing_modality"),
             "down_payment": _form_decimal(form, "down_payment"),
             "down_payment_currency": _currency(form, "down_payment_currency"),
-            "target_monthly_payment": _form_decimal(
-                form, "target_monthly_payment"
-            ),
-            "target_payment_currency": _currency(
-                form, "target_payment_currency"
-            ),
+            "target_monthly_payment": _form_decimal(form, "target_monthly_payment"),
+            "target_payment_currency": _currency(form, "target_payment_currency"),
             "preapproval_state": _form_text(form, "preapproval_state"),
         }
         states = _field_states(form, PROFILE_FIELDS, values)
@@ -2036,9 +2098,7 @@ async def update_market_sale(
             "municipality": _form_text(form, "municipality"),
             "colonia": _form_text(form, "colonia"),
             "land_area_sqm": _form_decimal(form, "land_area_sqm"),
-            "construction_area_sqm": _form_decimal(
-                form, "construction_area_sqm"
-            ),
+            "construction_area_sqm": _form_decimal(form, "construction_area_sqm"),
             "bedrooms": _form_int(form, "bedrooms"),
             "bathrooms": _form_decimal(form, "bathrooms"),
             "parking_spaces": _form_int(form, "parking_spaces"),
@@ -2080,7 +2140,11 @@ async def update_market_sale(
                 if values[name] is None and states[name] == "NotCaptured":
                     values.pop(name)
     except (CommercialError, ValueError) as exc:
-        message = exc.message if isinstance(exc, CommercialError) else "Propiedad desconocida."
+        message = (
+            exc.message
+            if isinstance(exc, CommercialError)
+            else "Propiedad desconocida."
+        )
         return _redirect_error(opportunity_id, message)
     async with request.app.state.database.session_scope() as session:
         try:
@@ -2529,7 +2593,7 @@ async def contacts(
         for row in rows
     )
     listing = table(
-        f"{len(rows)} contacto(s)",
+        counted(len(rows), "contacto", "contactos"),
         (
             "Nombre",
             "WhatsApp",
@@ -2642,7 +2706,7 @@ vender o rentar su propiedad. En esta versión la continúa el administrador.</p
 Sólo una identidad idéntica resuelve al mismo contacto.</p>
 {
         table(
-            f"{len(identities)} identidad(es)",
+            counted(len(identities), "identidad", "identidades"),
             ("Identificador", "Canal", "Confianza", "Primera vez"),
             identity_rows,
         )
@@ -2765,7 +2829,11 @@ async def assignment_queue(
         for item in queue
     )
     listing = table(
-        f"{len(queue)} oportunidad(es) sin asesor responsable",
+        counted(
+            len(queue),
+            "oportunidad sin asesor responsable",
+            "oportunidades sin asesor responsable",
+        ),
         ("Contacto", "Etapa", "Motivo", "En la cola desde", "Asignar"),
         rows,
         empty_message="La cola está vacía.",

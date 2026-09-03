@@ -210,3 +210,41 @@ async def test_an_unconfigured_developer_password_is_a_503_too(
 
     assert response.status_code == 503
     get_settings.cache_clear()
+
+
+@pytest.mark.parametrize(
+    ("configured", "detail"),
+    [
+        ("{", "JSON válido"),
+        ("[]", "objeto no vacío"),
+        ('{"":"password"}', "cuenta inválida"),
+    ],
+)
+async def test_malformed_developer_credential_sets_fail_closed(
+    app_client,
+    monkeypatch: pytest.MonkeyPatch,
+    configured: str,
+    detail: str,
+) -> None:
+    get_settings.cache_clear()
+    monkeypatch.setenv("DEVELOPER_BASIC_CREDENTIALS_JSON", configured)
+
+    response = await app_client.get("/upload", auth=DEVELOPER)
+
+    assert response.status_code == 503
+    assert detail in response.json()["detail"]
+    get_settings.cache_clear()
+
+
+async def test_the_legacy_single_developer_pair_remains_a_bounded_fallback(
+    app_client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    get_settings.cache_clear()
+    monkeypatch.setenv("DEVELOPER_BASIC_CREDENTIALS_JSON", "")
+    monkeypatch.setenv("DEVELOPER_BASIC_USER", "developer")
+    monkeypatch.setenv("DEVELOPER_BASIC_PASSWORD", "test-developer-password")
+
+    response = await app_client.get("/upload", auth=DEVELOPER)
+
+    assert response.status_code == 200
+    get_settings.cache_clear()

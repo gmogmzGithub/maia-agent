@@ -3,11 +3,11 @@
 Loaded into an unmodified upstream Hermes Runtime through the supported
 ``hermes_agent.plugins`` entry point. Hermes core is never forked or edited.
 
-The model-facing surface is frozen at the Stage 0 contracts in TOOL-CONTRACTS.md
-(P-069). Each is registered by the checkpoint that owns it; ``REGISTERED_TOOLS``
-below is the running total and is asserted against the frozen set at load time,
-so an accidental extra product tool is a startup failure rather than a silent
-scope expansion.
+The model-facing surface is an explicit set of reviewed contracts (P-069).
+Each is registered by the checkpoint or ADR that owns it; ``REGISTERED_TOOLS``
+below is the running total and is asserted against that set at load time, so an
+accidental extra product tool is a startup failure rather than a silent scope
+expansion.
 
 The plugin also registers ``hermes realestate health``, a CLI subcommand that
 exercises the plugin -> Product application path without adding anything the
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 PLUGIN_NAME = "realestate"
 
-# The frozen Stage 0 model-facing surface (P-069). Kept here as the single
+# The reviewed model-facing surface (P-069). Kept here as the single
 # in-plugin declaration of what may ever be registered; each name is added as
 # the checkpoint that owns it lands.
 FROZEN_TOOL_SURFACE: tuple[str, ...] = (
@@ -52,6 +52,9 @@ FROZEN_TOOL_SURFACE: tuple[str, ...] = (
     "revalidate_external_listing",
     # ADR-0056: a read-only view of human-confirmed post-agreement state.
     "get_transaction_journey",
+    # ADR-0031: interpretations reach Product through a bounded, evidence-aware
+    # write. Identity, qualification, assignment and stage remain Product-owned.
+    "record_property_need",
 )
 
 # The tools registered so far, as ``(name, schema, handler)``. Checkpoint 1 adds
@@ -100,6 +103,11 @@ TOOLS: tuple[tuple[str, dict[str, Any], object], ...] = (
         schemas.GET_TRANSACTION_JOURNEY,
         tools.get_transaction_journey,
     ),
+    (
+        "record_property_need",
+        schemas.RECORD_PROPERTY_NEED,
+        tools.record_property_need,
+    ),
 )
 
 REGISTERED_TOOLS: tuple[str, ...] = tuple(name for name, _, _ in TOOLS)
@@ -127,9 +135,11 @@ def register(ctx: object) -> None:
     rather than a silent scope expansion.
     """
     assert set(REGISTERED_TOOLS) <= set(FROZEN_TOOL_SURFACE), (
-        "Attempted to register a tool outside the frozen Stage 0 surface"
+        "Attempted to register a tool outside the reviewed surface"
     )
-    level = getattr(logging, os.environ.get("LOG_LEVEL", "DEBUG").upper(), logging.DEBUG)
+    level = getattr(
+        logging, os.environ.get("LOG_LEVEL", "DEBUG").upper(), logging.DEBUG
+    )
     if isinstance(level, int):
         logging.getLogger("realestate_hermes_plugin").setLevel(level)
 

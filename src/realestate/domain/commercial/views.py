@@ -166,6 +166,7 @@ class InboxFilters:
             limit=max(1, min(limit, 200)),
         )
 
+
 @dataclass(frozen=True)
 class MessageView:
     """One durable message, with its body only if the body still exists."""
@@ -235,7 +236,10 @@ class InboxEntry:
         """The Contact wrote last. The single most useful Inbox signal."""
         if self.last_inbound_at is None:
             return False
-        return self.last_outbound_at is None or self.last_inbound_at > self.last_outbound_at
+        return (
+            self.last_outbound_at is None
+            or self.last_inbound_at > self.last_outbound_at
+        )
 
 
 @dataclass(frozen=True)
@@ -431,9 +435,7 @@ class CommercialInbox:
                 OrganizationMember,
                 OrganizationMember.id == opportunity.responsible_advisor_id,
             )
-            .outerjoin(
-                suppressions, suppressions.c.lead_id == Conversation.lead_id
-            )
+            .outerjoin(suppressions, suppressions.c.lead_id == Conversation.lead_id)
             .outerjoin(denials, denials.c.conversation_id == Conversation.id)
             .outerjoin(preview_row, sql_true())
             .where(Conversation.organization_id == actor.organization_id)
@@ -460,9 +462,7 @@ class CommercialInbox:
                 opportunity.responsible_advisor_id == actor.member_id
             )
         elif filters.scope == "unassigned":
-            statement = statement.where(
-                opportunity.responsible_advisor_id.is_(None)
-            )
+            statement = statement.where(opportunity.responsible_advisor_id.is_(None))
         if filters.stage is not None:
             statement = statement.where(opportunity.stage == filters.stage)
         if filters.needs_reply:
@@ -627,6 +627,30 @@ class CommercialInbox:
 
     # -- Opportunities -----------------------------------------------------
 
+    async def funnel(self, actor: Actor) -> dict[str, int]:
+        """Current Opportunity count by stage inside the Actor's visibility.
+
+        This is Product truth, not an analytics projection. The operational CRM
+        needs the current state immediately after a stage transition; historical
+        conversion and period reporting remain the analytics pipeline's job.
+        """
+        statement = (
+            select(Opportunity.stage, func.count(Opportunity.id))
+            .where(Opportunity.organization_id == actor.organization_id)
+            .group_by(Opportunity.stage)
+        )
+        if not actor.sees_whole_operation:
+            statement = statement.where(
+                Opportunity.responsible_advisor_id == actor.member_id
+            )
+        observed: dict[str, int] = {
+            stage: int(count)
+            for stage, count in (await self._session.execute(statement)).all()
+        }
+        return {
+            stage.value: int(observed.get(stage.value, 0)) for stage in OpportunityStage
+        }
+
     async def opportunities(
         self,
         actor: Actor,
@@ -652,9 +676,7 @@ class CommercialInbox:
                 Opportunity.responsible_advisor_id == actor.member_id
             )
         elif scope == "unassigned":
-            statement = statement.where(
-                Opportunity.responsible_advisor_id.is_(None)
-            )
+            statement = statement.where(Opportunity.responsible_advisor_id.is_(None))
         if not actor.sees_whole_operation:
             statement = statement.where(
                 Opportunity.responsible_advisor_id == actor.member_id
@@ -704,9 +726,7 @@ class CommercialInbox:
             out.append(row)
         return out
 
-    async def coverage(
-        self, actor: Actor, *, now: datetime | None = None
-    ) -> Coverage:
+    async def coverage(self, actor: Actor, *, now: datetime | None = None) -> Coverage:
         """Follow-up Coverage for the Actor's visible operation.
 
         Reported with its gaps attached rather than as a bare number: a
@@ -738,7 +758,9 @@ class CommercialInbox:
                     .filter(owed & (pending.due_at <= moment))
                     .label("overdue"),
                     func.count(Opportunity.id).label("qualified_active"),
-                    func.count(Opportunity.id).filter(covered).label("qualified_covered"),
+                    func.count(Opportunity.id)
+                    .filter(covered)
+                    .label("qualified_covered"),
                 )
                 .outerjoin(pending, pending.opportunity_id == Opportunity.id)
                 .outerjoin(exceptions, exceptions.c.opportunity_id == Opportunity.id)
@@ -894,7 +916,6 @@ class CommercialInbox:
             return False
         return opportunity.responsible_advisor_id == actor.member_id
 
-
     async def _contact_opportunity(
         self, actor: Actor, contact_id: uuid.UUID
     ) -> Opportunity | None:
@@ -926,9 +947,6 @@ class CommercialInbox:
         found: Opportunity | None = await self._session.scalar(latest_statement)
         return found
 
-
-
-
     async def _advisor_name(self, opportunity: Opportunity | None) -> str | None:
         if opportunity is None or opportunity.responsible_advisor_id is None:
             return None
@@ -937,10 +955,7 @@ class CommercialInbox:
         )
         return member.display_name if member else None
 
-
-    async def _messages(
-        self, conversation_id: uuid.UUID
-    ) -> tuple[MessageView, ...]:
+    async def _messages(self, conversation_id: uuid.UUID) -> tuple[MessageView, ...]:
         inbound = await self._session.scalars(
             select(InboxMessage)
             .where(InboxMessage.conversation_id == conversation_id)

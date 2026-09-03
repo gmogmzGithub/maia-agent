@@ -40,6 +40,7 @@ from realestate.db.models import (
     NextActionStatus,
     Opportunity,
     OutboxMessage,
+    PropertyNeedCriterion,
 )
 from realestate.domain.commercial.handling import ConversationHandling
 from realestate.domain.commercial.handoff import ESCALATION_DELAY, HumanHandoff
@@ -202,6 +203,98 @@ async def tick(flow, turns) -> None:  # noqa: ANN001
         await flow["worker"].tick()
     finally:
         worker_module.run_turn = original  # type: ignore[assignment]
+
+
+# -- The conversation-to-CRM data pipeline -------------------------------
+
+
+async def test_whatsapp_criteria_flow_through_maia_into_the_crm(flow) -> None:
+    """Conversation facts cross the typed tool and appear in the operator view."""
+    client = flow["client"]
+    database = flow["database"]
+    message = (
+        "Quiero comprar en Zapopan, entre 8 y 10 millones, durante los próximos "
+        "3 meses. Necesito 3 recámaras, jardín y espacio para home office."
+    )
+    accepted = await post_webhook(
+        client,
+        webhooks.text_message(
+            wamid="wamid.CRITERIA.1",
+            body=message,
+            from_wa_id=LEAD_WA_ID,
+            profile_name="Lucía Demo",
+        ),
+    )
+    assert accepted.json()["accepted"] == 1
+
+    async def capture_need(tool, prompt):  # noqa: ANN001, ANN202
+        result = await tool(
+            "record_property_need",
+            {
+                "criteria": [
+                    {
+                        "name": "transaction_intent",
+                        "value": "Buy",
+                        "source": "ContactStated",
+                        "evidence": message,
+                    },
+                    {
+                        "name": "service_area",
+                        "value": "Zapopan",
+                        "source": "ContactStated",
+                        "evidence": message,
+                    },
+                    {
+                        "name": "economic_range",
+                        "value": "8 a 10 millones MXN",
+                        "source": "ContactStated",
+                        "evidence": message,
+                    },
+                    {
+                        "name": "horizon",
+                        "value": "Próximos 3 meses",
+                        "source": "ContactStated",
+                        "evidence": message,
+                    },
+                    {
+                        "name": "essential_requirements",
+                        "value": "3 recámaras, jardín y home office",
+                        "source": "ContactStated",
+                        "evidence": message,
+                    },
+                ]
+            },
+        )
+        assert result["result"] == "recorded", result
+        assert result["ready_for_qualification"] is True
+        return "Perfecto, ya entendí tu búsqueda. ¿Hay alguna zona de Zapopan que prefieras?"
+
+    await tick(flow, [capture_need])
+    assert len(flow["whatsapp"].sent) == 1
+
+    async with database.session_scope() as session:
+        opportunity = await session.scalar(select(Opportunity))
+        criteria = list(await session.scalars(select(PropertyNeedCriterion)))
+    assert opportunity is not None
+    assert opportunity.stage == "InConversation"
+    assert {row.name: row.value for row in criteria} == {
+        "transaction_intent": "Buy",
+        "service_area": "Zapopan",
+        "economic_range": "8 a 10 millones MXN",
+        "horizon": "Próximos 3 meses",
+        "essential_requirements": "3 recámaras, jardín y home office",
+    }
+    assert {row.state for row in criteria} == {"Confirmed"}
+
+    crm = await client.get(
+        f"/crm/oportunidades/{opportunity.id}",
+        auth=BasicAuth(commercial.ADMIN_LOGIN, commercial.ADMIN_PASSWORD),
+    )
+    assert crm.status_code == 200
+    assert "Lucía Demo" in crm.text
+    assert "8 a 10 millones MXN" in crm.text
+    assert "3 recámaras, jardín y home office" in crm.text
+    assert "Lo dijo el contacto" in crm.text
 
 
 # -- The appointment branch ----------------------------------------------
@@ -495,9 +588,7 @@ async def test_whatsapp_to_human_handoff_to_escalation_and_acknowledgement(
     async with database.session_scope() as session:
         alerts = list(await session.scalars(select(InternalAlert)))
         opportunity = await session.scalar(select(Opportunity))
-    escalations = [
-        alert for alert in alerts if alert.kind == "HumanHandoffEscalated"
-    ]
+    escalations = [alert for alert in alerts if alert.kind == "HumanHandoffEscalated"]
     assert len(escalations) == 1
     # And still no automatic reassignment.
     assert opportunity is not None

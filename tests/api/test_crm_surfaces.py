@@ -182,12 +182,16 @@ async def test_the_shared_shell_is_brand_led_role_shaped_and_responsive(wired) -
     admin = await client.get("/crm", auth=ADMIN)
     advisor = await client.get("/crm", auth=ADVISOR)
 
-    assert "Operación de Larevia" in admin.text
+    assert "Hoy en Larevia" in admin.text
     assert "Toda Larevia" in admin.text
     assert "Mi trabajo" in advisor.text
     assert "Operado con Maia" in advisor.text
     assert 'class="rail"' in admin.text
     assert 'class="mobile-bottom"' in admin.text
+    assert 'class="nav-icon"' in admin.text
+    assert 'class="page-header"' in admin.text
+    assert "Actualizado" in admin.text
+    assert "Oportun." in admin.text
     assert "grid-template-columns:repeat(5" in admin.text
     assert "@media (prefers-reduced-motion:reduce)" in admin.text
     assert "--bg:#f7f5ef" in admin.text
@@ -216,9 +220,7 @@ async def test_advisor_navigation_omits_administrator_only_destinations(wired) -
     # The role-appropriate read-only team surface remains available.
     assert 'href="/crm/equipo"' in advisor
     advisor_inbox = (await client.get("/crm/bandeja", auth=ADVISOR)).text
-    advisor_opportunities = (
-        await client.get("/crm/oportunidades", auth=ADVISOR)
-    ).text
+    advisor_opportunities = (await client.get("/crm/oportunidades", auth=ADVISOR)).text
     assert '<option value="unassigned">' not in advisor_inbox
     assert '<option value="unassigned">' not in advisor_opportunities
 
@@ -230,10 +232,11 @@ async def test_the_home_puts_operational_work_before_metrics(wired) -> None:
     admin = (await client.get("/crm", auth=ADMIN)).text
     advisor = (await client.get("/crm", auth=ADVISOR)).text
 
-    assert admin.index("Prioridad de operación") < admin.index("Salud operativa")
-    assert advisor.index("Lo siguiente") < advisor.index("Salud operativa")
+    assert admin.index("Lo más importante") < admin.index("Resumen")
+    assert advisor.index("Lo siguiente") < advisor.index("Resumen")
     assert 'class="priority-list"' in admin
     assert 'class="operational-summary"' in admin
+    assert "Ver detalle operativo" in admin
 
 
 async def test_the_assignment_queue_is_administrator_only(wired) -> None:
@@ -493,7 +496,7 @@ async def test_denied_outbound_decisions_are_visible_with_their_reason(
     assert "nadie puede enviarlas desde esta pantalla" in response.text
     # The list is visible on the Inbox too.
     listing = await client.get("/crm/bandeja?restringidos=1", auth=ADMIN)
-    assert "envío(s) no permitido(s)" in listing.text
+    assert "1 envío no permitido" in listing.text
 
 
 async def test_an_opt_out_is_shown_and_no_surface_can_send(wired) -> None:
@@ -778,6 +781,7 @@ async def test_an_empty_criterion_is_refused(wired) -> None:
     )
     assert "Indica el criterio y su valor." in response.text
 
+
 async def test_only_the_administrator_sees_the_won_form(wired) -> None:
     client, database = wired
     _contact_id, _conversation_id, opportunity_id = await _opportunity(database)
@@ -927,9 +931,7 @@ async def test_mutation_forms_validate_optional_fields_and_replay_safely(wired) 
         f"/crm/oportunidades/{opportunity_id}/acciones",
         data={
             "tipo": NextActionKind.CALL.value,
-            "vence": (commercial.now() - timedelta(days=1)).strftime(
-                "%Y-%m-%dT%H:%M"
-            ),
+            "vence": (commercial.now() - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M"),
             "clave": "past-due-action",
         },
         auth=ADMIN,
@@ -941,9 +943,7 @@ async def test_mutation_forms_validate_optional_fields_and_replay_safely(wired) 
         f"/crm/oportunidades/{opportunity_id}/acciones",
         data={
             "tipo": NextActionKind.CALL.value,
-            "vence": (commercial.now() + timedelta(days=1)).strftime(
-                "%Y-%m-%dT%H:%M"
-            ),
+            "vence": (commercial.now() + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M"),
             "responsable": "no-es-un-uuid",
             "clave": "malformed-action-owner",
         },
@@ -1318,10 +1318,13 @@ async def test_the_panel_reports_coverage_and_the_specific_gaps(wired) -> None:
 
     before = await client.get("/crm", auth=ADMIN)
     assert "Cobertura de seguimiento" in before.text
+    assert "Embudo comercial" in before.text
+    assert 'href="/crm/oportunidades?stage=Qualified"' in before.text
+    assert "Selecciona una etapa para ver sus contactos." in before.text
     assert "0%" in before.text
-    assert "no cumplen la promesa de seguimiento" in before.text
+    assert "no cumple la promesa de seguimiento" in before.text
     assert "Requieren asignación" in before.text
-    assert "esperan asignación manual" in before.text
+    assert "espera asignación manual" in before.text
 
     async with database.session_scope() as session:
         await OrganizationDirectory(session).reconcile(commercial.DEFAULT_PLAN)
@@ -1532,9 +1535,7 @@ def test_operator_text_and_focus_colours_meet_wcag_aa_contrast() -> None:
             hex_colour = "".join(channel * 2 for channel in hex_colour)
         channels = [int(hex_colour[index : index + 2], 16) / 255 for index in (0, 2, 4)]
         linear = [
-            value / 12.92
-            if value <= 0.04045
-            else ((value + 0.055) / 1.055) ** 2.4
+            value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4
             for value in channels
         ]
         return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]

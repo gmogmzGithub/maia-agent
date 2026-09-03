@@ -2,26 +2,38 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
 from sqlalchemy import func, select
 
+import realestate.sandbox_seed as sandbox_seed
 from realestate.config import Settings
 from realestate.db.engine import Database
 from realestate.db.models import (
     CatalogListing,
     Contact,
+    CriterionSource,
+    CriterionState,
+    InboxMessage,
     ListingMedia,
     Opportunity,
+    OutboxMessage,
     PropertyNeed,
+    PropertyNeedCriterion,
     ReactivationCandidate,
 )
-from realestate.domain.commercial.organization import DirectoryPlan, OrganizationDirectory
+from realestate.domain.commercial.organization import (
+    DirectoryPlan,
+    OrganizationDirectory,
+)
+from realestate.domain.commercial.views import CommercialInbox, InboxFilters
 from realestate.domain.engagement.templates import TemplateObservation, TemplateRegistry
 from realestate.sandbox_seed import (
     CRM_SEEDS,
     PROPERTY_SEEDS,
+    _criteria,
     require_local_sandbox,
     seed,
 )
@@ -77,6 +89,16 @@ def test_seed_definitions_are_unique_and_cover_the_complete_pipeline() -> None:
         "Won",
         "Lost",
     }
+    for row in CRM_SEEDS:
+        statements = _criteria(row)
+        assert len(statements) == 5
+        assert {statement.evidence for statement in statements} == {row.message}
+        assert {statement.state for statement in statements} == {
+            CriterionState.CONFIRMED
+        }
+        assert {statement.source for statement in statements} == {
+            CriterionSource.CONTACT_STATED
+        }
 
 
 def test_bootstrap_media_is_outside_site_source_and_complete() -> None:
@@ -110,6 +132,46 @@ def test_seed_requires_explicit_confirmation_and_loopback_services() -> None:
     )
     with pytest.raises(RuntimeError, match="PostgreSQL no es local"):
         require_local_sandbox(remote_database, confirmed=True)
+
+
+def test_cli_uses_safe_defaults_and_reports_the_walkthrough(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    configuration = object()
+    received: dict[str, object] = {}
+
+    async def fake_seed(settings, **options):  # noqa: ANN001, ANN202
+        received.update(settings=settings, **options)
+        return {
+            "properties_total": 9,
+            "crm_contacts_total": 9,
+            "reactivation_candidates_total": 6,
+            "development_campaigns_total": 1,
+            "sponsorship_campaigns_total": 1,
+            "appointments_total": 0,
+            "meta_templates_observed": 0,
+        }
+
+    monkeypatch.setattr(sandbox_seed, "get_settings", lambda: configuration)
+    monkeypatch.setattr(sandbox_seed, "seed", fake_seed)
+    monkeypatch.setattr(
+        sys, "argv", ["sandbox_seed", "--confirm-local-sandbox"]
+    )
+
+    sandbox_seed.main()
+
+    assert received == {
+        "settings": configuration,
+        "confirmed": True,
+        "book_calendar": False,
+        "sync_meta_templates": False,
+    }
+    assert capsys.readouterr().out == (
+        "Carga local confirmada: 9 propiedades, 9 contactos CRM, "
+        "6 candidatos de reactivación, 1 campaña de desarrollo, "
+        "1 campaña patrocinada y 0 cita de Calendar; "
+        "0 plantillas observadas en Meta.\n"
+    )
 
 
 @requires_postgres
@@ -186,16 +248,46 @@ async def test_seed_runs_the_complete_pipeline_idempotently(
         assert first["crm_contacts_total"] == 9
         assert second_candidates == first_candidates
         assert first["reactivation_candidates_total"] == len(first_candidates)
-        assert first["reactivation_candidates_total"] == 5
+        assert first["reactivation_candidates_total"] == 6
         assert first["development_campaigns_total"] == 1
         assert first["sponsorship_campaigns_total"] == 1
         assert second["properties_created"] == 0
-        assert second["reactivation_candidates_total"] == 5
+        assert second["reactivation_candidates_total"] == 6
         assert len(storage.objects) == 108
         async with database.session_scope() as session:
-            assert await session.scalar(select(func.count()).select_from(CatalogListing)) == 9
-            assert await session.scalar(select(func.count()).select_from(ListingMedia)) == 108
-            assert await session.scalar(select(func.count()).select_from(Opportunity)) == 9
+            assert (
+                await session.scalar(select(func.count()).select_from(CatalogListing))
+                == 9
+            )
+            assert (
+                await session.scalar(select(func.count()).select_from(ListingMedia))
+                == 108
+            )
+            assert (
+                await session.scalar(select(func.count()).select_from(Opportunity)) == 9
+            )
+            assert await session.scalar(
+                select(func.count()).select_from(InboxMessage)
+            ) == sum(len(row.inbound_messages) for row in CRM_SEEDS)
+            assert await session.scalar(
+                select(func.count()).select_from(OutboxMessage)
+            ) == sum(row.reply is not None for row in CRM_SEEDS)
+            assert (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(PropertyNeedCriterion)
+                    .where(PropertyNeedCriterion.superseded_at.is_(None))
+                )
+                == len(CRM_SEEDS) * 5
+            )
+            actor = await OrganizationDirectory(session).resolve_actor("developer")
+            awaiting = await CommercialInbox(session).query(
+                actor, InboxFilters(needs_reply=True)
+            )
+            assert {entry.contact_name for entry in awaiting} == {
+                "Demo · Alejandra Soto",
+                "Demo · Paula Jiménez",
+            }
     finally:
         async with database.session_scope() as session:
             await commercial.reset(session, members=True)

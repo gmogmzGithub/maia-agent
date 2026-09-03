@@ -17,6 +17,7 @@ from typing import Any
 
 from realestate_hermes_plugin.backend import call_backend
 from realestate_hermes_plugin.schemas import (
+    PROPERTY_NEED_CRITERIA,
     PROPERTY_INACTIVE_REASONS,
     PROPERTY_STATUSES,
 )
@@ -60,7 +61,9 @@ def _forward(tool: str, body: dict[str, Any], kwargs: dict[str, Any]) -> str:
             json_body=body,
         )
     except Exception as exc:  # defensive: the tool loop must never see a raise
-        logger.exception("Hermes tool handler failed before returning structured result")
+        logger.exception(
+            "Hermes tool handler failed before returning structured result"
+        )
         return _result(
             {
                 "result": "temporarily_unavailable",
@@ -87,7 +90,9 @@ def _text(args: dict[str, Any], key: str) -> str | None:
 def get_property_information(args: dict[str, Any], **kwargs: Any) -> str:
     reference = _text(args, "reference")
     if reference is None:
-        logger.warning("Tool call rejected locally: get_property_information missing reference")
+        logger.warning(
+            "Tool call rejected locally: get_property_information missing reference"
+        )
         return _result(
             {
                 "result": "not_found",
@@ -102,12 +107,16 @@ def set_property_status(args: dict[str, Any], **kwargs: Any) -> str:
     status = args.get("status")
     inactive_reason = args.get("inactive_reason")
     if reference is None:
-        logger.warning("Tool call rejected locally: set_property_status missing reference")
+        logger.warning(
+            "Tool call rejected locally: set_property_status missing reference"
+        )
         return _result(
             {"result": "not_found", "detail": "A property key or name is required."}
         )
     if status not in PROPERTY_STATUSES:
-        logger.warning("Tool call rejected locally: set_property_status invalid status=%r", status)
+        logger.warning(
+            "Tool call rejected locally: set_property_status invalid status=%r", status
+        )
         return _result(
             {
                 "result": "ambiguous",
@@ -131,13 +140,57 @@ def set_property_status(args: dict[str, Any], **kwargs: Any) -> str:
     body = {"reference": reference, "status": status}
     if inactive_reason is not None:
         body["inactive_reason"] = inactive_reason
-    return _forward(
-        "set_property_status", body, kwargs
-    )
+    return _forward("set_property_status", body, kwargs)
 
 
 def list_properties(args: dict[str, Any], **kwargs: Any) -> str:
     return _forward("list_properties", {}, kwargs)
+
+
+def record_property_need(args: dict[str, Any], **kwargs: Any) -> str:
+    criteria = args.get("criteria")
+    if not isinstance(criteria, list) or not 1 <= len(criteria) <= 5:
+        return _result(
+            {
+                "result": "invalid",
+                "detail": "criteria must contain between one and five values.",
+            }
+        )
+
+    normalized: list[dict[str, str]] = []
+    names: set[str] = set()
+    for item in criteria:
+        if not isinstance(item, dict):
+            return _result(
+                {"result": "invalid", "detail": "Each criterion must be an object."}
+            )
+        name = item.get("name")
+        source = item.get("source")
+        value = _text(item, "value")
+        evidence = _text(item, "evidence")
+        if name not in PROPERTY_NEED_CRITERIA or name in names:
+            return _result(
+                {
+                    "result": "invalid",
+                    "detail": "Criterion names must be supported and unique.",
+                }
+            )
+        if source not in {"ContactStated", "ModelInferred"}:
+            return _result(
+                {"result": "invalid", "detail": "Criterion source is invalid."}
+            )
+        if value is None or evidence is None:
+            return _result(
+                {
+                    "result": "invalid",
+                    "detail": "Every criterion needs a value and supporting evidence.",
+                }
+            )
+        names.add(name)
+        normalized.append(
+            {"name": name, "value": value, "source": source, "evidence": evidence}
+        )
+    return _forward("record_property_need", {"criteria": normalized}, kwargs)
 
 
 def get_transaction_journey(args: dict[str, Any], **kwargs: Any) -> str:
@@ -173,7 +226,9 @@ def resolve_pending_admin_work(args: dict[str, Any], **kwargs: Any) -> str:
 def get_available_slots(args: dict[str, Any], **kwargs: Any) -> str:
     reference = _text(args, "reference")
     if reference is None:
-        logger.warning("Tool call rejected locally: get_available_slots missing reference")
+        logger.warning(
+            "Tool call rejected locally: get_available_slots missing reference"
+        )
         return _result({"result": "not_found", "detail": "A property is required."})
 
     body: dict[str, Any] = {"reference": reference}
@@ -192,7 +247,10 @@ def book_appointment(args: dict[str, Any], **kwargs: Any) -> str:
     if start is None:
         logger.warning("Tool call rejected locally: book_appointment missing start")
         return _result(
-            {"result": "invalid_candidate", "detail": "An exact candidate start is required."}
+            {
+                "result": "invalid_candidate",
+                "detail": "An exact candidate start is required.",
+            }
         )
 
     body: dict[str, Any] = {"reference": reference, "start": start}

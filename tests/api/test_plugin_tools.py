@@ -74,6 +74,96 @@ def test_the_inventory_tool_forwards_an_empty_body(forwarded) -> None:
     assert forwarded[0]["path"] == "/internal/plugin/tools/list_properties"
 
 
+def test_property_need_criteria_are_trimmed_and_forwarded_without_identity(
+    forwarded,
+) -> None:
+    result = decoded(
+        tools.record_property_need(
+            {
+                "criteria": [
+                    {
+                        "name": "service_area",
+                        "value": "  Zapopan  ",
+                        "source": "ContactStated",
+                        "evidence": "  busco en Zapopan  ",
+                        "contact_id": "never-forwarded",
+                    }
+                ],
+                "opportunity_id": "never-forwarded",
+            },
+            session_id="hermes-1",
+        )
+    )
+
+    assert result == {"result": "ok"}
+    assert forwarded[0]["path"] == "/internal/plugin/tools/record_property_need"
+    assert forwarded[0]["json_body"] == {
+        "criteria": [
+            {
+                "name": "service_area",
+                "value": "Zapopan",
+                "source": "ContactStated",
+                "evidence": "busco en Zapopan",
+            }
+        ]
+    }
+
+
+@pytest.mark.parametrize(
+    "criteria",
+    [
+        [],
+        ["not-an-object"],
+        [{"name": "unknown", "value": "x", "source": "ContactStated", "evidence": "x"}],
+        [
+            {
+                "name": "service_area",
+                "value": "x",
+                "source": "ContactStated",
+                "evidence": "x",
+            },
+            {
+                "name": "service_area",
+                "value": "y",
+                "source": "ModelInferred",
+                "evidence": "y",
+            },
+        ],
+        [
+            {
+                "name": "service_area",
+                "value": "x",
+                "source": "AdvisorRecorded",
+                "evidence": "x",
+            }
+        ],
+        [
+            {
+                "name": "service_area",
+                "value": " ",
+                "source": "ContactStated",
+                "evidence": "x",
+            }
+        ],
+    ],
+)
+def test_property_need_handler_fails_closed_before_forwarding(
+    forwarded, criteria: list[dict]
+) -> None:
+    assert (
+        decoded(tools.record_property_need({"criteria": criteria}))["result"]
+        == "invalid"
+    )
+    assert forwarded == []
+
+
+def test_transaction_journey_forwards_no_model_arguments(forwarded) -> None:
+    decoded(tools.get_transaction_journey({"opportunity_id": "never-forwarded"}))
+
+    assert forwarded[0]["path"] == "/internal/plugin/tools/get_transaction_journey"
+    assert forwarded[0]["json_body"] == {}
+
+
 def test_stage_six_inventory_tools_forward_only_bounded_product_arguments(
     forwarded,
 ) -> None:
@@ -107,17 +197,24 @@ def test_stage_six_inventory_tools_forward_only_bounded_product_arguments(
 
 
 def test_stage_six_inventory_tools_fail_closed_locally(forwarded) -> None:
-    assert decoded(tools.search_inventory({"municipality": "Monterrey"}))[
-        "result"
-    ] == "ambiguous"
-    assert decoded(tools.revalidate_external_listing({"intended_action": "Share"}))[
-        "result"
-    ] == "not_found"
-    assert decoded(
-        tools.revalidate_external_listing(
-            {"reference": "EB-1", "intended_action": "Publish"}
-        )
-    )["result"] == "invalid_action"
+    assert (
+        decoded(tools.search_inventory({"municipality": "Monterrey"}))["result"]
+        == "ambiguous"
+    )
+    assert (
+        decoded(tools.revalidate_external_listing({"intended_action": "Share"}))[
+            "result"
+        ]
+        == "not_found"
+    )
+    assert (
+        decoded(
+            tools.revalidate_external_listing(
+                {"reference": "EB-1", "intended_action": "Publish"}
+            )
+        )["result"]
+        == "invalid_action"
+    )
     assert forwarded == []
 
 
@@ -282,9 +379,7 @@ def test_only_the_two_accepted_states_are_forwarded(forwarded, status: object) -
 
 def test_inactive_requires_an_accepted_reason(forwarded) -> None:
     result = decoded(
-        tools.set_property_status(
-            {"reference": "casa-roble", "status": "Inactive"}
-        )
+        tools.set_property_status({"reference": "casa-roble", "status": "Inactive"})
     )
 
     assert result["result"] == "ambiguous"
@@ -312,11 +407,14 @@ def test_pending_admin_tools_validate_and_forward(forwarded) -> None:
     assert forwarded[-1]["path"].endswith("/list_pending_admin_work")
 
     assert decoded(tools.resolve_pending_admin_work({}))["result"] == "not_found"
-    assert decoded(
-        tools.resolve_pending_admin_work(
-            {"reference": "APT-1", "action": "DeleteEverything"}
-        )
-    )["result"] == "invalid_action"
+    assert (
+        decoded(
+            tools.resolve_pending_admin_work(
+                {"reference": "APT-1", "action": "DeleteEverything"}
+            )
+        )["result"]
+        == "invalid_action"
+    )
 
     decoded(
         tools.resolve_pending_admin_work(
@@ -336,9 +434,10 @@ def test_a_slot_query_without_a_property_is_refused(forwarded) -> None:
 
 
 def test_a_booking_without_a_property_is_refused(forwarded) -> None:
-    assert decoded(tools.book_appointment({"start": "2026-08-10T16:00:00"}))[
-        "result"
-    ] == "not_found"
+    assert (
+        decoded(tools.book_appointment({"start": "2026-08-10T16:00:00"}))["result"]
+        == "not_found"
+    )
     assert forwarded == []
 
 
@@ -373,7 +472,9 @@ def test_an_unexpected_raise_becomes_a_structured_result(
 # -- The HTTP boundary ---------------------------------------------------------
 
 
-def config(token: str = "plugin-token", base_url: str = "http://product.test") -> BackendConfig:
+def config(
+    token: str = "plugin-token", base_url: str = "http://product.test"
+) -> BackendConfig:
     return BackendConfig(base_url=base_url, token=token, timeout_seconds=1.0)
 
 
@@ -555,8 +656,8 @@ def test_no_tool_outside_the_frozen_stage_0_surface_can_be_registered() -> None:
     scope expansion (P-069)."""
     assert set(plugin.REGISTERED_TOOLS) <= set(plugin.FROZEN_TOOL_SURFACE)
     # Eight Stage 0 contracts, two human-operation tools, two Stage 6 inventory
-    # tools, and one Stage 10 read-only Journey view.
-    assert len(plugin.FROZEN_TOOL_SURFACE) == 13
+    # tools, one Stage 10 read-only Journey view, and one evidence-aware need write.
+    assert len(plugin.FROZEN_TOOL_SURFACE) == 14
 
 
 def test_each_registered_schema_names_the_tool_it_belongs_to() -> None:

@@ -20,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from realestate.channels.whatsapp.client import SendOutcome, SendResult
 from realestate.channels.whatsapp.payload import InboundMessage
 from realestate.domain.scheduling.calendars import GoogleCalendarDirectory
 from realestate.config import Settings, get_settings
@@ -51,6 +52,9 @@ from realestate.db.models import (
     OpportunityAssignment,
     OpportunityOrigin,
     OpportunityStage,
+    OutboundInitiation,
+    OutboxMessage,
+    OutboxStatus,
     Organization,
     OrganizationChannelBinding,
     OrganizationMember,
@@ -100,6 +104,13 @@ from realestate.domain.engagement.campaigns import Campaigns, PlanCampaign
 from realestate.domain.engagement.reactivation import Reactivation
 from realestate.domain.engagement.templates import TemplateRegistry
 from realestate.domain.inbox import InboxService
+from realestate.domain.outbound import (
+    OutboundIntent,
+    OutboundMessaging,
+    Purpose,
+    Queued,
+)
+from realestate.domain.outbox import OutboxService
 from realestate.domain.platform.credentials import SecretResolver
 from realestate.domain.platform.whatsapp import OrganizationMetaTemplateSources
 from realestate.domain.properties import ArtifactStore, PropertyService
@@ -311,6 +322,15 @@ class CrmSeed:
     action_kind: NextActionKind | None = None
     action_due_days: int = 1
     release_assignment: bool = False
+    progress_message: str | None = None
+    reply: str | None = None
+
+    @property
+    def inbound_messages(self) -> tuple[str, ...]:
+        """A short but causal synthetic conversation, in arrival order."""
+        return (self.message,) + (
+            (self.progress_message,) if self.progress_message else ()
+        )
 
 
 CRM_SEEDS = (
@@ -318,7 +338,10 @@ CRM_SEEDS = (
         "conversation",
         "Demo · Alejandra Soto",
         "5210000000001",
-        "Hola, me interesa Casa Níspero y quisiera conocer opciones de crédito.",
+        (
+            "Quiero comprar una casa en Zapopan de 3.5 a 4.2 millones, en unos "
+            "3 a 6 meses. Necesito 3 recámaras y jardín; me interesa Casa Níspero."
+        ),
         OpportunityStage.IN_CONVERSATION,
         "Buy",
         "Zapopan",
@@ -332,7 +355,10 @@ CRM_SEEDS = (
         "qualified",
         "Demo · Carlos Rivera",
         "5210000000002",
-        "Confirmo que busco comprar en Zapopan con presupuesto de 10 millones.",
+        (
+            "Confirmo que busco comprar en Zapopan, entre 9 y 11 millones, dentro "
+            "de 3 meses. Necesito 4 recámaras, estudio y seguridad."
+        ),
         OpportunityStage.QUALIFIED,
         "Buy",
         "Zapopan",
@@ -341,12 +367,19 @@ CRM_SEEDS = (
         "4 recámaras, estudio y seguridad",
         NextActionKind.SEND_LISTINGS,
         1,
+        reply=(
+            "Perfecto, Carlos. Ya tengo clara tu búsqueda y un asesor continuará "
+            "con una selección adecuada."
+        ),
     ),
     CrmSeed(
         "searching",
         "Demo · Fernanda Luna",
         "5210000000003",
-        "Busco un departamento para comprar cerca de Colomos; ya tengo crédito.",
+        (
+            "Busco comprar un departamento cerca de Colomos, Guadalajara, de 12 "
+            "a 18 millones, en 1 o 2 meses. Quiero 3 recámaras, elevador y terraza."
+        ),
         OpportunityStage.SEARCHING,
         "Buy",
         "Guadalajara, zona Colomos",
@@ -355,12 +388,19 @@ CRM_SEEDS = (
         "3 recámaras, elevador y terraza",
         NextActionKind.SEND_LISTINGS,
         2,
+        reply=(
+            "Gracias, Fernanda. Estamos revisando opciones que coincidan con esos "
+            "criterios y te compartiremos una selección."
+        ),
     ),
     CrmSeed(
         "visiting",
         "Demo · Diego Ortiz",
         "5210000000004",
-        "Quiero visitar Casa Patio esta semana; el precio está dentro de mi rango.",
+        (
+            "Quiero comprar en Tlaquepaque Centro este mes, con presupuesto de 5 a "
+            "6.2 millones. Necesito 3 recámaras y patio."
+        ),
         OpportunityStage.VISITING,
         "Buy",
         "Tlaquepaque Centro",
@@ -369,12 +409,20 @@ CRM_SEEDS = (
         "3 recámaras y patio",
         NextActionKind.SCHEDULE_VISIT,
         1,
+        progress_message="Casa Patio me gustó; quiero visitarla esta semana.",
+        reply=(
+            "Con gusto, Diego. Revisaremos los horarios disponibles para tu visita "
+            "a Casa Patio."
+        ),
     ),
     CrmSeed(
         "negotiating",
         "Demo · Mariana Torres",
         "5210000000005",
-        "Me interesa presentar una propuesta por Departamento Nube.",
+        (
+            "Quiero comprar en Valle Real, Zapopan, de 11.5 a 12.5 millones, de "
+            "inmediato. Busco 3 recámaras y amenidades."
+        ),
         OpportunityStage.NEGOTIATING,
         "Buy",
         "Valle Real, Zapopan",
@@ -383,48 +431,78 @@ CRM_SEEDS = (
         "3 recámaras y amenidades",
         NextActionKind.DOCUMENT_REVIEW,
         1,
+        progress_message="Me interesa presentar una propuesta por Departamento Nube.",
+        reply=(
+            "Gracias, Mariana. El asesor revisará contigo la propuesta y la "
+            "documentación necesaria."
+        ),
     ),
     CrmSeed(
         "dormant",
         "Demo · Javier Mendoza",
         "5210000000006",
-        "Me gusta Casa Loma Alta, pero debo esperar la autorización de mi crédito.",
+        (
+            "Quiero comprar en Las Cañadas, Zapopan, entre 22 y 26 millones, en 6 "
+            "a 9 meses. Necesito 4 recámaras, jardín y alberca."
+        ),
         OpportunityStage.DORMANT,
         "Buy",
         "Las Cañadas, Zapopan",
         "22 a 26 millones MXN",
         "6 a 9 meses",
         "4 recámaras, jardín y alberca",
+        progress_message=(
+            "Me gusta Casa Loma Alta, pero debo esperar la autorización de mi crédito."
+        ),
+        reply=(
+            "Entendido, Javier. Dejamos la búsqueda en pausa y la retomamos cuando "
+            "tu banco confirme el crédito."
+        ),
     ),
     CrmSeed(
         "lost",
         "Demo · Sofía Campos",
         "5210000000007",
-        "Gracias por la atención; finalmente compré otra propiedad.",
+        (
+            "Busco comprar en Guadalajara, entre 4 y 6 millones, este trimestre. "
+            "Necesito al menos 3 recámaras."
+        ),
         OpportunityStage.LOST,
         "Buy",
         "Guadalajara",
         "4 a 6 millones MXN",
         "Concluido",
         "3 recámaras",
+        progress_message="Gracias por la atención; finalmente compré otra propiedad.",
+        reply="Gracias por avisarnos, Sofía. Cerramos esta búsqueda.",
     ),
     CrmSeed(
         "won",
         "Demo · Andrés Navarro",
         "5210000000008",
-        "Confirmo que firmamos el contrato de renta del Loft Americana.",
+        (
+            "Busco rentar en la Americana, Guadalajara, por 25 a 32 mil pesos al "
+            "mes, de inmediato. Necesito 2 recámaras y estacionamiento."
+        ),
         OpportunityStage.WON,
         "Rent",
         "Americana, Guadalajara",
         "25000 a 32000 MXN mensuales",
         "Inmediato",
         "2 recámaras y estacionamiento",
+        progress_message=(
+            "Confirmo que firmamos el contrato de renta del Loft Americana."
+        ),
+        reply="Excelente, Andrés. Quedó registrado el cierre de la operación.",
     ),
     CrmSeed(
         "assignment-queue",
         "Demo · Paula Jiménez",
         "5210000000009",
-        "Busco residencia en Zapopan y ya confirmé presupuesto y tiempos.",
+        (
+            "Quiero comprar una residencia en Zapopan, entre 14 y 18 millones, en "
+            "2 a 4 meses. Necesito 4 recámaras y estudio."
+        ),
         OpportunityStage.QUALIFIED,
         "Buy",
         "Zapopan",
@@ -534,9 +612,7 @@ async def _seed_inventory(
                 listing_id=listing.id,
                 review_state=FactsReviewState.APPROVED,
                 facts={**dict(listing.facts), "description": seed.description},
-                command_key=(
-                    f"sandbox-listing-facts:{seed.key}:{listing.id}:v2"
-                ),
+                command_key=(f"sandbox-listing-facts:{seed.key}:{listing.id}:v2"),
             ),
         )
         await session.commit()
@@ -597,9 +673,7 @@ async def _seed_inventory(
                     ),
                     high_resolution=True,
                     cache_keys=(),
-                    command_key=(
-                        f"sandbox-media:{seed.key}:{listing.id}:{order}:v2"
-                    ),
+                    command_key=(f"sandbox-media:{seed.key}:{listing.id}:{order}:v2"),
                 ),
             )
 
@@ -652,7 +726,7 @@ async def _advance_crm(
 ) -> None:
     management = OpportunityManagement(session)
     moment = datetime.now(tz=UTC)
-    qualified_or_beyond = {
+    qualification_stages = {
         OpportunityStage.QUALIFIED,
         OpportunityStage.SEARCHING,
         OpportunityStage.VISITING,
@@ -661,13 +735,12 @@ async def _advance_crm(
         OpportunityStage.WON,
     }
     current = OpportunityStage(opportunity.stage)
-    if seed.target in qualified_or_beyond:
-        assert opportunity.property_need_id is not None
-        await PropertyNeeds(session).record(
-            actor, opportunity.property_need_id, _criteria(seed), now=moment
-        )
+    assert opportunity.property_need_id is not None
+    await PropertyNeeds(session).record(
+        actor, opportunity.property_need_id, _criteria(seed), now=moment
+    )
     if (
-        seed.target in qualified_or_beyond
+        seed.target in qualification_stages
         and current is OpportunityStage.IN_CONVERSATION
     ):
         await management.record(
@@ -676,9 +749,7 @@ async def _advance_crm(
                 opportunity_id=opportunity.id,
                 to_stage=OpportunityStage.QUALIFIED,
                 reason="SyntheticDemoCriteriaConfirmed",
-                command_key=(
-                    f"sandbox-qualify:{seed.key}:{opportunity.id}:v2"
-                ),
+                command_key=(f"sandbox-qualify:{seed.key}:{opportunity.id}:v2"),
                 at=moment,
                 qualification_action=QualificationAction(
                     kind=NextActionKind.SEND_LISTINGS,
@@ -712,8 +783,7 @@ async def _advance_crm(
                     to_stage=step,
                     reason="SyntheticDemoProgress",
                     command_key=(
-                        f"sandbox-stage:{seed.key}:{opportunity.id}:"
-                        f"{step.value}:v2"
+                        f"sandbox-stage:{seed.key}:{opportunity.id}:{step.value}:v2"
                     ),
                     at=moment,
                 ),
@@ -807,39 +877,50 @@ async def _seed_crm(session: AsyncSession, actor: Actor) -> int:
         )
 
     for index, seed in enumerate(CRM_SEEDS):
-        wamid = f"wamid.sandbox.{seed.key}.v1"
-        inbox = await session.scalar(
-            select(InboxMessage).where(
-                InboxMessage.organization_id == actor.organization_id,
-                InboxMessage.wamid == wamid,
-            )
-        )
-        if inbox is None:
-            accepted = await InboxService(session).accept(
-                InboundMessage(
-                    wamid=wamid,
-                    from_wa_id=seed.wa_id,
-                    phone_number_id=phone_number_id,
-                    message_type="text",
-                    sent_at=datetime.now(tz=UTC) - timedelta(hours=index + 1),
-                    text=seed.message,
-                    profile_name=seed.name,
-                    raw={
-                        "id": wamid,
-                        "from": seed.wa_id,
-                        "type": "text",
-                        "text": {"body": seed.message},
-                        "synthetic": True,
-                    },
+        inboxes: list[InboxMessage] = []
+        conversation: Conversation | None = None
+        messages = seed.inbound_messages
+        for turn_index, body in enumerate(messages):
+            wamid = f"wamid.sandbox.{seed.key}.v2.{turn_index + 1}"
+            inbox = await session.scalar(
+                select(InboxMessage).where(
+                    InboxMessage.organization_id == actor.organization_id,
+                    InboxMessage.wamid == wamid,
                 )
             )
-            inbox = await session.get(InboxMessage, accepted.inbox_id)
-        if inbox is None:
-            raise RuntimeError(f"No se persistió el mensaje de {seed.name}.")
-        inbox.status = InboxStatus.PROCESSED.value
-        conversation = await session.get(Conversation, inbox.conversation_id)
-        if conversation is None:
-            raise RuntimeError(f"No se encontró la conversación de {seed.name}.")
+            if inbox is None:
+                accepted = await InboxService(session).accept(
+                    InboundMessage(
+                        wamid=wamid,
+                        from_wa_id=seed.wa_id,
+                        phone_number_id=phone_number_id,
+                        message_type="text",
+                        sent_at=(
+                            datetime.now(tz=UTC)
+                            - timedelta(hours=index + 1)
+                            - timedelta(minutes=(len(messages) - turn_index - 1) * 8)
+                        ),
+                        text=body,
+                        profile_name=seed.name,
+                        raw={
+                            "id": wamid,
+                            "from": seed.wa_id,
+                            "type": "text",
+                            "text": {"body": body},
+                            "synthetic": True,
+                        },
+                    )
+                )
+                inbox = await session.get(InboxMessage, accepted.inbox_id)
+            if inbox is None:
+                raise RuntimeError(f"No se persistió el mensaje de {seed.name}.")
+            inbox.status = InboxStatus.PROCESSED.value
+            inboxes.append(inbox)
+            conversation = await session.get(Conversation, inbox.conversation_id)
+            if conversation is None:
+                raise RuntimeError(f"No se encontró la conversación de {seed.name}.")
+
+        assert conversation is not None
         opportunity = await CommercialIntake(session).opportunity_for_conversation(
             conversation
         )
@@ -850,7 +931,7 @@ async def _seed_crm(session: AsyncSession, actor: Actor) -> int:
             recovered = await CommercialIntake(session).record_inbound(
                 lead=lead,
                 conversation=conversation,
-                inbox_id=inbox.id,
+                inbox_id=inboxes[-1].id,
             )
             opportunity = await session.get(Opportunity, recovered.opportunity_id)
         if opportunity is None:
@@ -868,6 +949,42 @@ async def _seed_crm(session: AsyncSession, actor: Actor) -> int:
         if opportunity is None:
             raise RuntimeError(f"No se creó la oportunidad de {seed.name}.")
         await _advance_crm(session, actor, opportunity, seed)
+        if seed.reply is not None:
+            queued = await OutboundMessaging(session).request(
+                OutboundIntent(
+                    conversation=conversation,
+                    body=seed.reply,
+                    purpose=Purpose.AGENT_REPLY,
+                    initiation=OutboundInitiation.REACTIVE,
+                    idempotency_key=(
+                        f"sandbox-agent-reply:{seed.key}:{conversation.id}:v2"
+                    ),
+                    trigger_inbox_ids=(inboxes[-1].id,),
+                )
+            )
+            if not isinstance(queued, Queued):
+                raise RuntimeError(
+                    f"Product rechazó la respuesta sintética para {seed.name}: "
+                    f"{queued.reason.value}."
+                )
+            outbox = await session.get(OutboxMessage, queued.outbox_id)
+            if outbox is None:
+                raise RuntimeError(
+                    f"No se persistió la respuesta sintética para {seed.name}."
+                )
+            if outbox.status != OutboxStatus.SENT.value:
+                # The Sandbox has no external recipient. Record the same
+                # provider-success state the worker would, with an unmistakably
+                # synthetic provider identifier, so CRM reply status is real.
+                outbox.status = OutboxStatus.SENDING.value
+                outbox.attempts += 1
+                await OutboxService(session).record_result(
+                    outbox,
+                    SendResult(
+                        SendOutcome.SENT,
+                        provider_message_id=(f"wamid.sandbox.outbound.{seed.key}.v2"),
+                    ),
+                )
     return len(CRM_SEEDS)
 
 
