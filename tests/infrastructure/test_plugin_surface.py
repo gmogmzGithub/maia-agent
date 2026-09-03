@@ -14,6 +14,8 @@ Stage 6 adds two thin Product calls because external candidates must never be
 read directly by Hermes and must be revalidated for a named use.
 Stage 10 adds one read-only Journey view whose Contact and Opportunity are
 resolved exclusively from the trusted Sales session (ADR-0056).
+ADR-0031 adds one evidence-aware criteria write so Hermes interpretations reach
+the Product-owned Property Need without granting stage or identity authority.
 """
 
 from __future__ import annotations
@@ -45,23 +47,29 @@ STAGE_SIX_ADDITIONS = {
 
 STAGE_TEN_ADDITIONS = {"get_transaction_journey"}
 
+ADR_0031_ADDITIONS = {"record_property_need"}
+
 EXPECTED_FROZEN_SURFACE = (
     STAGE_ZERO_SURFACE
     | STAGE_THREE_ADDITIONS
     | STAGE_SIX_ADDITIONS
     | STAGE_TEN_ADDITIONS
+    | ADR_0031_ADDITIONS
 )
 
 
 def test_the_frozen_surface_is_exactly_the_reviewed_contracts() -> None:
     assert set(plugin.FROZEN_TOOL_SURFACE) == EXPECTED_FROZEN_SURFACE
-    assert len(plugin.FROZEN_TOOL_SURFACE) == 13
+    assert len(plugin.FROZEN_TOOL_SURFACE) == 14
 
 
 def test_stage_three_added_exactly_two_names() -> None:
     """A guard on the guard: the surface grew by two, and by which two."""
     assert set(plugin.FROZEN_TOOL_SURFACE) - STAGE_ZERO_SURFACE == (
-        STAGE_THREE_ADDITIONS | STAGE_SIX_ADDITIONS | STAGE_TEN_ADDITIONS
+        STAGE_THREE_ADDITIONS
+        | STAGE_SIX_ADDITIONS
+        | STAGE_TEN_ADDITIONS
+        | ADR_0031_ADDITIONS
     )
 
 
@@ -84,10 +92,30 @@ def test_every_frozen_tool_is_registered() -> None:
         "search_inventory",
         "revalidate_external_listing",
         "get_transaction_journey",
+        "record_property_need",
     )
 
 
-def test_stage_six_search_is_service_area_bounded_and_revalidation_names_the_use() -> None:
+def test_property_need_write_accepts_only_the_reviewed_criteria_and_sources() -> None:
+    from realestate_hermes_plugin import schemas
+
+    parameters = schemas.RECORD_PROPERTY_NEED["parameters"]
+    item = parameters["properties"]["criteria"]["items"]
+    assert item["properties"]["name"]["enum"] == list(schemas.PROPERTY_NEED_CRITERIA)
+    assert item["properties"]["source"]["enum"] == [
+        "ContactStated",
+        "ModelInferred",
+    ]
+    assert "Buy, Rent, Sell, or LeaseOut" in item["properties"]["value"][
+        "description"
+    ]
+    assert item["additionalProperties"] is False
+    assert parameters["additionalProperties"] is False
+
+
+def test_stage_six_search_is_service_area_bounded_and_revalidation_names_the_use() -> (
+    None
+):
     from realestate_hermes_plugin import schemas
 
     search = schemas.SEARCH_INVENTORY["parameters"]

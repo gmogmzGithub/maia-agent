@@ -154,6 +154,39 @@ async def test_one_inbound_message_creates_the_whole_commercial_record(
         assert origin.first_inbox_id is not None
 
 
+async def test_the_current_funnel_is_role_scoped_and_updates_from_product_truth(
+    wired,
+) -> None:
+    client, database = wired
+    await _deliver(client, "Hola", wamid="wamid.flow.funnel")
+
+    async with database.session_scope() as session:
+        admin = await commercial.actor_for(session, commercial.ADMIN_LOGIN)
+        advisor = await commercial.actor_for(session, commercial.ADVISOR_LOGIN)
+        other = await commercial.actor_for(session, commercial.SECOND_ADVISOR_LOGIN)
+        views = CommercialInbox(session)
+        assert (await views.funnel(admin))[OpportunityStage.IN_CONVERSATION.value] == 1
+        assert (await views.funnel(advisor))[
+            OpportunityStage.IN_CONVERSATION.value
+        ] == 0
+        assert (await views.funnel(other))[OpportunityStage.IN_CONVERSATION.value] == 0
+
+        opportunity = await session.scalar(select(Opportunity))
+        assert opportunity is not None
+        await Assignment(session).assign(admin, opportunity.id)
+        await session.commit()
+
+    async with database.session_scope() as session:
+        advisor = await commercial.actor_for(session, commercial.ADVISOR_LOGIN)
+        other = await commercial.actor_for(session, commercial.SECOND_ADVISOR_LOGIN)
+        assert (await CommercialInbox(session).funnel(advisor))[
+            OpportunityStage.IN_CONVERSATION.value
+        ] == 1
+        assert (await CommercialInbox(session).funnel(other))[
+            OpportunityStage.IN_CONVERSATION.value
+        ] == 0
+
+
 async def test_the_accepted_message_reports_what_it_resolved_to(wired) -> None:
     client, database = wired
     await _deliver(client, "Hola", wamid="wamid.flow.1")
@@ -235,9 +268,7 @@ async def test_a_new_conversation_after_a_closed_pursuit_opens_another(
 
     async with database.session_scope() as session:
         opportunities = list(
-            await session.scalars(
-                select(Opportunity).order_by(Opportunity.created_at)
-            )
+            await session.scalars(select(Opportunity).order_by(Opportunity.created_at))
         )
         assert [row.stage for row in opportunities] == [
             OpportunityStage.LOST.value,

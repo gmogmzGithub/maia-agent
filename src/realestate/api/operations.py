@@ -44,6 +44,7 @@ from realestate.api.operator import (
     tag,
 )
 from realestate.api.ui import (
+    counted,
     errors_box,
     datetime_input_value,
     empty,
@@ -223,7 +224,7 @@ async def team(
 
     rows = "".join(_member_row(view, actor, moment) for view in views)
     listing = table(
-        f"{len(views)} integrante(s)",
+        counted(len(views), "integrante", "integrantes"),
         (
             "Persona",
             "Rol",
@@ -291,9 +292,7 @@ def _member_row(view: TeamMemberView, actor: Actor, moment: datetime) -> str:
     if member.is_default_advisor:
         marks.append(tag("Predeterminado", "ok"))
     if not member.telegram_chat_id:
-        marks.append(
-            '<span class="muted">Sin canal de alertas</span>'
-        )
+        marks.append('<span class="muted">Sin canal de alertas</span>')
 
     upcoming = "".join(
         f"<li>{escape(local(absence.starts_at))} → "
@@ -307,8 +306,8 @@ def _member_row(view: TeamMemberView, actor: Actor, moment: datetime) -> str:
         f"<span class='muted'>{escape(member.login)}</span></td>"
         f"<td>{escape(ROLE_LABELS[member.role])}</td>"
         f"<td>{'<br>'.join(marks)}</td>"
-        f"<td>{view.open_opportunities} oportunidad(es)<br>"
-        f"<span class='muted'>{view.future_appointments} cita(s) próxima(s)</span></td>"
+        f"<td>{counted(view.open_opportunities, 'oportunidad', 'oportunidades')}<br>"
+        f"<span class='muted'>{counted(view.future_appointments, 'cita próxima', 'citas próximas')}</span></td>"
         f"<td>{absences}</td>"
     )
     if actor.is_administrator:
@@ -323,17 +322,17 @@ def _member_actions(view: TeamMemberView) -> str:
 <div class="field"><label>Nombre visible
 <input name="nombre" value="{escape(member.display_name)}" maxlength="200"></label></div>
 <div class="field"><label>Calendario autoritativo
-<input name="calendario" value="{escape(member.calendar_id or '')}" maxlength="200"
+<input name="calendario" value="{escape(member.calendar_id or "")}" maxlength="200"
  placeholder="correo del calendario"></label></div>
 <div class="field"><label>Chat de alertas (Telegram)
-<input name="alertas" value="{escape(member.telegram_chat_id or '')}" maxlength="40"></label></div>
+<input name="alertas" value="{escape(member.telegram_chat_id or "")}" maxlength="40"></label></div>
 <div class="actions"><button type="submit">Guardar</button></div>
 </form>
 <form method="post" action="{TEAM}/miembros/{member.id}/estado">
 {command_field()}
-<input type="hidden" name="activo" value="{'0' if member.active else '1'}">
+<input type="hidden" name="activo" value="{"0" if member.active else "1"}">
 <div class="actions"><button type="submit" class="quiet">
-{'Dar de baja' if member.active else 'Reactivar'}</button></div>
+{"Dar de baja" if member.active else "Reactivar"}</button></div>
 </form>""" + (
         ""
         if member.is_default_advisor or not (member.active and member.advises)
@@ -358,11 +357,13 @@ Dar de alta aquí le otorga el permiso; no crea una contraseña.</p>
 <input id="m-nombre" name="nombre" required maxlength="200"></label></div>
 <div class="field"><label for="m-rol">Rol
 <select id="m-rol" name="rol">
-{options(
-    (MemberRole.ADVISOR.value, MemberRole.ADMINISTRATOR.value),
-    MemberRole.ADVISOR.value,
-    ROLE_LABELS,
-)}
+{
+        options(
+            (MemberRole.ADVISOR.value, MemberRole.ADMINISTRATOR.value),
+            MemberRole.ADVISOR.value,
+            ROLE_LABELS,
+        )
+    }
 </select></label></div>
 <div class="field"><label for="m-cal">Calendario autoritativo
 <input id="m-cal" name="calendario" maxlength="200"></label></div>
@@ -484,7 +485,7 @@ async def absences(
         return tag("Programada", "ok")
 
     listing = table(
-        f"{len(rows)} ausencia(s)",
+        counted(len(rows), "ausencia", "ausencias"),
         (
             "Asesor",
             "Periodo",
@@ -640,16 +641,12 @@ async def experts(
         f"<span class='muted'>{escape(view.property_key)}</span></td>"
         f"<td>{escape(view.primary.display_name) if view.primary else tag('Sin especialista', 'warn')}</td>"
         f"<td>{'<br>'.join(escape(member.display_name) for member in view.backups) or '—'}</td>"
-        + (
-            f"<td>{_expert_form(view, advisors)}</td>"
-            if actor.is_administrator
-            else ""
-        )
+        + (f"<td>{_expert_form(view, advisors)}</td>" if actor.is_administrator else "")
         + "</tr>"
         for view in directory
     )
     listing = table(
-        f"{len(directory)} propiedad(es)",
+        counted(len(directory), "propiedad", "propiedades"),
         (
             "Propiedad",
             "Especialista principal",
@@ -771,9 +768,7 @@ async def agenda(
     moment = utc_now()
     async with request.app.state.database.session_scope() as session:
         visits = await _visits(request, session, actor.organization_id)
-        upcoming = await visits.agenda(
-            actor, since=moment - OPERATOR_AGENDA_LOOKBACK
-        )
+        upcoming = await visits.agenda(actor, since=moment - OPERATOR_AGENDA_LOOKBACK)
         policy = await _policy(request, session, actor.organization_id)
         reminders = AppointmentReminders(
             session,
@@ -797,12 +792,10 @@ async def agenda(
             )
         }
         rows = [(visit, notices.get(visit.id, [])) for visit in upcoming]
-        unowned = (
-            await visits.unowned(actor) if actor.is_administrator else []
-        )
+        unowned = await visits.unowned(actor) if actor.is_administrator else []
 
     listing = table(
-        f"{len(rows)} cita(s)",
+        counted(len(rows), "cita", "citas"),
         ("Cuándo", "Propiedad", "Responsable", "Estado", "Recordatorios", "Resultado"),
         "".join(
             _visit_row(visit, notices, members, properties, moment)
@@ -819,7 +812,7 @@ async def agenda(
             "responsable. No se les asignó nadie automáticamente: decide quién "
             "las atiende.</p>"
             + table(
-                f"{len(unowned)} cita(s) por revisar",
+                counted(len(unowned), "cita por revisar", "citas por revisar"),
                 ("Cuándo", "Referencia", "Estado"),
                 "".join(
                     f"<tr><td>{escape(local(row.starts_at))}</td>"
@@ -913,8 +906,7 @@ def _visit_row(
             )
         )
     elif (
-        visit.status == AppointmentStatus.CONFIRMED.value
-        and visit.starts_at <= moment
+        visit.status == AppointmentStatus.CONFIRMED.value and visit.starts_at <= moment
     ):
         result = _outcome_form(visit)
     elif visit.status == AppointmentStatus.CONFIRMED.value:
@@ -1048,9 +1040,7 @@ async def reschedule_form(
             found = await (
                 await _scheduling(request, session, actor.organization_id)
             ).find_slots(
-                SlotQuery(
-                    organization_id=actor.organization_id, advisor_id=advisor_id
-                )
+                SlotQuery(organization_id=actor.organization_id, advisor_id=advisor_id)
             )
 
     if found is None or isinstance(found, SlotsUnavailable):
@@ -1062,8 +1052,7 @@ async def reschedule_form(
         return shell(
             actor,
             "Reagendar visita",
-            errors_box([message])
-            + f'<p><a href="{AGENDA}">Volver a la agenda</a></p>',
+            errors_box([message]) + f'<p><a href="{AGENDA}">Volver a la agenda</a></p>',
             active=AGENDA,
         )
 
@@ -1303,7 +1292,7 @@ async def alerts(
         open_alerts = await InternalAlerts(session).open_for(actor)
 
     handoffs = table(
-        f"{len(pending)} solicitud(es) sin tomar",
+        counted(len(pending), "solicitud sin tomar", "solicitudes sin tomar"),
         ("Contacto", "Motivo", "Esperando", "Asesor avisado", "Acción"),
         "".join(
             f"<tr><td>{escape(view.contact_name or 'Contacto sin nombre')}<br>"
@@ -1324,7 +1313,7 @@ async def alerts(
         empty_message="No hay solicitudes de atención humana pendientes.",
     )
     notices = table(
-        f"{len(open_alerts)} aviso(s)",
+        counted(len(open_alerts), "aviso", "avisos"),
         ("Cuándo", "Tipo", "Aviso", "Entrega", "Acción"),
         "".join(
             f"<tr><td>{escape(local(alert.created_at))}</td>"
@@ -1347,10 +1336,7 @@ async def alerts(
         "deja de responder y se avisa al asesor. A los "
         f"{int(ESCALATION_DELAY.total_seconds() // 60)} minutos sin tomarla, "
         "se avisa al administrador. La oportunidad <strong>no</strong> se "
-        "reasigna sola.</p>"
-        + handoffs
-        + "<h2>Avisos de la operación</h2>"
-        + notices
+        "reasigna sola.</p>" + handoffs + "<h2>Avisos de la operación</h2>" + notices
     )
     return shell(actor, "Pendientes de atención", content, active="/crm/alertas")
 
@@ -1364,9 +1350,7 @@ async def acknowledge_alert(
     async with request.app.state.database.session_scope() as session:
         changed = await InternalAlerts(session).acknowledge(actor, alert_id)
         if not changed:
-            return redirect_back(
-                "/crm/alertas", error="No encontramos ese aviso."
-            )
+            return redirect_back("/crm/alertas", error="No encontramos ese aviso.")
         await session.commit()
     return redirect_back("/crm/alertas", saved="visto")
 

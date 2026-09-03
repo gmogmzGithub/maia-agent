@@ -18,7 +18,7 @@ import uuid
 from dataclasses import dataclass
 from decimal import Decimal
 from datetime import date, datetime, time
-from typing import cast
+from typing import Literal, cast
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
@@ -41,12 +41,20 @@ from realestate.db.models import (
     Lead,
     LeadEngagementCycle,
     Opportunity,
+    OpportunityStage,
     PropertyInactiveReason,
     PropertyStatus,
+    TransactionIntent,
 )
 from realestate.domain.administration import AdministrationService, Administrator
 from realestate.domain.admin_work import ALLOWED_ACTIONS, AdminWorkService
 from realestate.domain.commercial.actors import Actor
+from realestate.domain.commercial.intake import CommercialIntake
+from realestate.domain.commercial.needs import (
+    REQUIRED_CRITERIA,
+    CriterionStatement,
+    PropertyNeeds,
+)
 from realestate.domain.commercial.handoff import (
     HUMAN_HANDOFF_ACKNOWLEDGEMENT,
     HumanHandoff,
@@ -64,6 +72,7 @@ from realestate.domain.external_inventory.types import (
 )
 from realestate.domain.scheduling.calendars import CalendarDirectory
 from realestate.domain.journeys import TransactionJourneys
+from realestate.domain.text import fold_phrase
 
 router = APIRouter(prefix="/internal/plugin", tags=["plugin"])
 logger = logging.getLogger(__name__)
@@ -208,6 +217,7 @@ async def plugin_health(
             "search_inventory",
             "revalidate_external_listing",
             "get_transaction_journey",
+            "record_property_need",
         ],
     }
 
@@ -487,7 +497,9 @@ async def search_inventory(
                     "offers": [
                         {
                             "operation": offer.operation,
-                            "price_amount": str(offer.price_amount) if offer.price_amount is not None else None,
+                            "price_amount": str(offer.price_amount)
+                            if offer.price_amount is not None
+                            else None,
                             "price_currency": offer.price_currency,
                             "availability": offer.availability,
                         }
@@ -650,14 +662,10 @@ async def resolve_pending_admin_work(
     if payload.action not in ALLOWED_ACTIONS:
         return {"result": "invalid_action"}
     async with request.app.state.database.session_scope() as session:
-        policy = await _organization_policy(
-            request, session, binding.organization_id
-        )
+        policy = await _organization_policy(request, session, binding.organization_id)
         return await AdminWorkService(
             session,
-            await _organization_calendars(
-                request, session, binding.organization_id
-            ),
+            await _organization_calendars(request, session, binding.organization_id),
             policy.schedule,
             policy.day_of_reminder_hour,
         ).resolve(
@@ -684,14 +692,10 @@ async def list_pending_admin_work(
     if binding is None:
         return {"result": "forbidden"}
     async with request.app.state.database.session_scope() as session:
-        policy = await _organization_policy(
-            request, session, binding.organization_id
-        )
+        policy = await _organization_policy(request, session, binding.organization_id)
         return await AdminWorkService(
             session,
-            await _organization_calendars(
-                request, session, binding.organization_id
-            ),
+            await _organization_calendars(request, session, binding.organization_id),
             policy.schedule,
             policy.day_of_reminder_hour,
         ).list_pending(binding.organization_id)
@@ -720,9 +724,181 @@ async def resolve_sales_conversation(
         # SQLAlchemy types the former, so the Conversation stays a Conversation
         # instead of decaying to Any at the boundary the Model talks to.
         conversation: Conversation | None = await session.scalar(
-            select(Conversation).where(Conversation.cycle_id == binding.cycle_id)
+            select(Conversation).where(
+                Conversation.organization_id == binding.organization_id,
+                Conversation.cycle_id == binding.cycle_id,
+            )
         )
         return conversation
+
+
+CriterionName = Literal[
+    "transaction_intent",
+    "service_area",
+    "economic_range",
+    "horizon",
+    "essential_requirements",
+]
+CriterionOrigin = Literal["ContactStated", "ModelInferred"]
+
+TRANSACTION_INTENT_ALIASES: dict[str, str] = {
+    fold_phrase("Buy"): TransactionIntent.BUY.value,
+    fold_phrase("Compra"): TransactionIntent.BUY.value,
+    fold_phrase("Rent"): TransactionIntent.RENT.value,
+    fold_phrase("Renta"): TransactionIntent.RENT.value,
+    fold_phrase("Sell"): TransactionIntent.SELL.value,
+    fold_phrase("Venta"): TransactionIntent.SELL.value,
+    fold_phrase("Venta de su propiedad"): TransactionIntent.SELL.value,
+    fold_phrase("LeaseOut"): TransactionIntent.LEASE_OUT.value,
+    fold_phrase("Renta de su propiedad"): TransactionIntent.LEASE_OUT.value,
+}
+
+
+def _canonical_criterion_value(name: CriterionName, value: str) -> str | None:
+    """Normalize only the reviewed fixed vocabulary, never free-form meaning."""
+    stripped = value.strip()
+    if name != "transaction_intent":
+        return stripped
+    return TRANSACTION_INTENT_ALIASES.get(fold_phrase(stripped))
+
+
+class PropertyNeedCriterionRequest(BaseModel):
+    """One bounded interpretation from the current Sales conversation."""
+
+    model_config = {"extra": "forbid", "str_strip_whitespace": True}
+
+    name: CriterionName
+    value: str = Field(min_length=1, max_length=300)
+    source: CriterionOrigin
+    evidence: str = Field(min_length=1, max_length=500)
+
+
+class RecordPropertyNeedRequest(BaseModel):
+    """Criteria only; Contact, Opportunity and Organization remain trusted."""
+
+    model_config = {"extra": "forbid"}
+
+    criteria: list[PropertyNeedCriterionRequest] = Field(min_length=1, max_length=5)
+
+
+def _evidence_is_current(evidence: str, inbound_texts: tuple[str, ...]) -> bool:
+    """Whether the claimed excerpt exists in retained Product-owned input."""
+    claimed = fold_phrase(evidence)
+    return bool(claimed) and any(claimed in fold_phrase(text) for text in inbound_texts)
+
+
+@router.post(
+    "/tools/record_property_need",
+    dependencies=[Depends(require_plugin_token)],
+)
+async def record_property_need(
+    request: Request,
+    payload: RecordPropertyNeedRequest,
+    hermes_session_id: str = Header(default="", alias=SESSION_HEADER),
+) -> dict[str, object]:
+    """Record criteria learned in this Sales conversation (ADR-0031).
+
+    The model supplies bounded interpretations, never identity or workflow
+    state. Product resolves the Organization, Conversation and Opportunity from
+    the trusted Hermes binding. A value claimed as Contact-stated is Confirmed
+    only when its evidence is present in a retained inbound message; otherwise
+    it is saved as Pending, the same as any model inference.
+    """
+    conversation = await resolve_sales_conversation(request, hermes_session_id)
+    if conversation is None:
+        return {"result": "forbidden"}
+
+    names = [criterion.name for criterion in payload.criteria]
+    if len(set(names)) != len(names):
+        return {
+            "result": "invalid",
+            "detail": "Each property-need criterion may appear at most once.",
+        }
+
+    async with request.app.state.database.session_scope() as session:
+        trusted_conversation = await session.merge(conversation)
+        opportunity = await CommercialIntake(session).opportunity_for_conversation(
+            trusted_conversation
+        )
+        if opportunity is None or opportunity.property_need_id is None:
+            return {"result": "not_found"}
+        if opportunity.stage in {
+            OpportunityStage.WON.value,
+            OpportunityStage.LOST.value,
+        }:
+            return {"result": "closed", "stage": opportunity.stage}
+
+        inbound_texts = tuple(
+            text
+            for text in await session.scalars(
+                select(InboxMessage.text)
+                .where(
+                    InboxMessage.organization_id
+                    == trusted_conversation.organization_id,
+                    InboxMessage.conversation_id == trusted_conversation.id,
+                    InboxMessage.content_expired_at.is_(None),
+                    InboxMessage.text.isnot(None),
+                )
+                .order_by(InboxMessage.sent_at.desc())
+            )
+            if text
+        )
+        downgraded: list[str] = []
+        statements: list[CriterionStatement] = []
+        for criterion in payload.criteria:
+            value = _canonical_criterion_value(criterion.name, criterion.value)
+            if value is None:
+                return {
+                    "result": "invalid",
+                    "detail": (
+                        "transaction_intent must use Buy, Rent, Sell, or LeaseOut."
+                    ),
+                }
+            explicitly_supported = (
+                criterion.source == "ContactStated"
+                and _evidence_is_current(criterion.evidence, inbound_texts)
+            )
+            if explicitly_supported:
+                statements.append(
+                    CriterionStatement.stated(
+                        criterion.name,
+                        value,
+                        evidence=criterion.evidence.strip(),
+                    )
+                )
+            else:
+                if criterion.source == "ContactStated":
+                    downgraded.append(criterion.name)
+                statements.append(
+                    CriterionStatement.inferred(
+                        criterion.name,
+                        value,
+                        evidence=criterion.evidence.strip(),
+                    )
+                )
+
+        actor = Actor.product(
+            trusted_conversation.organization_id, "HermesSalesPropertyNeed"
+        )
+        snapshot = await PropertyNeeds(session).record(
+            actor,
+            opportunity.property_need_id,
+            statements,
+            now=utc_now(),
+        )
+        await session.commit()
+        return {
+            "result": "recorded",
+            "stage": opportunity.stage,
+            "confirmed": [
+                name for name in REQUIRED_CRITERIA if name in snapshot.confirmed
+            ],
+            "pending": [name for name in REQUIRED_CRITERIA if name in snapshot.pending],
+            "missing_required": list(snapshot.missing_required),
+            "pending_required": list(snapshot.pending_required),
+            "ready_for_qualification": snapshot.meets_minimum,
+            "evidence_downgraded": downgraded,
+        }
 
 
 class AvailableSlotsRequest(BaseModel):
@@ -771,7 +947,10 @@ async def get_available_slots(
             payload.date_from,
             payload.date_to,
         )
-        return {"result": "temporarily_unavailable", "detail": "date_from is after date_to"}
+        return {
+            "result": "temporarily_unavailable",
+            "detail": "date_from is after date_to",
+        }
 
     async with request.app.state.database.session_scope() as session:
         service = AppointmentService(
@@ -779,9 +958,7 @@ async def get_available_slots(
             await _organization_calendars(
                 request, session, conversation.organization_id
             ),
-            await _organization_policy(
-                request, session, conversation.organization_id
-            ),
+            await _organization_policy(request, session, conversation.organization_id),
         )
         result = await service.available_slots(
             conversation=await session.merge(conversation),
@@ -840,9 +1017,7 @@ async def book_appointment(
             await _organization_calendars(
                 request, session, conversation.organization_id
             ),
-            await _organization_policy(
-                request, session, conversation.organization_id
-            ),
+            await _organization_policy(request, session, conversation.organization_id),
         )
         result = await service.book(
             conversation=await session.merge(conversation),
@@ -899,9 +1074,7 @@ async def cancel_appointment(
                     select(InboxMessage.id)
                     .join(InboxGroup, InboxGroup.id == InboxMessage.group_id)
                     .where(InboxGroup.conversation_id == merged.id)
-                    .where(
-                        InboxGroup.status == InboxGroupStatus.PROCESSING.value
-                    )
+                    .where(InboxGroup.status == InboxGroupStatus.PROCESSING.value)
                     .order_by(InboxMessage.sent_at, InboxMessage.id)
                 )
             )
@@ -913,9 +1086,7 @@ async def cancel_appointment(
             await _organization_calendars(
                 request, session, conversation.organization_id
             ),
-            await _organization_policy(
-                request, session, conversation.organization_id
-            ),
+            await _organization_policy(request, session, conversation.organization_id),
         )
         result = await service.cancel(
             conversation=merged,
@@ -944,7 +1115,9 @@ class RescheduleAppointmentRequest(BaseModel):
     reference: str | None = Field(default=None, min_length=1, max_length=40)
 
 
-@router.post("/tools/reschedule_appointment", dependencies=[Depends(require_plugin_token)])
+@router.post(
+    "/tools/reschedule_appointment", dependencies=[Depends(require_plugin_token)]
+)
 async def reschedule_appointment(
     request: Request,
     payload: RescheduleAppointmentRequest,
@@ -970,9 +1143,7 @@ async def reschedule_appointment(
             await _organization_calendars(
                 request, session, conversation.organization_id
             ),
-            await _organization_policy(
-                request, session, conversation.organization_id
-            ),
+            await _organization_policy(request, session, conversation.organization_id),
         )
         result = await service.reschedule(
             conversation=await session.merge(conversation),
@@ -999,7 +1170,9 @@ class RequestHumanHandoffRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=300)
 
 
-@router.post("/tools/request_human_handoff", dependencies=[Depends(require_plugin_token)])
+@router.post(
+    "/tools/request_human_handoff", dependencies=[Depends(require_plugin_token)]
+)
 async def request_human_handoff(
     request: Request,
     payload: RequestHumanHandoffRequest,

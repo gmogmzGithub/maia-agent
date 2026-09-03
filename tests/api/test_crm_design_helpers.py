@@ -10,6 +10,7 @@ from realestate.api.crm import (
     _assignment_card,
     _exception_card,
     _history_card,
+    _journey_card,
     _next_action_card,
     _outcome_form,
     _stage_card,
@@ -38,9 +39,7 @@ NOW = datetime(2026, 8, 29, 16, 42, tzinfo=UTC)
 def _actor(*, administrator: bool = True) -> Actor:
     return Actor(
         organization_id=uuid.uuid4(),
-        authority=(
-            Authority.ADMINISTRATOR if administrator else Authority.ADVISOR
-        ),
+        authority=(Authority.ADMINISTRATOR if administrator else Authority.ADVISOR),
         member_id=uuid.uuid4(),
         label="persona@larevia.test",
         display_name="Valeria Montes" if administrator else "Mariana Torres",
@@ -151,9 +150,7 @@ def test_closed_and_advisor_variants_hide_or_explain_unavailable_work() -> None:
     closed = _opportunity(administrator, stage=OpportunityStage.WON)
     active_for_advisor = _opportunity(advisor, stage=OpportunityStage.NEGOTIATING)
 
-    closed_actions = _next_action_card(
-        closed, None, False, [], [], administrator, NOW
-    )
+    closed_actions = _next_action_card(closed, None, False, [], [], administrator, NOW)
     assert "no admite nuevas acciones" in closed_actions
     assert "No hay una siguiente acción vigente" in closed_actions
     assert "ya está cerrada" in _stage_card(closed, administrator)
@@ -166,10 +163,23 @@ def test_closed_and_advisor_variants_hide_or_explain_unavailable_work() -> None:
     assert _history_card([]) == ""
 
     # Every consequential outcome keeps its specific evidence vocabulary.
-    rendered = "".join(_outcome_form(active_for_advisor, form) for form in OUTCOME_FORMS)
+    rendered = "".join(
+        _outcome_form(active_for_advisor, form) for form in OUTCOME_FORMS
+    )
+    assert rendered.count('class="outcome-disclosure"') == len(OUTCOME_FORMS)
     assert "Registrar pérdida" in rendered
     assert "Poner en pausa" in rendered
     assert "Registrar operación concluida" in rendered
+
+
+def test_listing_acquisition_explains_why_the_purchase_journey_is_absent() -> None:
+    actor = _actor()
+    opportunity = _opportunity(actor, stage=OpportunityStage.IN_CONVERSATION)
+    opportunity.kind = OpportunityKind.LISTING_ACQUISITION.value
+
+    rendered = _journey_card(opportunity, actor, None, None, [])
+
+    assert "sólo para procesos de compra" in rendered
 
 
 def test_actor_and_directory_helpers_keep_configuration_explicit() -> None:
