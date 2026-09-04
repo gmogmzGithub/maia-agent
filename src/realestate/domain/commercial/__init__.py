@@ -20,7 +20,7 @@ The seams, and what each one is the only way to do:
 * :class:`~realestate.domain.commercial.views.CommercialInbox` — everything an
   operator surface is allowed to read;
 * :class:`~realestate.domain.commercial.intake.CommercialIntake` — the crossing
-  from the WhatsApp Inbox into commercial work;
+  from the customer-channel Inbox into commercial work;
 * :class:`~realestate.domain.commercial.retention.ConversationRetention` and
   :class:`~realestate.domain.commercial.maintenance.CommercialMaintenance` —
   the rules that are about time rather than about a decision;

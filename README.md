@@ -1,6 +1,7 @@
 # Maia
 
-Maia is a Hermes-backed real estate lead agent that handles WhatsApp inquiries,
+Maia is a Hermes-backed real estate lead agent that handles WhatsApp, Facebook
+Messenger, and Instagram inquiries,
 answers from approved property documents, schedules visits through Google
 Calendar, and runs deterministic follow-up workflows from an auditable product
 backend.
@@ -14,8 +15,9 @@ authorization, persistence, delivery, retries, and business authority.
 
 - A real product boundary around an LLM agent instead of a scripted intent
   classifier.
-- WhatsApp webhook ingestion with signature validation, durable Inbox/Outbox,
-  delivery retries, and ambiguity handling.
+- WhatsApp, Facebook Messenger, and Instagram webhook ingestion with signature
+  validation, a shared durable Inbox/Outbox, channel-scoped identity, delivery
+  retries, and ambiguity handling.
 - Grounded property Q&A from accepted, versioned property documents.
 - Appointment scheduling against Google Calendar availability.
 - Telegram-based administrative workflows for exceptional cases.
@@ -98,9 +100,9 @@ Maia has three deliberately separated runtime responsibilities:
 
 ```mermaid
 flowchart LR
-    Lead["Lead on WhatsApp"]
+    Lead["Contact on WhatsApp / Messenger / Instagram"]
     Visitor["Public visitor"]
-    Meta["Meta WhatsApp Cloud API"]
+    Meta["Meta customer messaging APIs"]
     Backend["Maia FastAPI backend"]
     Site["Public SSR site"]
     Inbox[("PostgreSQL Inbox / Outbox / Audit")]
@@ -133,8 +135,8 @@ test-covered locally:
 
 - property document ingestion and replacement;
 - grounded sales conversations through Hermes;
-- WhatsApp webhook and outbound delivery workflow, gated on one recorded
-  eligibility decision per message;
+- WhatsApp, Facebook Messenger, and Instagram webhook and outbound delivery
+  workflows, gated on one recorded eligibility decision per message;
 - appointment availability, booking, cancellation, and broker notifications;
 - Telegram administration;
 - an operational CRM: one brokerage organization, administrator and advisor
@@ -162,9 +164,10 @@ test-covered locally:
   exportable PDF;
 - complete organizational isolation: every table holding a Brokerage
   Organization's data names it, every business key is unique per Organization,
-  and every inbound identifier — WhatsApp number, Telegram bot, public hostname —
-  resolves through an explicit channel binding whose absence is a refusal rather
-  than a default to the founding brokerage;
+  and every inbound identifier — WhatsApp number, Facebook Page, Instagram
+  professional account, Telegram bot, public hostname — resolves through an
+  explicit channel binding whose absence is a refusal rather than a default to
+  the founding brokerage;
 - a managed platform for a second Brokerage Organization: resumable and
   reversible provisioning, versioned configuration documents, per-Organization
   secret *references* that never store a credential, append-only entitlements
@@ -178,6 +181,8 @@ test-covered locally:
 Not claimed yet:
 
 - production deployment;
+- live Facebook Messenger or Instagram account validation; those adapters are
+  provider-shaped and locally exercised, but no accounts are connected yet;
 - a real external brokerage onboarded; the platform is implemented and its entry
   condition — knowing a candidate inmobiliaria's real needs — is not met;
 - any price, invoice or charging for the packaging structure that exists;

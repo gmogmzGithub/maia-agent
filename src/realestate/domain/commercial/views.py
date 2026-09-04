@@ -218,6 +218,7 @@ class InboxEntry:
     conversation_id: uuid.UUID
     contact_id: uuid.UUID
     contact_name: str | None
+    channel: str
     channel_identity: str
     last_inbound_at: datetime | None
     last_outbound_at: datetime | None
@@ -248,6 +249,7 @@ class ConversationView:
 
     conversation_id: uuid.UUID
     contact: Contact
+    channel: str
     channel_identity: str
     messages: tuple[MessageView, ...]
     restriction: RestrictionView
@@ -520,6 +522,7 @@ class CommercialInbox:
                     conversation_id=conversation.id,
                     contact_id=contact.id,
                     contact_name=contact.display_name,
+                    channel=conversation.channel,
                     channel_identity=channel_identity,
                     last_inbound_at=last_inbound_at,
                     last_outbound_at=last_outbound_at,
@@ -573,6 +576,7 @@ class CommercialInbox:
         return ConversationView(
             conversation_id=conversation.id,
             contact=contact,
+            channel=conversation.channel,
             channel_identity=identity.identity,
             messages=await self._messages(conversation.id),
             restriction=await self.restriction(conversation),

@@ -6,7 +6,7 @@ business authority.
 ## Runtime Split
 
 Hermes is the conversational runtime. It receives the lead-facing context,
-maintains sessions, interprets fragmented WhatsApp messages, and decides which
+maintains sessions, interprets fragmented customer messages, and decides which
 tool to call.
 
 The Maia backend is the product authority. It receives webhooks, persists state,
@@ -15,8 +15,8 @@ events.
 
 ```mermaid
 sequenceDiagram
-    participant Lead as WhatsApp Lead
-    participant Meta as Meta Cloud API
+    participant Lead as Contact
+    participant Meta as Meta Messaging APIs
     participant Backend as Maia Backend
     participant DB as PostgreSQL
     participant Hermes as Hermes Runtime
@@ -38,13 +38,15 @@ sequenceDiagram
     Backend->>EasyBroker: GET authorized source candidate at sync/use time
 ```
 
-The customer channel is WhatsApp. Telegram is not the customer entry point: it
-is the private Broker/Administrator channel. Its inbound administrative role is
-an additional operator surface, while its outbound notices are Product-owned
-effects caused by appointment state (immediate booking or review notice,
-morning digest, and pre-visit reminder). Hermes composes the natural customer
-conversation; Maia decides when a Telegram notice is owed and performs the
-send.
+The customer channels are WhatsApp, Facebook Messenger, and Instagram. Their
+provider adapters authenticate and normalize different webhook shapes, while
+the durable Product and Hermes flow beneath them is shared. Telegram is not a
+customer entry point: it is the private Broker/Administrator channel. Its
+inbound administrative role is an additional operator surface, while its
+outbound notices are Product-owned effects caused by appointment state
+(immediate booking or review notice, morning digest, and pre-visit reminder).
+Hermes composes the natural customer conversation; Maia decides when a Telegram
+notice is owed and performs the send.
 
 ## Why the Model Is Not the Authority
 
@@ -58,7 +60,7 @@ truth. Maia keeps the risky operations below the model:
 - the backend classifies uncertain delivery or Calendar outcomes for review.
 
 This allows natural conversation without giving the model unchecked access to
-database credentials, Calendar credentials, or WhatsApp delivery state.
+database credentials, Calendar credentials, or customer-channel delivery state.
 
 One consequence is a freshness rule. A property document or status can change
 while a durable session stays open, so a turn that repeats a property fact must
@@ -85,7 +87,7 @@ routers, workers and templates above them hold none of those rules.
 | `Assignment.assign` | decide who is responsible, or make the absence visible |
 | `NextActions.schedule` / `.complete` | owe and discharge the next action |
 | `CommercialInbox.query` | read anything an operator surface shows |
-| `CommercialIntake.record_inbound` | cross from the WhatsApp Inbox into commercial work |
+| `CommercialIntake.record_inbound` | cross from the customer-channel Inbox into commercial work |
 | `ConversationRetention` / `CommercialMaintenance` | apply the rules that are about time |
 | `OrganizationDirectory` | resolve the Organization and who belongs to it |
 | `TeamAdministration.record` | add a member, declare an absence, designate a Property Expert |
@@ -469,9 +471,13 @@ public origin.
 
 Optional integrations require their normal provider credentials:
 
-- optional Meta, Telegram, Google Calendar, model-provider, and EasyBroker
-  credentials. EasyBroker API MLS remains disabled until its separate plan and
-  collaboration permissions are explicitly confirmed.
+- WhatsApp, Facebook Messenger and Instagram each use an Organization-scoped
+  account binding and credential reference. Their signed inbound adapters feed
+  one durable customer-message pipeline; their outbound clients remain separate
+  provider edges (ADR-0062);
+- optional Telegram, Google Calendar, model-provider, and EasyBroker credentials.
+  EasyBroker API MLS remains disabled until its separate plan and collaboration
+  permissions are explicitly confirmed.
 
 This is enough to prove product behavior and recovery paths before adding cloud
 deployment, managed secrets, production WhatsApp assets, and real lead data.

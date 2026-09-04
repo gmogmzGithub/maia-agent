@@ -119,8 +119,11 @@ _Avoid_: Contact type, permanent customer segment, separate Customer record
 
 **Channel Identity**:
 One addressable identifier through which a Contact reaches the operation, with
-how well Product knows it is theirs. The same trusted identifier presented again
-resolves to the same Contact; identifiers that merely look alike never do.
+how well Product knows it is theirs. Provider identifiers are scoped by both the
+channel and the Brokerage Organization's receiving account: a Facebook Page PSID
+or Instagram-scoped user id from one account is not assumed to name the identity
+reported by another. The same trusted scoped identifier presented again resolves
+to the same Contact; identifiers that merely look alike never do.
 _Avoid_: Contact, phone number as identity, normalized number
 
 **Opportunity Exception**:
@@ -212,7 +215,10 @@ _Avoid_: Outbox kind, message category, appointment state
 
 **Customer Service Window**:
 The 24 hours after a Contact's last message, during which Product may send
-free-form text on WhatsApp. Outside it, only an approved template may be sent.
+free-form reactive text on the originating Meta customer channel. Outside it,
+WhatsApp requires an approved template; Messenger and Instagram sends remain
+withheld until a separately approved provider mechanism is represented in the
+Outbound Eligibility Gate.
 _Avoid_: Conversational Session, engagement cycle, business hours
 
 **Consent Record**:
@@ -883,9 +889,9 @@ organization
 
 **Channel Binding**:
 The recorded claim of one external identifier — a WhatsApp phone number id, a
-WhatsApp Business Account id, a Telegram bot id, a public hostname — by exactly
-one Brokerage Organization. An unbound identifier is refused, never resolved to a
-default.
+WhatsApp Business Account id, a Facebook Page id, an Instagram professional
+account id, a Telegram bot id, or a public hostname — by exactly one Brokerage
+Organization. An unbound identifier is refused, never resolved to a default.
 _Avoid_: Routing guess, implicit ownership, shared number, fallback organization
 
 **Organization Configuration Version**:

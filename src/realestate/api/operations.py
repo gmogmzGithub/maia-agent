@@ -1242,8 +1242,8 @@ async def reply_from_crm(
 #: a renamed reason should break here, not silently lose its explanation.
 _DENIAL_HINTS = {
     DenialReason.SERVICE_WINDOW_CLOSED.value: (
-        "pasaron más de 24 horas desde el último mensaje del cliente y WhatsApp "
-        "no permite texto libre. Espera a que escriba."
+        "pasaron más de 24 horas desde el último mensaje del cliente y el canal "
+        "ya no permite texto libre. Espera a que escriba."
     ),
     DenialReason.SUPPRESSED.value: "el contacto pidió no recibir mensajes.",
     DenialReason.MISSING_REACTIVE_TRIGGER.value: (
@@ -1257,7 +1257,7 @@ _DENIAL_HINTS = {
 async def acknowledge_handoff(
     request: Request, conversation_id: uuid.UUID, actor: Actor = Depends(require_actor)
 ) -> RedirectResponse:
-    """Take an unmet request without claiming the WhatsApp conversation."""
+    """Take an unmet request without claiming the customer conversation."""
     form = await request.form()
     path = f"/crm/bandeja/{conversation_id}"
     request_id = form_uuid(form.get("solicitud", ""))
@@ -1438,17 +1438,27 @@ def handling_panel(
 
 
 def reply_form(
-    snapshot: HandlingSnapshot, actor: Actor, *, conversation_id: uuid.UUID
+    snapshot: HandlingSnapshot,
+    actor: Actor,
+    *,
+    conversation_id: uuid.UUID,
+    channel_label: str = "WhatsApp",
 ) -> str:
     """The human reply box, only for whoever holds the conversation."""
     if not snapshot.may_reply(actor):
         return ""
+    sender = (
+        "número oficial de Larevia"
+        if channel_label == "WhatsApp"
+        else f"cuenta oficial de {channel_label} de la organización"
+    )
+    personal_account = "teléfono" if channel_label == "WhatsApp" else "cuenta personal"
     return f"""<form class="card" method="post"
  action="/crm/bandeja/{conversation_id}/responder">
-<h2>Responder por WhatsApp</h2>
-<p class="hint">Se envía desde el número oficial de Larevia, no desde tu
-teléfono. Product revisa la elegibilidad antes de enviar: fuera de la ventana de
-24 horas no se puede enviar texto libre.</p>
+<h2>Responder por {escape(channel_label)}</h2>
+<p class="hint">Se envía desde el {escape(sender)}, no desde tu
+{escape(personal_account)}. Product revisa la elegibilidad antes de enviar: fuera de la
+ventana de 24 horas no se puede enviar texto libre.</p>
 {command_field()}
 <div class="field"><label for="h-mensaje">Mensaje
 <textarea id="h-mensaje" name="mensaje" rows="4" maxlength="3000" required></textarea>

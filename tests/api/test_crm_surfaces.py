@@ -397,7 +397,7 @@ async def test_empty_surfaces_say_what_to_do_next(wired) -> None:
 
     inbox = await client.get("/crm/bandeja", auth=ADMIN)
     assert "No hay conversaciones que coincidan." in inbox.text
-    assert "espera el primer mensaje de WhatsApp" in inbox.text
+    assert "espera el primer mensaje de un canal conectado" in inbox.text
 
     opportunities = await client.get("/crm/oportunidades", auth=ADMIN)
     assert "No hay oportunidades que coincidan." in opportunities.text

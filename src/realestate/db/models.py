@@ -40,7 +40,7 @@ from sqlalchemy import (
 # Aliased: ``InboxMessage.text`` shadows the bare name inside that class body.
 from sqlalchemy import text as sql_text
 from sqlalchemy.dialects.postgresql import JSONB, UUID, ExcludeConstraint
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, synonym
 
 from realestate.db.engine import Base
 
@@ -469,7 +469,7 @@ class AuditEvent(Base):
 
 
 class Lead(Base):
-    """A person who contacts the Broker through WhatsApp.
+    """One provider-authenticated customer Channel Identity.
 
     Stable across time. Engagement cycles come and go beneath it (ADR-0012);
     identity, audit history, and the Follow-up Opt-out persist here.
@@ -481,8 +481,19 @@ class Lead(Base):
     # ADR-0019: commercial data belongs to a Brokerage Organization explicitly
     # rather than to an implicit global account.
     organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="RESTRICT")
-    # The Lead's WhatsApp id as Meta reports it (digits, no '+').
-    wa_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    channel: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="WhatsApp", server_default="WhatsApp"
+    )
+    # Provider user identifiers are scoped to the Organization-owned account
+    # that received them: a WhatsApp number, Facebook Page, or Instagram
+    # professional account.
+    channel_account_id: Mapped[str] = mapped_column(
+        String(200), nullable=False, default="", server_default=sql_text("''")
+    )
+    # ``wa_id`` remains the physical column name so historical migrations stay
+    # truthful. Product code uses the channel-neutral name.
+    provider_user_id: Mapped[str] = mapped_column("wa_id", String(120), nullable=False)
+    wa_id = synonym("provider_user_id")
     profile_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
     follow_up_opt_out: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
@@ -492,7 +503,17 @@ class Lead(Base):
     )
 
     __table_args__ = (
-        UniqueConstraint("organization_id", "wa_id", name="uq_leads_org_wa_id"),
+        CheckConstraint(
+            "channel IN ('WhatsApp', 'FacebookMessenger', 'Instagram')",
+            name="ck_leads_channel",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "channel",
+            "channel_account_id",
+            "wa_id",
+            name="uq_leads_org_channel_identity",
+        ),
     )
 
 
@@ -541,7 +562,7 @@ class LeadEngagementCycle(Base):
 
 
 class Conversation(Base):
-    """One WhatsApp thread, scoped to one engagement cycle.
+    """One customer-channel thread, scoped to one engagement cycle.
 
     The FIFO lane is per Conversation: at most one Inbox group may be active in
     it at a time, while separate Conversations proceed independently (P-028).
@@ -562,8 +583,13 @@ class Conversation(Base):
         nullable=False,
         unique=True,
     )
-    # Our own WhatsApp number that received the message.
-    phone_number_id: Mapped[str] = mapped_column(String(40), nullable=False)
+    channel: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="WhatsApp", server_default="WhatsApp"
+    )
+    channel_account_id: Mapped[str] = mapped_column(
+        "phone_number_id", String(200), nullable=False
+    )
+    phone_number_id = synonym("channel_account_id")
     # The Property this Conversation is about, once identified. Never guessed
     # from the set of Active Properties (P-049).
     property_uuid: Mapped[uuid.UUID | None] = mapped_column(
@@ -576,6 +602,10 @@ class Conversation(Base):
     # PostgreSQL does not index a foreign key on its own, and the gate's
     # service-window lookup joins through this column on every request.
     __table_args__ = (
+        CheckConstraint(
+            "channel IN ('WhatsApp', 'FacebookMessenger', 'Instagram')",
+            name="ck_conversations_channel",
+        ),
         _org_scoped_fk("lead_id", "leads", name="fk_conversations_org_lead"),
         _org_scoped_fk(
             "property_uuid", "properties", name="fk_conversations_org_property"
@@ -700,7 +730,7 @@ class InboxStatus(str, enum.Enum):
 
 
 class InboxMessage(Base):
-    """One durably accepted inbound WhatsApp message.
+    """One durably accepted inbound customer message.
 
     Every message stays an individual record even when several are combined
     into one Hermes turn, and no failed message is ever deleted (ADR-0005).
@@ -722,12 +752,19 @@ class InboxMessage(Base):
         ForeignKey("conversations.id", ondelete="CASCADE"),
         nullable=False,
     )
+    channel: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="WhatsApp", server_default="WhatsApp"
+    )
     # Meta's message identifier — the idempotency key for duplicate webhooks.
     # Unique per Organization since Stage 9: the duplicate lookup used to read
     # the whole table, so a body replayed against the wrong number could resolve
     # to another Organization's Conversation (ADR-0050).
-    wamid: Mapped[str] = mapped_column(String(200), nullable=False)
-    from_wa_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    provider_message_id: Mapped[str] = mapped_column(
+        "wamid", String(200), nullable=False
+    )
+    wamid = synonym("provider_message_id")
+    sender_id: Mapped[str] = mapped_column("from_wa_id", String(120), nullable=False)
+    from_wa_id = synonym("sender_id")
     message_type: Mapped[str] = mapped_column(String(40), nullable=False)
     text: Mapped[str | None] = mapped_column(Text, nullable=True)
     sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -758,10 +795,19 @@ class InboxMessage(Base):
 
     __table_args__ = (
         CheckConstraint(
+            "channel IN ('WhatsApp', 'FacebookMessenger', 'Instagram')",
+            name="ck_inbox_messages_channel",
+        ),
+        CheckConstraint(
             "status IN ('Pending', 'Processing', 'Processed', 'Failed')",
             name="ck_inbox_messages_status",
         ),
-        UniqueConstraint("organization_id", "wamid", name="uq_inbox_org_wamid"),
+        UniqueConstraint(
+            "organization_id",
+            "channel",
+            "wamid",
+            name="uq_inbox_org_channel_provider_message",
+        ),
         _org_scoped_fk(
             "conversation_id",
             "conversations",
@@ -894,7 +940,11 @@ class OutboxMessage(Base):
     # same key would otherwise have one of them refuse to enqueue a reply the
     # other already sent (ADR-0050).
     idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
-    to_wa_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    channel: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="WhatsApp", server_default="WhatsApp"
+    )
+    recipient_id: Mapped[str] = mapped_column("to_wa_id", String(120), nullable=False)
+    to_wa_id = synonym("recipient_id")
     kind: Mapped[str] = mapped_column(String(40), nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
     covered_inbox_ids: Mapped[list[str]] = mapped_column(
@@ -922,6 +972,10 @@ class OutboxMessage(Base):
     )
 
     __table_args__ = (
+        CheckConstraint(
+            "channel IN ('WhatsApp', 'FacebookMessenger', 'Instagram')",
+            name="ck_outbox_messages_channel",
+        ),
         CheckConstraint(
             "status IN ('Pending', 'Sending', 'Sent', 'Failed', 'DeliveryUnknown')",
             name="ck_outbox_messages_status",
@@ -1068,7 +1122,10 @@ class ConsentRecord(Base):
     )
 
     __table_args__ = (
-        CheckConstraint("channel = 'WhatsApp'", name="ck_consent_records_channel"),
+        CheckConstraint(
+            "channel IN ('WhatsApp', 'FacebookMessenger', 'Instagram')",
+            name="ck_consent_records_channel",
+        ),
         CheckConstraint(
             "category IN ('Marketing', 'Utility', 'Service')",
             name="ck_consent_records_category",
@@ -1126,7 +1183,10 @@ class SuppressionRecord(Base):
     )
 
     __table_args__ = (
-        CheckConstraint("channel = 'WhatsApp'", name="ck_suppression_records_channel"),
+        CheckConstraint(
+            "channel IN ('WhatsApp', 'FacebookMessenger', 'Instagram')",
+            name="ck_suppression_records_channel",
+        ),
         CheckConstraint(
             "scope IN ('BusinessInitiated', 'All')", name="ck_suppression_records_scope"
         ),
@@ -1852,6 +1912,7 @@ class OpportunityOriginSource(str, enum.Enum):
     """The first known commercial provenance of an Opportunity."""
 
     WHATSAPP_INBOUND = "WhatsAppInbound"
+    MESSAGING_INBOUND = "MessagingInbound"
     WEBSITE_CONVERSATION = "WebsiteConversation"
     REFERRAL = "Referral"
     CAMPAIGN = "Campaign"
@@ -2120,7 +2181,7 @@ class Contact(Base):
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
-    # The best name Product actually knows. A WhatsApp profile name is a claim
+    # The best name Product actually knows. A provider profile name is a claim
     # by the sender, so it is stored as a display hint and never as legal
     # identity. NULL is a legitimate value: an anonymous inquiry has no name.
     display_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
@@ -2141,9 +2202,9 @@ class ContactChannelIdentity(Base):
     """One addressable identity through which a Contact reaches the operation.
 
     This is the join that keeps Contact separate from channel identity. The
-    WhatsApp row points at the existing ``leads`` record, which is what Meta
-    authenticates and what the Outbound Eligibility Gate already reasons about;
-    nothing about Stage 1's consent, suppression or window rules moves here.
+    customer-messaging row points at the existing ``leads`` record, which is
+    what Meta authenticates and what the Outbound Eligibility Gate already
+    reasons about; consent, suppression and service-window rules remain there.
 
     Two identities are the same person only when the *same* trusted identifier
     is presented again. Similar-looking numbers are never merged: in Mexico the
@@ -2162,12 +2223,15 @@ class ContactChannelIdentity(Base):
         nullable=False,
     )
     channel: Mapped[str] = mapped_column(String(20), nullable=False, default="WhatsApp")
+    channel_account_id: Mapped[str] = mapped_column(
+        String(200), nullable=False, default="", server_default=sql_text("''")
+    )
     # The channel-native identifier, exactly as the platform reported it.
     identity: Mapped[str] = mapped_column(String(120), nullable=False)
     trust: Mapped[str] = mapped_column(String(12), nullable=False)
-    # The WhatsApp channel identity record this row corresponds to, when the
-    # channel is WhatsApp. Kept as a real foreign key so Stage 1's Lead-scoped
-    # suppression and consent evidence stays reachable from the Contact.
+    # The provider-authenticated channel identity this row corresponds to. Kept
+    # as a real foreign key so Lead-scoped suppression, consent, and service
+    # window evidence stays reachable from the Contact.
     lead_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("leads.id", ondelete="CASCADE"), nullable=True
     )
@@ -2176,19 +2240,27 @@ class ContactChannelIdentity(Base):
     )
 
     __table_args__ = (
-        CheckConstraint("channel = 'WhatsApp'", name="ck_contact_identity_channel"),
+        CheckConstraint(
+            "channel IN ('WhatsApp', 'FacebookMessenger', 'Instagram')",
+            name="ck_contact_identity_channel",
+        ),
         CheckConstraint(
             "trust IN ('Verified', 'Asserted')", name="ck_contact_identity_trust"
         ),
         CheckConstraint(
-            "channel <> 'WhatsApp' OR lead_id IS NOT NULL",
+            "lead_id IS NOT NULL",
             name="ck_contact_identity_whatsapp_lead",
         ),
         UniqueConstraint(
-            "organization_id", "channel", "identity", name="uq_contact_identity"
+            "organization_id",
+            "channel",
+            "channel_account_id",
+            "identity",
+            name="uq_contact_identity",
         ),
-        # One Contact per WhatsApp channel identity. Merging two Contacts is a
-        # deliberate later decision, not something a second webhook can cause.
+        # One Contact per provider-authenticated channel identity. Merging two
+        # Contacts is a deliberate later decision, not something a second
+        # webhook can cause.
         UniqueConstraint("lead_id", name="uq_contact_identity_lead"),
         Index("ix_contact_identities_contact", "contact_id"),
     )
@@ -2521,7 +2593,8 @@ class OpportunityOrigin(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "source IN ('WhatsAppInbound', 'WebsiteConversation', 'Referral', "
+            "source IN ('WhatsAppInbound', 'MessagingInbound', "
+            "'WebsiteConversation', 'Referral', "
             "'Campaign', 'AdvisorEntry', 'LegacyBackfill')",
             name="ck_opportunity_origins_source",
         ),
@@ -5648,6 +5721,8 @@ class IntegrationProvider(str, enum.Enum):
 
     META_WHATSAPP = "MetaWhatsApp"
     META_BUSINESS = "MetaBusiness"
+    META_MESSENGER = "MetaMessenger"
+    META_INSTAGRAM = "MetaInstagram"
     GOOGLE_CALENDAR = "GoogleCalendar"
     TELEGRAM = "Telegram"
     EASYBROKER = "EasyBroker"
@@ -5677,6 +5752,8 @@ class ChannelBindingKind(str, enum.Enum):
 
     WHATSAPP_PHONE_NUMBER = "WhatsAppPhoneNumberId"
     WHATSAPP_BUSINESS_ACCOUNT = "WhatsAppBusinessAccountId"
+    FACEBOOK_PAGE = "FacebookPageId"
+    INSTAGRAM_ACCOUNT = "InstagramAccountId"
     TELEGRAM_BOT = "TelegramBotId"
     PUBLIC_SITE_HOST = "PublicSiteHost"
 
@@ -5928,8 +6005,8 @@ class OrganizationSecretReference(Base):
             name="ck_secret_reference_state",
         ),
         CheckConstraint(
-            "provider IN ('MetaWhatsApp', 'MetaBusiness', 'GoogleCalendar', "
-            "'Telegram', 'EasyBroker')",
+            "provider IN ('MetaWhatsApp', 'MetaBusiness', 'MetaMessenger', "
+            "'MetaInstagram', 'GoogleCalendar', 'Telegram', 'EasyBroker')",
             name="ck_secret_reference_provider",
         ),
         UniqueConstraint(
@@ -5980,7 +6057,8 @@ class OrganizationChannelBinding(Base):
     __table_args__ = (
         CheckConstraint(
             "kind IN ('WhatsAppPhoneNumberId', 'WhatsAppBusinessAccountId', "
-            "'TelegramBotId', 'PublicSiteHost')",
+            "'FacebookPageId', 'InstagramAccountId', 'TelegramBotId', "
+            "'PublicSiteHost')",
             name="ck_channel_binding_kind",
         ),
         CheckConstraint(

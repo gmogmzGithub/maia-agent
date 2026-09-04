@@ -108,7 +108,7 @@ class AlreadyHandled(CommercialError):
 
 class NotHandling(CommercialError):
     message = (
-        "Para responder por WhatsApp primero tienes que tomar la conversación."
+        "Para responder por este canal primero tienes que tomar la conversación."
     )
 
 
@@ -413,7 +413,7 @@ class ConversationHandling:
         return await self.snapshot(conversation.id)
 
     async def reply(self, actor: Actor, command: HumanReply) -> ReplyRecorded:
-        """A human's WhatsApp message, on the Organization's own channel.
+        """A human reply on the Organization's originating customer channel.
 
         Never commits, so the message and the eligibility decision that
         authorised it land together.

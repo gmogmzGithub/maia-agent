@@ -79,6 +79,8 @@ class BootstrapEnvironment:
     slug: str
     whatsapp_phone_number_id: str = ""
     whatsapp_business_account_id: str = ""
+    facebook_page_id: str = ""
+    instagram_account_id: str = ""
     telegram_bot_id: str = ""
     public_site_host: str = ""
     #: ``provider -> environment variable name``. The *names*, never the values.
@@ -99,6 +101,8 @@ class BootstrapEnvironment:
                     ChannelBindingKind.WHATSAPP_BUSINESS_ACCOUNT,
                     self.whatsapp_business_account_id,
                 ),
+                (ChannelBindingKind.FACEBOOK_PAGE, self.facebook_page_id),
+                (ChannelBindingKind.INSTAGRAM_ACCOUNT, self.instagram_account_id),
                 (ChannelBindingKind.TELEGRAM_BOT, self.telegram_bot_id),
                 (ChannelBindingKind.PUBLIC_SITE_HOST, self.public_site_host),
             )

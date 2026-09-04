@@ -125,6 +125,7 @@ class OutboxService:
             conversation_id=conversation.id,
             inbox_group_id=inbox_group_id,
             idempotency_key=idempotency_key,
+            channel=conversation.channel,
             to_wa_id=to_wa_id,
             kind=kind,
             body=body,

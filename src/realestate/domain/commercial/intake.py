@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from realestate.channels.messaging import CustomerChannel
 from realestate.db.models import (
     Conversation,
     Lead,
@@ -61,7 +62,7 @@ class IntakeResult:
 
 
 class CommercialIntake:
-    """The seam between the WhatsApp Inbox and the commercial record."""
+    """The seam between the customer Inbox and the commercial record."""
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -81,8 +82,11 @@ class CommercialIntake:
         """
         actor = Actor.product(lead.organization_id, "CommercialIntake")
         engagement_origin = await engagement_origin_for_lead(self._session, lead.id)
-        identity = ChannelIdentity.whatsapp(
-            wa_id=lead.wa_id,
+        channel = CustomerChannel(lead.channel)
+        identity = ChannelIdentity.customer_message(
+            channel=channel,
+            channel_account_id=lead.channel_account_id,
+            provider_user_id=lead.provider_user_id,
             lead_id=lead.id,
             profile_name=lead.profile_name,
         )
@@ -109,9 +113,13 @@ class CommercialIntake:
                         source=(
                             OpportunityOriginSource.CAMPAIGN
                             if engagement_origin is not None
-                            else OpportunityOriginSource.WHATSAPP_INBOUND
+                            else (
+                                OpportunityOriginSource.WHATSAPP_INBOUND
+                                if channel is CustomerChannel.WHATSAPP
+                                else OpportunityOriginSource.MESSAGING_INBOUND
+                            )
                         ),
-                        channel="WhatsApp",
+                        channel=channel.value,
                         campaign=(
                             engagement_origin.label
                             if engagement_origin is not None

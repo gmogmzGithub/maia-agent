@@ -27,15 +27,17 @@ see `docs/architecture/architecture.md`.
 ## Identity matrix
 
 Nothing in a row below is shared between two columns. This is the rule that
-prevents silent misrouting (ADR-0060), and Channel Binding enforces the WhatsApp,
-Telegram and hostname half of it by refusing an unbound identifier rather than
-resolving it to a default.
+prevents silent misrouting (ADR-0060), and Channel Binding enforces the customer
+channels, Telegram and hostname half of it by refusing an unbound identifier
+rather than resolving it to a default.
 
 | | Sandbox | Pilot | Public |
 |---|---|---|---|
 | Hostname | `sandbox.elmenlabs.com` | `piloto.elmenlabs.com` | Brokerage Brand domain (TBD) |
 | `SITE_PUBLIC_ORIGIN` | the hostname above | the hostname above | the hostname above |
 | WhatsApp | Meta developer test number | dedicated business number | same as Pilot |
+| Facebook Messenger | dedicated test Page | dedicated business Page | same as Pilot |
+| Instagram | test professional account | dedicated professional account | same as Pilot |
 | Meta app | dev app | production app | production app |
 | Telegram bot | its own bot | its own bot | its own bot |
 | Model key | its own Anthropic key | its own Anthropic key | its own Anthropic key |
@@ -82,9 +84,10 @@ produces no Inbox row and therefore no reply while Product, Hermes and every
 provider credential go on reporting healthy.
 
 Cloudflare Access sits in front of `/crm`, `/admin` and `/platform` with email
-one-time-pin for the two of us. It must **not** cover `/` or
-`/webhooks/whatsapp`: Meta cannot complete a login flow, and the webhook already
-authenticates itself by `META_APP_SECRET` signature.
+one-time-pin for the two of us. It must **not** cover `/`,
+`/webhooks/whatsapp`, `/webhooks/messenger`, or `/webhooks/instagram`: Meta
+cannot complete a webhook handshake through Access, and each webhook
+authenticates the raw body with its configured app-secret signature.
 
 Listing Media already uses the cloud-shaped storage boundary: Product writes
 checksummed objects to two private MinIO buckets through the AWS S3 client, while

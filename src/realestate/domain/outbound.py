@@ -170,6 +170,7 @@ class DenialReason(str, enum.Enum):
     FOLLOW_UP_POLICY_INACTIVE = "FollowUpPolicyInactive"
     ELIGIBILITY_EVIDENCE_MISSING = "EligibilityEvidenceMissing"
     ENGAGEMENT_NOT_ACTIVE = "EngagementNotActive"
+    CHANNEL_POLICY_UNSUPPORTED = "ChannelPolicyUnsupported"
 
 
 @dataclass(frozen=True)
@@ -246,6 +247,7 @@ class TextDelivery:
 
     to_wa_id: str
     body: str
+    channel_account_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -255,6 +257,7 @@ class TemplateDelivery:
     to_wa_id: str
     template_id: str
     language_code: str
+    channel_account_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -341,7 +344,15 @@ class OutboundMessaging:
         # A supplied template must be valid whether or not the window is open;
         # a closed window must have one. Both directions fail closed.
         window = await self._service_window_expiry(lead)
-        if (intent.template_id is None) is not (intent.template_category is None):
+        if (
+            intent.conversation.channel != "WhatsApp"
+            and intent.template_id is not None
+        ):
+            refusal = Refusal(
+                DenialReason.CHANNEL_POLICY_UNSUPPORTED,
+                "WhatsApp templates cannot be sent through this customer channel.",
+            )
+        elif (intent.template_id is None) is not (intent.template_category is None):
             refusal = Refusal(
                 DenialReason.TEMPLATE_METADATA_INCOMPLETE,
                 "Template identifier and category must be supplied together.",
@@ -457,11 +468,16 @@ class OutboundMessaging:
                 "The queued row's Conversation no longer exists.",
             )
         lead = await self._lead(conversation)
-        if lead is None or lead.wa_id != row.to_wa_id:
+        if (
+            lead is None
+            or lead.provider_user_id != row.recipient_id
+            or lead.channel != row.channel
+            or conversation.channel != row.channel
+        ):
             return await self._block_delivery(
                 row,
                 DenialReason.ELIGIBILITY_EVIDENCE_MISSING,
-                "The queued recipient no longer matches Product truth.",
+                "The queued channel or recipient no longer matches Product truth.",
             )
 
         try:
@@ -497,6 +513,12 @@ class OutboundMessaging:
                 row,
                 DenialReason.ELIGIBILITY_EVIDENCE_MISSING,
                 "The queued purpose and Outbox kind do not match.",
+            )
+        if conversation.channel != "WhatsApp" and intent.template_id is not None:
+            return await self._block_delivery(
+                row,
+                DenialReason.CHANNEL_POLICY_UNSUPPORTED,
+                "WhatsApp templates cannot be sent through this customer channel.",
             )
         if initiation is OutboundInitiation.REACTIVE and not triggers:
             return await self._block_delivery(
@@ -536,6 +558,7 @@ class OutboundMessaging:
                 to_wa_id=row.to_wa_id,
                 template_id=intent.template_id,
                 language_code=approved.language_code,
+                channel_account_id=conversation.channel_account_id,
             )
 
         expiry = await self._service_window_expiry(lead)
@@ -545,7 +568,11 @@ class OutboundMessaging:
                 DenialReason.SERVICE_WINDOW_CLOSED,
                 "The free-form service window closed before delivery.",
             )
-        return TextDelivery(to_wa_id=row.to_wa_id, body=row.body)
+        return TextDelivery(
+            to_wa_id=row.to_wa_id,
+            body=row.body,
+            channel_account_id=conversation.channel_account_id,
+        )
 
     # -- The rules --------------------------------------------------------
 
@@ -736,7 +763,8 @@ class OutboundMessaging:
         """When Meta's free-form window closes, from the Contact's own messages.
 
         Computed across the Lead's Conversations rather than one of them: the
-        window belongs to the pair of phone numbers, not to an engagement cycle.
+        window belongs to this provider-scoped Channel Identity, not to an
+        engagement cycle.
         """
         latest = await self._session.scalar(
             select(InboxMessage.sent_at)
@@ -987,6 +1015,7 @@ async def record_explicit_opt_out(
     *,
     organization_id: uuid.UUID,
     lead_id: uuid.UUID,
+    channel: str = "WhatsApp",
     phrase: str,
     source_inbox_id: uuid.UUID | None,
 ) -> bool:
@@ -1009,6 +1038,7 @@ async def record_explicit_opt_out(
         SuppressionRecord(
             organization_id=organization_id,
             lead_id=lead_id,
+            channel=channel,
             scope="BusinessInitiated",
             reason="ExplicitOptOut",
             evidence=phrase,
@@ -1021,6 +1051,7 @@ async def record_explicit_opt_out(
         ConsentRecord(
             organization_id=organization_id,
             lead_id=lead_id,
+            channel=channel,
             category=ConsentCategory.MARKETING.value,
             state=ConsentState.REVOKED.value,
             source="InboundOptOut",

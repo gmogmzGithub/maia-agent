@@ -1213,7 +1213,7 @@ class Appointments:
             lines.append(f"Nombre: {attendee_name}")
         if lead is not None:
             if lead.profile_name:
-                lines.append(f"WhatsApp: {lead.profile_name}")
+                lines.append(f"Perfil del canal: {lead.profile_name}")
             lines.append(f"Teléfono: +{lead.wa_id}")
         if advisor is not None:
             lines.append(f"Asesor: {advisor.display_name}")

@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from realestate.channels.messaging import CustomerChannel
+
 
 @dataclass(frozen=True)
 class InboundMessage:
@@ -28,6 +30,22 @@ class InboundMessage:
     text: str | None
     profile_name: str | None
     raw: dict[str, Any] = field(repr=False)
+
+    @property
+    def channel(self) -> CustomerChannel:
+        return CustomerChannel.WHATSAPP
+
+    @property
+    def provider_message_id(self) -> str:
+        return self.wamid
+
+    @property
+    def sender_id(self) -> str:
+        return self.from_wa_id
+
+    @property
+    def channel_account_id(self) -> str:
+        return self.phone_number_id
 
     @property
     def referral(self) -> dict[str, Any] | None:

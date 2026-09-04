@@ -2,8 +2,8 @@
 
 A Contact is a person across time. A channel identity is an address the
 platform authenticated. Keeping them separate is what lets a Contact outlive
-every conversation they ever had, hold several Property Needs at once, and one
-day be reachable on a second channel without their commercial history forking.
+every conversation they ever had, hold several Property Needs at once, and be
+reachable on several channels without their commercial history forking.
 
 The rule for joining them is deliberately narrow: **the same trusted identifier
 resolves to the same Contact, and nothing else does.** Similar identifiers stay
@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from realestate.channels.messaging import CustomerChannel
 from realestate.db.models import (
     Contact,
     ContactChannelIdentity,
@@ -35,10 +36,6 @@ from realestate.domain.text import fold_mexican_mobile
 from realestate.domain.commercial.actors import Actor, NotFound
 
 logger = logging.getLogger(__name__)
-
-WHATSAPP = "WhatsApp"
-
-
 
 class UntrustedIdentity(Exception):
     """The identity cannot be used to resolve a Contact.
@@ -61,10 +58,12 @@ class ChannelIdentity:
     channel: str
     identity: str
     trust: ChannelIdentityTrust
-    #: The WhatsApp channel-identity row this corresponds to. Required for
-    #: WhatsApp, because Stage 1's consent and suppression evidence hangs off it.
+    channel_account_id: str = ""
+    #: The durable Lead/channel-address row this corresponds to. Required for
+    #: verified customer-message channels so consent and suppression evidence
+    #: has an Organization-scoped subject.
     lead_id: uuid.UUID | None = None
-    #: A display hint the channel supplied, such as a WhatsApp profile name.
+    #: A display hint supplied by the channel, when the provider includes one.
     display_name: str | None = None
 
     @classmethod
@@ -73,12 +72,34 @@ class ChannelIdentity:
         *,
         wa_id: str,
         lead_id: uuid.UUID,
+        phone_number_id: str = "",
         profile_name: str | None = None,
     ) -> ChannelIdentity:
         """A WhatsApp identity Meta authenticated through a signed webhook."""
         return cls(
-            channel=WHATSAPP,
+            channel=CustomerChannel.WHATSAPP.value,
+            channel_account_id=phone_number_id,
             identity=wa_id,
+            trust=ChannelIdentityTrust.VERIFIED,
+            lead_id=lead_id,
+            display_name=profile_name,
+        )
+
+    @classmethod
+    def customer_message(
+        cls,
+        *,
+        channel: CustomerChannel,
+        channel_account_id: str,
+        provider_user_id: str,
+        lead_id: uuid.UUID,
+        profile_name: str | None = None,
+    ) -> ChannelIdentity:
+        """An identity authenticated by a signed customer-message webhook."""
+        return cls(
+            channel=channel.value,
+            channel_account_id=channel_account_id,
+            identity=provider_user_id,
             trust=ChannelIdentityTrust.VERIFIED,
             lead_id=lead_id,
             display_name=profile_name,
@@ -158,6 +179,7 @@ class CommercialIdentity:
                     organization_id=organization_id,
                     contact_id=contact.id,
                     channel=channel_identity.channel,
+                    channel_account_id=channel_identity.channel_account_id,
                     identity=channel_identity.identity,
                     trust=channel_identity.trust.value,
                     lead_id=channel_identity.lead_id,
@@ -243,7 +265,7 @@ class CommercialIdentity:
         return list(rows)
 
     async def contact_for_lead(self, lead_id: uuid.UUID) -> uuid.UUID | None:
-        """The Contact behind one WhatsApp channel identity, if resolved yet."""
+        """The Contact behind one durable customer channel identity, if resolved."""
         found: uuid.UUID | None = await self._session.scalar(
             select(ContactChannelIdentity.contact_id).where(
                 ContactChannelIdentity.lead_id == lead_id
@@ -261,13 +283,17 @@ class CommercialIdentity:
         resolving it silently in one direction or the other.
         """
         mine = await self.identities(contact_id)
-        if not mine:
+        whatsapp_mine = [
+            row for row in mine if row.channel == CustomerChannel.WHATSAPP.value
+        ]
+        if not whatsapp_mine:
             return []
-        keys = {national_digits(row.identity) for row in mine}
+        keys = {national_digits(row.identity) for row in whatsapp_mine}
         rows = await self._session.scalars(
             select(ContactChannelIdentity)
             .where(ContactChannelIdentity.organization_id == actor.organization_id)
             .where(ContactChannelIdentity.contact_id != contact_id)
+            .where(ContactChannelIdentity.channel == CustomerChannel.WHATSAPP.value)
         )
         return [row for row in rows if national_digits(row.identity) in keys]
 
@@ -276,14 +302,20 @@ class CommercialIdentity:
     def _require_usable(self, channel_identity: ChannelIdentity) -> None:
         if not channel_identity.identity.strip():
             raise UntrustedIdentity("An empty channel identity resolves to nobody.")
-        if channel_identity.channel != WHATSAPP:
+        if channel_identity.channel not in {channel.value for channel in CustomerChannel}:
             raise UntrustedIdentity(
-                f"Channel {channel_identity.channel!r} is not supported yet."
+                f"Channel {channel_identity.channel!r} is not a customer channel."
             )
         if channel_identity.lead_id is None:
             raise UntrustedIdentity(
-                "A WhatsApp identity must name the channel-identity record that "
+                "A customer identity must name the channel-identity record that "
                 "holds its consent and suppression evidence."
+            )
+        if not channel_identity.channel_account_id.strip() and (
+            channel_identity.channel != CustomerChannel.WHATSAPP.value
+        ):
+            raise UntrustedIdentity(
+                "A scoped customer identity must name the receiving channel account."
             )
 
     async def _existing(
@@ -300,6 +332,10 @@ class CommercialIdentity:
             .where(ContactChannelIdentity.organization_id == organization_id)
             .where(ContactChannelIdentity.channel == channel_identity.channel)
             .where(
+                ContactChannelIdentity.channel_account_id
+                == channel_identity.channel_account_id
+            )
+            .where(
                 (ContactChannelIdentity.identity == channel_identity.identity)
                 | (ContactChannelIdentity.lead_id == channel_identity.lead_id)
             )
@@ -313,9 +349,9 @@ class CommercialIdentity:
     ) -> None:
         """Fill in a missing display hint; never overwrite one an operator set.
 
-        A WhatsApp profile name is whatever the sender typed into their phone.
-        It is useful when Product knows nothing else and must not be allowed to
-        replace a name a human recorded.
+        A provider profile name is only a sender-controlled hint. It is useful
+        when Product knows nothing else and must not replace a name a human
+        recorded.
         """
         if not channel_identity.display_name:
             return
