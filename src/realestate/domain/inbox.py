@@ -36,11 +36,15 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from realestate.channels.whatsapp.payload import InboundMessage
+from realestate.channels.messaging import (
+    CustomerChannel,
+    InboundCustomerMessage,
+)
 from realestate.db.models import (
     ENGAGEMENT_CYCLE_DAYS,
     MAIA_MAY_REPLY,
     ChannelBindingKind,
+    ContactChannelIdentity,
     Conversation,
     ConversationHandlingState,
     InboxGroup,
@@ -71,6 +75,12 @@ RETRY_DELAYS_SECONDS = (0, 5, 30)
 COLLECTION_WINDOW_SECONDS = 2.0
 # P-034: the in-flight reconciliation window, from the start of the turn.
 RECONCILIATION_WINDOW_SECONDS = 10.0
+
+CHANNEL_BINDING_KIND: dict[CustomerChannel, ChannelBindingKind] = {
+    CustomerChannel.WHATSAPP: ChannelBindingKind.WHATSAPP_PHONE_NUMBER,
+    CustomerChannel.FACEBOOK_MESSENGER: ChannelBindingKind.FACEBOOK_PAGE,
+    CustomerChannel.INSTAGRAM: ChannelBindingKind.INSTAGRAM_ACCOUNT,
+}
 
 
 def _now() -> datetime:
@@ -152,7 +162,7 @@ class InboxService:
 
     # -- Acceptance (API path) --------------------------------------------
 
-    async def accept(self, message: InboundMessage) -> AcceptedMessage:
+    async def accept(self, message: InboundCustomerMessage) -> AcceptedMessage:
         """Persist one authenticated inbound message idempotently.
 
         A duplicate Meta delivery resolves to the existing record and creates no
@@ -160,14 +170,14 @@ class InboxService:
         cycle.
 
         Which Organization the message belongs to is decided *first*, from the
-        WhatsApp phone number id it arrived on, by
+        receiving channel account it arrived on, by
         :class:`~realestate.domain.platform.routing.OrganizationRouting`. An
         unbound number is refused rather than defaulted: filing one brokerage's
         customer under another's Contacts is a failure the customer discovers,
         and no amount of later correction unsends the reply (ADR-0050).
         """
         routed = await self._routing.resolve(
-            ChannelBindingKind.WHATSAPP_PHONE_NUMBER, message.phone_number_id
+            CHANNEL_BINDING_KIND[message.channel], message.channel_account_id
         )
         organization_id = routed.organization_id
         existing = (
@@ -177,7 +187,8 @@ class InboxService:
                 # lookup across the whole table could resolve a replayed body to
                 # somebody else's Conversation.
                 .where(InboxMessage.organization_id == organization_id)
-                .where(InboxMessage.wamid == message.wamid)
+                .where(InboxMessage.channel == message.channel.value)
+                .where(InboxMessage.provider_message_id == message.provider_message_id)
             )
         ).scalar_one_or_none()
         if existing is not None:
@@ -202,13 +213,16 @@ class InboxService:
         intake = CommercialIntake(self._session)
         lead = await self._lead(message, organization_id)
         cycle, cycle_created = await self._current_cycle(lead)
-        conversation = await self._conversation(lead, cycle, message.phone_number_id)
+        conversation = await self._conversation(
+            lead, cycle, message.channel, message.channel_account_id
+        )
 
         row = InboxMessage(
             organization_id=organization_id,
             conversation_id=conversation.id,
-            wamid=message.wamid,
-            from_wa_id=message.from_wa_id,
+            channel=message.channel.value,
+            provider_message_id=message.provider_message_id,
+            sender_id=message.sender_id,
             message_type=message.message_type,
             text=message.text,
             sent_at=message.sent_at,
@@ -233,6 +247,7 @@ class InboxService:
                     self._session,
                     organization_id=organization_id,
                     lead_id=lead.id,
+                    channel=message.channel.value,
                     phrase=phrase,
                     source_inbox_id=row.id,
                 )
@@ -240,11 +255,11 @@ class InboxService:
                     self._session,
                     organization_id=lead.organization_id,
                     actor_type="Contact",
-                    actor_id=lead.wa_id,
+                    actor_id=lead.provider_user_id,
                     action="RecordExplicitOptOut",
                     subject_type="Lead",
                     subject_id=str(lead.id),
-                    details={"phrase": phrase, "channel": "WhatsApp"},
+                    details={"phrase": phrase, "channel": message.channel.value},
                     commit=False,
                 )
 
@@ -261,9 +276,13 @@ class InboxService:
 
             # An opaque website reference gains identity only here, after Meta
             # authenticated the sender and CommercialIntake resolved the trusted
-            # Contact. Bad, expired, replayed or foreign references never block
+            # Contact. This handoff protocol is deliberately WhatsApp-only.
+            # Bad, expired, replayed or foreign references never block
             # acceptance of the person's ordinary WhatsApp message.
-            if reference := extract_handoff_reference(message.text):
+            if (
+                message.channel is CustomerChannel.WHATSAPP
+                and (reference := extract_handoff_reference(message.text))
+            ):
                 try:
                     await ChannelHandoff(
                         self._session,
@@ -311,15 +330,44 @@ class InboxService:
             opportunity_id=intake_result.opportunity_id,
         )
 
-    async def _lead(self, message: InboundMessage, organization_id: uuid.UUID) -> Lead:
+    async def _lead(
+        self, message: InboundCustomerMessage, organization_id: uuid.UUID
+    ) -> Lead:
         lead = (
             await self._session.execute(
                 select(Lead)
                 .where(Lead.organization_id == organization_id)
-                .where(Lead.wa_id == message.from_wa_id)
+                .where(Lead.channel == message.channel.value)
+                .where(Lead.channel_account_id == message.channel_account_id)
+                .where(Lead.provider_user_id == message.sender_id)
                 .with_for_update()
             )
         ).scalar_one_or_none()
+        if lead is None:
+            # Compatibility for rows created before channel accounts became
+            # part of identity (and for fixtures that intentionally construct
+            # the historical shape). The database migration fills every row it
+            # can from its Conversation; only an unassigned legacy row reaches
+            # this path, and it is claimed by the first authenticated account.
+            lead = (
+                await self._session.execute(
+                    select(Lead)
+                    .where(Lead.organization_id == organization_id)
+                    .where(Lead.channel == message.channel.value)
+                    .where(Lead.channel_account_id == "")
+                    .where(Lead.provider_user_id == message.sender_id)
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            if lead is not None:
+                lead.channel_account_id = message.channel_account_id
+                identity = await self._session.scalar(
+                    select(ContactChannelIdentity).where(
+                        ContactChannelIdentity.lead_id == lead.id
+                    )
+                )
+                if identity is not None and not identity.channel_account_id:
+                    identity.channel_account_id = message.channel_account_id
         if lead is not None:
             if message.profile_name and lead.profile_name != message.profile_name:
                 lead.profile_name = message.profile_name
@@ -327,7 +375,9 @@ class InboxService:
 
         lead = Lead(
             organization_id=organization_id,
-            wa_id=message.from_wa_id,
+            channel=message.channel.value,
+            channel_account_id=message.channel_account_id,
+            provider_user_id=message.sender_id,
             profile_name=message.profile_name,
         )
         self._session.add(lead)
@@ -365,7 +415,11 @@ class InboxService:
         return cycle, True
 
     async def _conversation(
-        self, lead: Lead, cycle: LeadEngagementCycle, phone_number_id: str
+        self,
+        lead: Lead,
+        cycle: LeadEngagementCycle,
+        channel: CustomerChannel,
+        channel_account_id: str,
     ) -> Conversation:
         conversation = (
             await self._session.execute(
@@ -379,7 +433,8 @@ class InboxService:
             organization_id=lead.organization_id,
             lead_id=lead.id,
             cycle_id=cycle.id,
-            phone_number_id=phone_number_id,
+            channel=channel.value,
+            channel_account_id=channel_account_id,
         )
         self._session.add(conversation)
         await self._session.flush()

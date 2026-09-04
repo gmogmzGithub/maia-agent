@@ -440,6 +440,21 @@ async def test_the_bootstrap_organization_is_none_when_the_slug_is_absent(
 # ---------------------------------------------------------------------------
 
 
+def test_the_bootstrap_maps_each_customer_channel_to_its_own_binding() -> None:
+    environment = BootstrapEnvironment(
+        slug=LAREVIA_SLUG,
+        whatsapp_phone_number_id="phone-1",
+        facebook_page_id="page-1",
+        instagram_account_id="instagram-1",
+    )
+
+    assert set(environment.bindings) >= {
+        (ChannelBindingKind.WHATSAPP_PHONE_NUMBER, "phone-1"),
+        (ChannelBindingKind.FACEBOOK_PAGE, "page-1"),
+        (ChannelBindingKind.INSTAGRAM_ACCOUNT, "instagram-1"),
+    }
+
+
 async def test_the_bootstrap_binds_the_founding_organizations_channels(
     database,
 ) -> None:

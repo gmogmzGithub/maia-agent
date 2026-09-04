@@ -31,7 +31,7 @@ The source package mirrors Maia's runtime split:
 | `realestate.domain` | Business authority: policy, commands, records, invariants, and PostgreSQL-backed product workflows. |
 | `realestate.db` | SQLAlchemy engine and ORM model definitions. This is the persistence adapter. |
 | `realestate.worker` | Background workers and polling loops. |
-| `realestate.channels` | External channel adapters for WhatsApp, Telegram, and Google Calendar. |
+| `realestate.channels` | External adapters for WhatsApp, Facebook Messenger, Instagram, Telegram, and Google Calendar. |
 | `realestate.hermes` | Product-side Hermes runtime client and session binding. |
 | `realestate.infrastructure` | Provider-specific implementations of domain ports, including S3-compatible Listing Media storage. |
 | `realestate.site` | Public-site SSR app, templates, static assets, and Product gateway. This is the GUI/web frontend layer. |

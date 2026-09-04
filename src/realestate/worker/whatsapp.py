@@ -7,7 +7,7 @@ One tick does three things, in order:
 3. drain due Outbox rows.
 
 The step that matters most is response settlement. A Hermes draft is *not* a
-WhatsApp reply. It becomes one only after the Worker confirms that no
+customer reply. It becomes one only after the Worker confirms that no
 same-Conversation message persisted during the reconciliation window is still
 unadopted, and the released row records every Inbox identifier it covers.
 """
@@ -22,6 +22,8 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from realestate.channels.messaging import CustomerChannel
+from realestate.channels.meta.client import MetaMessagingClient
 from realestate.channels.whatsapp.client import SendOutcome, SendResult, WhatsAppClient
 from realestate.db.engine import Database
 from realestate.db.models import (
@@ -65,6 +67,7 @@ from realestate.domain.outbox import (
     OutboxService,
 )
 from realestate.domain.platform.whatsapp import OrganizationWhatsAppClients
+from realestate.domain.platform.messaging import OrganizationMetaMessagingClients
 from realestate.domain.platform.runtime import OrganizationAppointmentPolicies
 from realestate.channels.whatsapp.formatting import to_whatsapp_markup
 from realestate.hermes.client import HermesClient
@@ -86,6 +89,7 @@ class WhatsAppWorker:
         hermes: HermesClient,
         whatsapp: WhatsAppClient | OrganizationWhatsAppClients,
         *,
+        messaging: OrganizationMetaMessagingClients | None = None,
         sales_profile: str,
         schedule: WeeklySchedule | OrganizationAppointmentPolicies,
         max_concurrent: int = 3,
@@ -93,6 +97,7 @@ class WhatsAppWorker:
         self._database = database
         self._hermes = hermes
         self._whatsapp = whatsapp
+        self._messaging = messaging
         self._sales_profile = sales_profile
         # Only for rendering a persisted appointment in the Broker's zone; this
         # worker computes no availability.
@@ -251,7 +256,7 @@ class WhatsAppWorker:
             on_poll=offer_late_messages,
             on_adopted=adopt_offered,
             # Applied only when this cycle's session is created. The Model
-            # cannot learn the WhatsApp profile name any other way.
+            # cannot learn the channel-supplied display name any other way.
             seed=seed,
             required_property_reference=required_property_reference,
             minimum_history_messages=recovered_messages,
@@ -459,7 +464,12 @@ class WhatsAppWorker:
                 conversation.id,
                 reply.strip()[:120],
             )
-            return to_whatsapp_markup(notice.body), Purpose(notice.kind)
+            body = (
+                to_whatsapp_markup(notice.body)
+                if conversation.channel == CustomerChannel.WHATSAPP.value
+                else notice.body
+            )
+            return body, Purpose(notice.kind)
 
         # Restore the approved wording of any accepted message the Model
         # reworded. Canonicalisation only rewrites copy it already emitted; it
@@ -471,7 +481,12 @@ class WhatsAppWorker:
                 conversation.id,
                 "; ".join(m[:40] for m in canonical.replaced),
             )
-        return to_whatsapp_markup(canonical.text), Purpose.AGENT_REPLY
+        body = (
+            to_whatsapp_markup(canonical.text)
+            if conversation.channel == CustomerChannel.WHATSAPP.value
+            else canonical.text
+        )
+        return body, Purpose.AGENT_REPLY
 
     async def _handle_failure(
         self,
@@ -525,11 +540,41 @@ class WhatsAppWorker:
                 delivery = await OutboundMessaging(session).prepare_delivery(row)
                 if isinstance(delivery, DeliveryDenied):
                     continue
-                whatsapp = self._whatsapp
-                if isinstance(whatsapp, OrganizationWhatsAppClients):
+                channel = CustomerChannel(row.channel)
+                sender: WhatsAppClient | MetaMessagingClient
+                if channel is CustomerChannel.WHATSAPP:
+                    whatsapp = self._whatsapp
+                    if isinstance(whatsapp, OrganizationWhatsAppClients):
+                        try:
+                            whatsapp = await whatsapp.for_organization(
+                                session, row.organization_id
+                            )
+                        except CommercialError as exc:
+                            await outbox.record_result(
+                                row,
+                                SendResult(
+                                    SendOutcome.FAILED_RETRYABLE,
+                                    detail=exc.message,
+                                ),
+                            )
+                            continue
+                    sender = whatsapp
+                elif self._messaging is None:
+                    await outbox.record_result(
+                        row,
+                        SendResult(
+                            SendOutcome.FAILED_RETRYABLE,
+                            detail=f"No {channel.value} client directory is configured.",
+                        ),
+                    )
+                    continue
+                else:
                     try:
-                        whatsapp = await whatsapp.for_organization(
-                            session, row.organization_id
+                        sender = await self._messaging.for_organization(
+                            session,
+                            row.organization_id,
+                            channel,
+                            delivery.channel_account_id,
                         )
                     except CommercialError as exc:
                         await outbox.record_result(
@@ -541,13 +586,13 @@ class WhatsAppWorker:
                         )
                         continue
                 if isinstance(delivery, TemplateDelivery):
-                    result = await whatsapp.send_template(
+                    result = await sender.send_template(
                         delivery.to_wa_id,
                         delivery.template_id,
                         delivery.language_code,
                     )
                 else:
-                    result = await whatsapp.send_text(
+                    result = await sender.send_text(
                         delivery.to_wa_id,
                         delivery.body,
                     )

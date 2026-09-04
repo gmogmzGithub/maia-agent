@@ -43,6 +43,10 @@ META_APP_SECRET=<Meta app secret>
 META_ACCESS_TOKEN=<Meta access token>
 META_PHONE_NUMBER_ID=<Meta phone number id>
 META_WABA_ID=<WhatsApp Business Account id>
+META_FACEBOOK_PAGE_ID=<Facebook Page id>
+META_MESSENGER_ACCESS_TOKEN=<Page access token>
+META_INSTAGRAM_ACCOUNT_ID=<Instagram professional account id>
+META_INSTAGRAM_ACCESS_TOKEN=<Instagram user access token>
 TELEGRAM_BOT_TOKEN=<Telegram bot token>
 TELEGRAM_ADMIN_IDS=<comma-separated Telegram user ids>
 GOOGLE_CALENDAR_CREDENTIALS=/run/secrets/google-calendar.json
@@ -51,6 +55,59 @@ EASYBROKER_API_KEY=<EasyBroker key>
 PLATFORM_OPERATOR_TOKEN=<local platform operator token>
 MARKET_INTELLIGENCE_BASIC_CREDENTIALS_JSON={"analyst":"<local-password>"}
 ```
+
+Messenger and Instagram are optional and independent. Leaving their account ids
+and tokens empty keeps those channels unbound; it does not affect WhatsApp.
+`META_APP_SECRET` is reused only when the products belong to the same Meta app.
+For separate apps, set `META_MESSENGER_APP_SECRET` and/or
+`META_INSTAGRAM_APP_SECRET`. Instagram Login uses
+`META_INSTAGRAM_GRAPH_BASE_URL=https://graph.instagram.com`.
+
+### Connect Facebook Messenger later
+
+1. Create or choose a Facebook Page and a Meta app with Messenger.
+2. Give the app `pages_messaging`, generate a Page access token for a person or
+   system user allowed to perform the Page's messaging task, and record the Page
+   id.
+3. Configure the Messenger webhook callback as
+   `https://<public-host>/webhooks/messenger`, using `META_VERIFY_TOKEN`, and
+   subscribe the Page to the `messages` field.
+4. Set `META_FACEBOOK_PAGE_ID`, `META_MESSENGER_ACCESS_TOKEN`, and the applicable
+   app secret, then recreate Product. Startup binds the Page and records the
+   token's environment-variable name for the founding Organization.
+
+### Connect Instagram later
+
+1. Use an Instagram professional account (Business or Creator) and configure
+   Instagram API with Instagram Login in a Meta app.
+2. Authorize `instagram_business_basic` and
+   `instagram_business_manage_messages`, then record the professional-account id
+   and Instagram user access token.
+3. Configure the Instagram webhook callback as
+   `https://<public-host>/webhooks/instagram`, using `META_VERIFY_TOKEN`, and
+   subscribe to `messages`.
+4. Set `META_INSTAGRAM_ACCOUNT_ID`, `META_INSTAGRAM_ACCESS_TOKEN`, and the
+   applicable app secret, then recreate Product. Do not put a username where the
+   numeric professional-account id belongs.
+
+Both callbacks must be public HTTPS paths and must bypass Cloudflare Access.
+Product verifies `X-Hub-Signature-256`, resolves the receiving Page/account to
+one Brokerage Organization, persists the message, and only then acknowledges
+Meta. A message from an unbound id is refused and counted; it is never assigned
+to the only Organization.
+
+For a non-founding Organization, first place each token in the deployment's
+secret store. Then use the existing `/platform/organizations/{id}/channels` and
+`/platform/organizations/{id}/credentials` endpoints to record these exact
+enum values:
+
+| Channel | Binding kind | Credential provider |
+| --- | --- | --- |
+| Facebook Messenger | `FacebookPageId` | `MetaMessenger` |
+| Instagram | `InstagramAccountId` | `MetaInstagram` |
+
+The credential endpoint receives only the secret reference name, never the
+token value.
 
 If using Google Calendar:
 

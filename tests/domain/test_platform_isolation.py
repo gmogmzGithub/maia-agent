@@ -31,6 +31,7 @@ import pytest
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 
+from realestate.channels.messaging import CustomerChannel
 from realestate.db.engine import Base, Database
 from realestate.db.models import (
     AnalyticsDomainEvent,
@@ -96,6 +97,10 @@ from realestate.domain.platform.scoping import (
     unclassified_tables,
 )
 from realestate.domain.platform.whatsapp import OrganizationWhatsAppClients
+from realestate.domain.platform.messaging import (
+    MetaMessagingChannelMissing,
+    OrganizationMetaMessagingClients,
+)
 from realestate.domain.properties import ArtifactStore, PropertyService
 from tests.conftest import DATABASE_URL, requires_postgres
 from tests.fixtures import commercial
@@ -717,6 +722,104 @@ async def test_operational_whatsapp_clients_use_each_organizations_token_and_num
     assert set(created) == {
         ("larevia-token", commercial.TEST_PHONE_NUMBER_ID),
         ("segunda-token", SECOND_PHONE_NUMBER_ID),
+    }
+    await directory.aclose()
+
+
+@pytest.mark.parametrize(
+    ("channel", "provider", "binding_kind", "reference_suffix", "account_prefix"),
+    [
+        (
+            CustomerChannel.FACEBOOK_MESSENGER,
+            IntegrationProvider.META_MESSENGER,
+            ChannelBindingKind.FACEBOOK_PAGE,
+            "MESSENGER_TOKEN",
+            "page",
+        ),
+        (
+            CustomerChannel.INSTAGRAM,
+            IntegrationProvider.META_INSTAGRAM,
+            ChannelBindingKind.INSTAGRAM_ACCOUNT,
+            "INSTAGRAM_TOKEN",
+            "instagram",
+        ),
+    ],
+)
+async def test_meta_messaging_clients_use_only_the_organizations_account_and_token(
+    two_organizations,
+    channel,
+    provider,
+    binding_kind,
+    reference_suffix,
+    account_prefix,
+) -> None:
+    database, first, second, _key, resolver = two_organizations
+    first_reference = f"LAREVIA_{reference_suffix}"
+    second_reference = f"SEGUNDA_{reference_suffix}"
+    resolver.record(first_reference, "larevia-channel-token")
+    resolver.record(second_reference, "segunda-channel-token")
+    async with database.session_scope() as session:
+        credentials = IntegrationCredentials(session, resolver)
+        routing = OrganizationRouting(session)
+        await session.execute(
+            text(
+                "DELETE FROM organization_channel_bindings "
+                "WHERE organization_id IN (:first, :second) AND kind = :kind"
+            ).bindparams(
+                first=first,
+                second=second,
+                kind=binding_kind.value,
+            )
+        )
+        for organization_id, reference, page_id in (
+            (first, first_reference, f"{account_prefix}-larevia"),
+            (second, second_reference, f"{account_prefix}-segunda"),
+        ):
+            await credentials.record(
+                OPERATOR,
+                RecordSecretReference(
+                    organization_id=organization_id,
+                    provider=provider,
+                    reference=reference,
+                    command_key=f"credential:{uuid.uuid4().hex}",
+                    reason="Prueba de aislamiento de Messenger por organización.",
+                ),
+            )
+            await routing.bind(
+                organization_id=organization_id,
+                kind=binding_kind,
+                external_id=page_id,
+                recorded_by=OPERATOR.label,
+            )
+        await session.commit()
+
+    created: list[tuple[str, str]] = []
+
+    class Client:
+        def __init__(self, **kwargs) -> None:
+            created.append((kwargs["access_token"], kwargs["account_id"]))
+
+        async def aclose(self) -> None:
+            return None
+
+    directory = OrganizationMetaMessagingClients(
+        resolver,
+        client_factory=Client,  # type: ignore[arg-type]
+    )
+    async with database.session_scope() as session:
+        await directory.for_organization(
+            session, first, channel, f"{account_prefix}-larevia"
+        )
+        await directory.for_organization(
+            session, second, channel, f"{account_prefix}-segunda"
+        )
+        with pytest.raises(MetaMessagingChannelMissing):
+            await directory.for_organization(
+                session, first, channel, f"{account_prefix}-not-bound"
+            )
+    assert set(created) == {
+        ("larevia-channel-token", f"{account_prefix}-larevia"),
+        ("segunda-channel-token", f"{account_prefix}-segunda"),
     }
     await directory.aclose()
 

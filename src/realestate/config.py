@@ -217,9 +217,32 @@ class Settings(BaseSettings):
     # Business Management API identity used only for read-only template truth.
     # A phone-number id is not a WABA id and is never substituted for it.
     meta_waba_id: str = Field(default="", alias="META_WABA_ID")
+    # Page/Instagram access tokens are separate provider identities. They may
+    # happen to originate from one Meta app, but Product never substitutes the
+    # WhatsApp credential for either one.
+    meta_messenger_access_token: str = Field(
+        default="", alias="META_MESSENGER_ACCESS_TOKEN"
+    )
+    meta_facebook_page_id: str = Field(default="", alias="META_FACEBOOK_PAGE_ID")
+    meta_instagram_access_token: str = Field(
+        default="", alias="META_INSTAGRAM_ACCESS_TOKEN"
+    )
+    meta_instagram_account_id: str = Field(
+        default="", alias="META_INSTAGRAM_ACCOUNT_ID"
+    )
     meta_graph_version: str = Field(default="v25.0", alias="META_GRAPH_VERSION")
     meta_graph_base_url: str = Field(
         default="https://graph.facebook.com", alias="META_GRAPH_BASE_URL"
+    )
+    meta_instagram_graph_base_url: str = Field(
+        default="https://graph.instagram.com",
+        alias="META_INSTAGRAM_GRAPH_BASE_URL",
+    )
+    meta_messenger_app_secret: str = Field(
+        default="", alias="META_MESSENGER_APP_SECRET"
+    )
+    meta_instagram_app_secret: str = Field(
+        default="", alias="META_INSTAGRAM_APP_SECRET"
     )
     # Final business/legal/provider gate for any real Stage 7 marketing send.
     # Planning and dry-run remain available while this is false.
@@ -308,6 +331,8 @@ class Settings(BaseSettings):
             for provider, name in (
                 ("MetaWhatsApp", "META_ACCESS_TOKEN"),
                 ("MetaBusiness", "META_ACCESS_TOKEN"),
+                ("MetaMessenger", "META_MESSENGER_ACCESS_TOKEN"),
+                ("MetaInstagram", "META_INSTAGRAM_ACCESS_TOKEN"),
                 ("GoogleCalendar", "GOOGLE_CALENDAR_CREDENTIALS"),
                 ("Telegram", "TELEGRAM_BOT_TOKEN"),
                 ("EasyBroker", "EASYBROKER_API_KEY"),

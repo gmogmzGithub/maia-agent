@@ -584,7 +584,9 @@ async def test_an_approved_template_carries_a_message_past_the_window(
         message = await session.get(OutboxMessage, outcome.outbox_id)
         assert message is not None
         delivery = await OutboundMessaging(session).prepare_delivery(message, now=NOW)
-        assert delivery == TemplateDelivery(WA_ID, "t1", "es_MX")
+        assert delivery == TemplateDelivery(
+            WA_ID, "t1", "es_MX", commercial.TEST_PHONE_NUMBER_ID
+        )
         await session.rollback()
 
 

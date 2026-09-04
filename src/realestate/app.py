@@ -57,6 +57,7 @@ from realestate.domain.platform.whatsapp import (
     OrganizationMetaTemplateSources,
     OrganizationWhatsAppClients,
 )
+from realestate.domain.platform.messaging import OrganizationMetaMessagingClients
 from realestate.db.models import IntegrationProvider
 from realestate.domain.external_inventory.easybroker import EasyBrokerAdapter
 from realestate.domain.scheduling.calendars import GoogleCalendarDirectory
@@ -141,6 +142,8 @@ async def _bootstrap_platform(app: FastAPI) -> None:
         slug=settings.platform_bootstrap_organization_slug,
         whatsapp_phone_number_id=settings.meta_phone_number_id,
         whatsapp_business_account_id=settings.meta_waba_id,
+        facebook_page_id=settings.meta_facebook_page_id,
+        instagram_account_id=settings.meta_instagram_account_id,
         telegram_bot_id=app.state.telegram.bot_id,
         public_site_host=site_host_of(settings.site_public_origin),
         credential_references={
@@ -156,7 +159,7 @@ async def _bootstrap_platform(app: FastAPI) -> None:
     except Exception:
         logger.exception(
             "Could not reconcile the founding Organization's channel bindings; "
-            "inbound WhatsApp, Telegram and public-site traffic will be refused "
+            "inbound customer messaging, Telegram and public-site traffic will be refused "
             "until this succeeds"
         )
         return
@@ -296,6 +299,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         graph_version=settings.meta_graph_version,
         base_url=settings.meta_graph_base_url,
     )
+    app.state.meta_messaging_clients = OrganizationMetaMessagingClients(
+        app.state.secret_resolver,
+        bootstrap_organization_id=app.state.bootstrap_organization_id,
+        legacy_messenger_access_token=settings.meta_messenger_access_token,
+        legacy_instagram_access_token=settings.meta_instagram_access_token,
+        graph_version=settings.meta_graph_version,
+        messenger_base_url=settings.meta_graph_base_url,
+        instagram_base_url=settings.meta_instagram_graph_base_url,
+    )
     app.state.meta_templates = OrganizationMetaTemplateSources(
         app.state.secret_resolver,
         bootstrap_organization_id=app.state.bootstrap_organization_id,
@@ -337,6 +349,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         database=app.state.database,
         hermes=app.state.hermes,
         whatsapp=app.state.whatsapp_clients,
+        messaging=app.state.meta_messaging_clients,
         sales_profile=settings.sales_profile,
         schedule=app.state.appointment_policies,
         max_concurrent=settings.max_concurrent_conversations,
@@ -454,6 +467,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ("Meta template source", app.state.meta_templates.aclose),
             ("WhatsApp client", app.state.whatsapp.aclose),
             ("Organization WhatsApp clients", app.state.whatsapp_clients.aclose),
+            ("Organization Meta messaging clients", app.state.meta_messaging_clients.aclose),
             ("Telegram client", app.state.telegram.aclose),
             ("Organization Telegram clients", app.state.telegram_clients.aclose),
             ("database engine", app.state.database.dispose),

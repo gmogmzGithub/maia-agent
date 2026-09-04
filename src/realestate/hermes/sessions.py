@@ -87,7 +87,7 @@ class TurnResult:
 def trusted_context(*, profile_name: str | None) -> list[dict[str, str]]:
     """Seed history carrying what the product knows and the Model cannot.
 
-    A WhatsApp profile name is trusted state: it arrives on the webhook and lives
+    A channel profile name is trusted state: it arrives on the webhook and lives
     on the Lead row. The Model has no other way to learn it, so without this it
     would have to invent one — and an invented name is exactly what a display
     field must never contain (amendment 3).
@@ -106,7 +106,7 @@ def trusted_context(*, profile_name: str | None) -> list[dict[str, str]]:
             "role": "system",
             "content": (
                 "Contexto del producto, no es un mensaje de la persona y no "
-                "requiere respuesta: su nombre de perfil de WhatsApp es "
+                "requiere respuesta: su nombre de perfil del canal es "
                 f"«{profile_name.strip()}». Es un nombre para dirigirte a ella "
                 "con cortesía y para ofrecerlo al agendar una cita. No es un "
                 "dato verificado de identidad y no confirma quién es."

@@ -160,6 +160,12 @@ from realestate.domain.market_intelligence import (
 
 router = APIRouter(prefix="/crm", tags=["crm"])
 
+CUSTOMER_CHANNEL_LABELS = {
+    "WhatsApp": "WhatsApp",
+    "FacebookMessenger": "Facebook Messenger",
+    "Instagram": "Instagram",
+}
+
 # Spanish for the Stage 1 outbound vocabulary. It lives here rather than beside
 # those enums because the eligibility gate has no operator surface of its own —
 # this is the only place its decisions are read by a person. Keyed off the enum
@@ -198,6 +204,9 @@ DENIAL_REASON_LABELS = {
     ),
     DenialReason.ENGAGEMENT_NOT_ACTIVE.value: (
         "La reactivación o campaña se detuvo antes de entregar"
+    ),
+    DenialReason.CHANNEL_POLICY_UNSUPPORTED.value: (
+        "Ese tipo de mensaje no está permitido en este canal"
     ),
 }
 
@@ -667,7 +676,8 @@ async def inbox(
     rows = "".join(
         f"<tr><td><a href='/crm/bandeja/{entry.conversation_id}'>"
         f"{escape(entry.contact_name or 'Contacto sin nombre')}</a><br>"
-        f"<span class='muted'>{escape(entry.channel_identity)}</span></td>"
+        f"<span class='muted'>{escape(CUSTOMER_CHANNEL_LABELS.get(entry.channel, entry.channel))} · "
+        f"{escape(entry.channel_identity)}</span></td>"
         f"<td>{escape(entry.preview)}"
         + ("<br>" + tag("Contenido expirado", "warn") if entry.preview_expired else "")
         + "</td>"
@@ -693,7 +703,7 @@ async def inbox(
         ),
         rows,
         empty_message="No hay conversaciones que coincidan.",
-        empty_hint="Quita los filtros o espera el primer mensaje de WhatsApp.",
+        empty_hint="Quita los filtros o espera el primer mensaje de un canal conectado.",
     )
     content = _inbox_filter_form(filters, actor) + listing
     return shell(actor, "Bandeja de conversaciones", content, active="/crm/bandeja")
@@ -884,7 +894,8 @@ async def conversation(
     conversation_panel = (
         '<section class="workspace-panel conversation-panel" aria-label="Conversación seleccionada">'
         f"<h2>{escape(view.contact.display_name or 'Contacto sin nombre')}</h2>"
-        f'<p class="hint">WhatsApp · {escape(view.channel_identity)}</p>'
+        f'<p class="hint">{escape(CUSTOMER_CHANNEL_LABELS.get(view.channel, view.channel))} · '
+        f'{escape(view.channel_identity)}</p>'
         + handling_panel(
             handling,
             pending_handoff,
@@ -894,7 +905,12 @@ async def conversation(
         )
         + "<h2>Conversación</h2>"
         + thread
-        + reply_form(handling, actor, conversation_id=conversation_id)
+        + reply_form(
+            handling,
+            actor,
+            conversation_id=conversation_id,
+            channel_label=CUSTOMER_CHANNEL_LABELS.get(view.channel, view.channel),
+        )
         + "</section>"
     )
     context_panel = (
@@ -903,7 +919,8 @@ async def conversation(
         + f"{restriction_block}"
         + f"<div><h2>Contacto</h2><dl class='pairs'>"
         f"<dt>Nombre</dt><dd>{escape(view.contact.display_name or 'Sin nombre registrado')}</dd>"
-        f"<dt>WhatsApp</dt><dd>{escape(view.channel_identity)}</dd></dl></div>"
+        f"<dt>Canal</dt><dd>{escape(CUSTOMER_CHANNEL_LABELS.get(view.channel, view.channel))}</dd>"
+        f"<dt>Identificador</dt><dd>{escape(view.channel_identity)}</dd></dl></div>"
         f"<div><h2>Oportunidad</h2>{opportunity_block}</div></aside>"
     )
     content = (
@@ -1209,6 +1226,7 @@ SAVED_MESSAGES = {
 
 ORIGIN_LABELS = {
     OpportunityOriginSource.WHATSAPP_INBOUND.value: "Mensaje entrante de WhatsApp",
+    OpportunityOriginSource.MESSAGING_INBOUND.value: "Mensaje entrante de red social",
     OpportunityOriginSource.WEBSITE_CONVERSATION.value: "Conversación en el sitio",
     OpportunityOriginSource.REFERRAL.value: "Recomendación",
     OpportunityOriginSource.CAMPAIGN.value: "Campaña",
@@ -2596,14 +2614,14 @@ async def contacts(
         counted(len(rows), "contacto", "contactos"),
         (
             "Nombre",
-            "WhatsApp",
+            "Canales",
             "Oportunidades abiertas",
             "Última actividad",
             "Restricciones",
         ),
         body,
         empty_message="No hay contactos que coincidan.",
-        empty_hint="Un contacto se crea con el primer mensaje verificado de WhatsApp.",
+        empty_hint="Un contacto se crea con el primer mensaje verificado de un canal conectado.",
     )
     search = f"""<form class="card" method="get" action="/crm/contactos">
 <label for="c-q">Buscar por nombre o número
@@ -2637,7 +2655,8 @@ async def contact_detail(
         )
 
     identity_rows = "".join(
-        f"<tr><td>{escape(row.identity)}</td><td>{escape(row.channel)}</td>"
+        f"<tr><td>{escape(row.identity)}</td>"
+        f"<td>{escape(CUSTOMER_CHANNEL_LABELS.get(row.channel, row.channel))}</td>"
         f"<td>{escape('Verificada' if row.trust == ChannelIdentityTrust.VERIFIED.value else 'Declarada')}</td>"
         f"<td>{escape(local(row.first_seen_at))}</td></tr>"
         for row in identities

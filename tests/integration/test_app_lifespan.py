@@ -47,6 +47,20 @@ def settings(**overrides: object) -> Settings:
     return Settings(**base)  # type: ignore[arg-type]
 
 
+def test_meta_channel_tokens_are_separate_bootstrap_references() -> None:
+    configured = settings(
+        META_MESSENGER_ACCESS_TOKEN="messenger-token",
+        META_INSTAGRAM_ACCESS_TOKEN="instagram-token",
+    )
+
+    assert configured.bootstrap_credential_references["MetaMessenger"] == (
+        "META_MESSENGER_ACCESS_TOKEN"
+    )
+    assert configured.bootstrap_credential_references["MetaInstagram"] == (
+        "META_INSTAGRAM_ACCESS_TOKEN"
+    )
+
+
 @pytest.fixture
 def unstarted_loop(monkeypatch: pytest.MonkeyPatch):
     """Build the composed tick without letting the loop run it on its own.
@@ -75,6 +89,7 @@ async def test_the_lifespan_wires_every_dependency_onto_the_app() -> None:
             "media_storage",
             "hermes",
             "whatsapp",
+            "meta_messaging_clients",
             "calendar",
             "appointment_policy",
             "telegram",
@@ -337,7 +352,14 @@ async def test_every_teardown_failure_is_reported(
 def test_the_factory_registers_every_route_group() -> None:
     paths = set(create_app(settings()).openapi()["paths"])
 
-    assert {"/health", "/upload", "/webhooks/whatsapp", "/internal/plugin/health"} <= paths
+    assert {
+        "/health",
+        "/upload",
+        "/webhooks/whatsapp",
+        "/webhooks/messenger",
+        "/webhooks/instagram",
+        "/internal/plugin/health",
+    } <= paths
 
 
 def test_no_browser_origin_may_reach_the_application() -> None:
