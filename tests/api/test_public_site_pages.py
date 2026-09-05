@@ -89,6 +89,7 @@ class FakeProductGateway:
         self.collection_token = "sc-server-confirmed"
         self.conversation_token = "wc-server-confirmed"
         self.saved_items: list[dict[str, Any]] = []
+        self.phone_claimed = False
         self.listing = copy.deepcopy(LISTING)
         image = Image.new("RGB", (1800, 1200), color=(191, 118, 74))
         destination = io.BytesIO()
@@ -158,12 +159,26 @@ class FakeProductGateway:
                 {
                     "collection_id": "44444444-4444-4444-8444-444444444444",
                     "protected": False,
+                    "phone_claimed": self.phone_claimed,
                     "items": self.saved_items,
                 },
             )
         if path == "/internal/public-site/saved":
             assert body is not None
+            if (
+                body["action"] == "Add"
+                and not self.phone_claimed
+                and not body.get("phone_number")
+            ):
+                return response(
+                    428,
+                    {
+                        "detail": "Ingresa tu número de teléfono para guardar esta propiedad.",
+                        "code": "phone_required",
+                    },
+                )
             if body["action"] == "Add":
+                self.phone_claimed = True
                 self.saved_items = [
                     {
                         "listing_id": LISTING_ID,
@@ -174,14 +189,18 @@ class FakeProductGateway:
                         "listing": self.listing,
                     }
                 ]
+            if body["action"] == "Remove":
+                self.saved_items = []
             if body["action"] == "Delete":
                 self.saved_items = []
+                self.phone_claimed = False
             data = {
                 "collection_id": "44444444-4444-4444-8444-444444444444",
                 "collection_token": (
                     self.collection_token if body["action"] == "Add" else None
                 ),
                 "items": self.saved_items,
+                "phone_claimed": self.phone_claimed,
                 "shared_token": "ss-fixed" if body["action"] == "Share" else None,
             }
             return response(200, data)
@@ -334,17 +353,25 @@ async def test_server_rendered_search_detail_gallery_and_local_discovery() -> No
         gallery = await client.get("/propiedades/casa-encino-larevia/galeria")
         withdrawn = await client.get("/propiedades/retirada")
         missing_zone = await client.get("/zonas/otra")
+        css = await client.get("/assets/site.css")
 
     assert home.status_code == 200
     assert "Acompañamiento inmobiliario" in home.text
     assert "hero-photo" in home.text
     assert f'src="/media/{MEDIA_ID}?w=960"' in home.text
     assert '<html lang="es-MX"' in home.text
-    assert "<main id=\"contenido\">" in home.text
+    assert '<main id="contenido">' in home.text
+    assert css.status_code == 200
+    assert ".hero-search label" in css.text
+    assert "align-items: stretch" in css.text
+    assert ".search-form > .button" in css.text
+    assert ".composer .button" in css.text
     assert "autoplay" not in home.text.casefold()
     assert search.status_code == 200
     assert 'content="noindex,follow"' in search.text
-    assert '<link rel="canonical" href="https://larevia.test/propiedades">' in search.text
+    assert (
+        '<link rel="canonical" href="https://larevia.test/propiedades">' in search.text
+    )
     assert 'value="6000000"' in search.text
     assert local.status_code == 200 and "Propiedades en Zapopan" in local.text
     assert sheet.status_code == 200
@@ -354,14 +381,16 @@ async def test_server_rendered_search_detail_gallery_and_local_discovery() -> No
     assert sheet.text.count('rel="preload"') == 1
     assert 'srcset="/media/' in sheet.text
     assert gallery.status_code == 200
-    assert 'data-gallery-prev' in gallery.text and 'aria-live="polite"' in gallery.text
+    assert "data-gallery-prev" in gallery.text and 'aria-live="polite"' in gallery.text
     assert withdrawn.status_code == 410
     assert "Esta propiedad ya no está disponible" in withdrawn.text
     assert "Casa Encino" not in withdrawn.text
     assert missing_zone.status_code == 404
 
 
-async def test_saved_collection_uses_server_confirmation_secure_cookie_and_deletion() -> None:
+async def test_saved_collection_uses_server_confirmation_secure_cookie_and_deletion() -> (
+    None
+):
     gateway = FakeProductGateway()
     async with await client_for(gateway) as client:
         added = await client.post(
@@ -371,6 +400,7 @@ async def test_saved_collection_uses_server_confirmation_secure_cookie_and_delet
                 "command_key": "save-page-command",
                 "listing_id": LISTING_ID,
                 "return_to": "/propiedades/casa-encino-larevia",
+                "phone_number": "+52 33 1234 5678",
             },
         )
         saved = await client.get("/guardadas")
@@ -392,16 +422,64 @@ async def test_saved_collection_uses_server_confirmation_secure_cookie_and_delet
     saved_get = next(
         call
         for call in gateway.calls
-        if call["path"] == "/internal/public-site/saved"
-        and call["method"] == "GET"
+        if call["path"] == "/internal/public-site/saved" and call["method"] == "GET"
     )
     assert saved_get["token_header"] == (
         "X-Collection-Token",
         gateway.collection_token,
     )
     assert deleted.status_code == 303
-    assert f"{SAVED_COOKIE}=\"\"" in deleted.headers["set-cookie"]
+    assert f'{SAVED_COOKIE}=""' in deleted.headers["set-cookie"]
     assert "Max-Age=0" in deleted.headers["set-cookie"]
+
+
+async def test_saving_requires_a_phone_before_product_mutates_the_collection() -> None:
+    gateway = FakeProductGateway()
+    async with await client_for(gateway) as client:
+        page = await client.get("/propiedades")
+        refused = await client.post(
+            "/guardadas",
+            headers={"Accept": "application/json"},
+            data={
+                "action": "Add",
+                "command_key": "save-without-phone",
+                "listing_id": LISTING_ID,
+            },
+        )
+
+    assert 'name="phone_number"' in page.text
+    assert 'autocomplete="tel"' in page.text
+    assert refused.status_code == 428
+    assert refused.json()["code"] == "phone_required"
+    assert gateway.saved_items == []
+    assert SAVED_COOKIE not in refused.headers.get("set-cookie", "")
+
+
+async def test_repeated_save_toggles_receive_distinct_product_command_keys() -> None:
+    gateway = FakeProductGateway()
+    async with await client_for(gateway) as client:
+        responses = [
+            await client.post(
+                "/guardadas",
+                headers={"Accept": "application/json"},
+                data={
+                    "action": action,
+                    "command_key": "same-rendered-form-key",
+                    "listing_id": LISTING_ID,
+                    "phone_number": "+52 33 1234 5678",
+                },
+            )
+            for action in ("Add", "Remove", "Add")
+        ]
+
+    mutation_keys = [
+        call["body"]["command_key"]
+        for call in gateway.calls
+        if call["method"] == "POST" and call["path"] == "/internal/public-site/saved"
+    ]
+    assert [response.status_code for response in responses] == [200, 200, 200]
+    assert [len(response.json()["items"]) for response in responses] == [1, 0, 1]
+    assert len(set(mutation_keys)) == 3
 
 
 async def test_local_http_keeps_saved_and_conversation_cookies_usable() -> None:
@@ -423,6 +501,7 @@ async def test_local_http_keeps_saved_and_conversation_cookies_usable() -> None:
                 "action": "Add",
                 "command_key": "local-save-command",
                 "listing_id": LISTING_ID,
+                "phone_number": "+52 33 1234 5678",
             },
         )
         await client.get("/guardadas")
@@ -441,8 +520,7 @@ async def test_local_http_keeps_saved_and_conversation_cookies_usable() -> None:
     saved_get = next(
         call
         for call in gateway.calls
-        if call["path"] == "/internal/public-site/saved"
-        and call["method"] == "GET"
+        if call["path"] == "/internal/public-site/saved" and call["method"] == "GET"
     )
     assert saved_get["token_header"] == (
         "X-Collection-Token",
@@ -460,7 +538,9 @@ async def test_local_http_keeps_saved_and_conversation_cookies_usable() -> None:
     )
 
 
-async def test_anonymous_maia_and_appointment_request_only_create_channel_handoff() -> None:
+async def test_anonymous_maia_and_appointment_request_only_create_channel_handoff() -> (
+    None
+):
     gateway = FakeProductGateway()
     async with await client_for(gateway) as client:
         initial = await client.get(f"/maia?listing_id={LISTING_ID}")
@@ -489,7 +569,9 @@ async def test_anonymous_maia_and_appointment_request_only_create_channel_handof
     assert handoff.status_code == 200
     assert "LAR-1234567890ABCDEF" in handoff.text
     handoff_call = next(
-        call for call in gateway.calls if call["path"] == "/internal/public-site/handoffs"
+        call
+        for call in gateway.calls
+        if call["path"] == "/internal/public-site/handoffs"
     )
     assert handoff_call["body"]["purpose"] == "Appointment"
     assert all("appointment" not in call["path"] for call in gateway.calls)
@@ -517,6 +599,10 @@ async def test_media_robots_sitemap_security_and_frontend_budgets() -> None:
     gateway = FakeProductGateway()
     async with await client_for(gateway) as client:
         media = await client.get(f"/media/{MEDIA_ID}?w=480")
+        revalidated = await client.get(
+            f"/media/{MEDIA_ID}?w=480",
+            headers={"If-None-Match": media.headers["etag"]},
+        )
         robots = await client.get("/robots.txt")
         sitemap = await client.get("/sitemap.xml")
         css = await client.get("/assets/site.css")
@@ -527,6 +613,7 @@ async def test_media_robots_sitemap_security_and_frontend_budgets() -> None:
     assert media.headers["content-type"].startswith("image/webp")
     assert len(media.content) < len(gateway.image)
     assert media.headers["cache-control"] == "public, no-cache"
+    assert revalidated.status_code == 304 and revalidated.content == b""
     assert "User-agent: OAI-SearchBot\nAllow: /" in robots.text
     assert "User-agent: ChatGPT-User\nAllow: /" in robots.text
     assert "User-agent: GPTBot\nDisallow: /" in robots.text
@@ -586,7 +673,12 @@ async def test_public_pages_render_honest_failure_and_recovery_states() -> None:
         withdrawn_gallery = await client.get("/propiedades/retirada/galeria")
         missing_media = await client.get(f"/media/{MEDIA_ID}")
         expired_selection = await client.get("/selecciones/expirada")
-    assert missing.status_code == malformed.status_code == missing_gallery.status_code == 404
+    assert (
+        missing.status_code
+        == malformed.status_code
+        == missing_gallery.status_code
+        == 404
+    )
     assert withdrawn_gallery.status_code == 410
     assert missing_media.status_code == 404
     assert expired_selection.status_code == 410
@@ -609,6 +701,28 @@ async def test_public_pages_render_honest_failure_and_recovery_states() -> None:
     assert json_error.json()["detail"] == "La propiedad ya no está disponible"
     assert html_error.status_code == 409 and "No pudimos actualizar" in html_error.text
 
+    gateway.forced[("POST", "/internal/public-site/saved")] = response(
+        422,
+        {
+            "detail": "Ingresa un número de teléfono válido.",
+            "code": "invalid_phone",
+        },
+    )
+    async with await client_for(gateway) as client:
+        invalid_phone = await client.post(
+            "/guardadas",
+            data={
+                "action": "Add",
+                "command_key": "saved-invalid-phone-html",
+                "listing_id": LISTING_ID,
+                "return_to": "/propiedades",
+                "phone_number": "0000000000",
+            },
+        )
+    assert invalid_phone.status_code == 422
+    assert "Ingresa un número de teléfono válido." in invalid_phone.text
+    assert 'name="phone_number"' in invalid_phone.text
+
     gateway.forced.clear()
     async with await client_for(gateway) as client:
         unsafe_redirect = await client.post(
@@ -628,9 +742,14 @@ async def test_public_pages_render_honest_failure_and_recovery_states() -> None:
             "/guardadas",
             data={"action": "Share", "command_key": "saved-share-success"},
         )
+        selection = await client.get("/selecciones/ss-fixed")
     assert unsafe_redirect.headers["location"] == "/guardadas"
     assert json_success.status_code == 200 and json_success.json()["items"] == []
-    assert shared.status_code == 303 and shared.headers["location"] == "/selecciones/ss-fixed"
+    assert (
+        shared.status_code == 303
+        and shared.headers["location"] == "/selecciones/ss-fixed"
+    )
+    assert selection.status_code == 200 and "Selección compartida" in selection.text
 
 
 async def test_maia_events_and_handoff_expose_bounded_error_states() -> None:
@@ -688,7 +807,9 @@ async def test_maia_events_and_handoff_expose_bounded_error_states() -> None:
             data={"purpose": "ContinueWhatsApp", "command_key": "handoff-error"},
         )
         invalid_json = await client.post(
-            "/eventos", content=b"not-json", headers={"Content-Type": "application/json"}
+            "/eventos",
+            content=b"not-json",
+            headers={"Content-Type": "application/json"},
         )
         rejected_event = await client.post("/eventos", json={"name": "Unknown"})
     assert conversation_error.status_code == 409

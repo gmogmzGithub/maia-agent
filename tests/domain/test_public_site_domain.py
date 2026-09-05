@@ -41,7 +41,13 @@ from realestate.domain.public.handoff import (
 )
 from realestate.domain.public.listing import PublicListing
 from realestate.domain.public.responders import HermesWebsiteResponder
-from realestate.domain.public.saved import SavedAction, SavedCommand, SavedCollections
+from realestate.domain.public.saved import (
+    SavedAction,
+    SavedCommand,
+    SavedCollections,
+    normalize_phone_claim,
+    token_hash,
+)
 from realestate.domain.public.website_conversation import (
     ConversationMessageView,
     WebsiteCommand,
@@ -164,6 +170,7 @@ async def test_saved_collection_is_idempotent_shareable_and_retains_withdrawn_it
             action=SavedAction.ADD,
             command_key="saved-add-guardada",
             listing_id=published.listing_id,
+            phone_number="33 1234 5678",
         )
         first = await saved.record(add, at=MOMENT)
         assert first.changed is True
@@ -206,6 +213,157 @@ async def test_saved_collection_is_idempotent_shareable_and_retains_withdrawn_it
         assert snapshot.items[0].title == "Casa Guardada"
 
 
+async def test_a_first_save_without_a_phone_creates_no_collection(
+    database: Database,
+) -> None:
+    async with database.session_scope() as session:
+        admin = await actor_for(session, ADMIN_LOGIN)
+        published = await publish_listing(session, admin, "telefono-obligatorio")
+        module = SavedCollections(session, await product_actor(session))
+
+        with pytest.raises(ValueError, match="número de teléfono"):
+            await module.record(
+                SavedCommand(
+                    action=SavedAction.ADD,
+                    command_key="saved-without-phone",
+                    listing_id=published.listing_id,
+                ),
+                at=MOMENT,
+            )
+
+        assert (
+            await session.scalar(select(func.count()).select_from(SavedCollection)) == 0
+        )
+
+
+def test_phone_claim_normalization_accepts_international_prefix_and_rejects_short_input() -> (
+    None
+):
+    assert normalize_phone_claim("00 44 20 7946 0958") == "+442079460958"
+    with pytest.raises(ValueError, match="número de teléfono válido"):
+        normalize_phone_claim("0000000000")
+
+
+async def test_a_phone_claim_is_bounded_and_never_returned_to_the_browser(
+    database: Database,
+) -> None:
+    async with database.session_scope() as session:
+        admin = await actor_for(session, ADMIN_LOGIN)
+        published = await publish_listing(session, admin, "telefono-declarado")
+        module = SavedCollections(session, await product_actor(session))
+
+        with pytest.raises(ValueError, match="número de teléfono válido"):
+            await module.record(
+                SavedCommand(
+                    action=SavedAction.ADD,
+                    command_key="saved-invalid-phone",
+                    listing_id=published.listing_id,
+                    phone_number="no-es-un-telefono",
+                ),
+                at=MOMENT,
+            )
+
+        result = await module.record(
+            SavedCommand(
+                action=SavedAction.ADD,
+                command_key="saved-valid-phone",
+                listing_id=published.listing_id,
+                phone_number="33 1234 5678",
+            ),
+            at=MOMENT,
+        )
+        row = await session.get(SavedCollection, result.collection_id)
+
+        assert result.phone_claimed is True
+        assert row is not None and row.claimed_phone_number == "+523312345678"
+        assert "+523312345678" not in repr(result)
+
+
+async def test_legacy_collection_claims_a_phone_and_keeps_missing_snapshots_safe(
+    database: Database,
+) -> None:
+    legacy_token = "sc-legacy-phone-claim"
+    snapshot_token = "ss-legacy-missing-listing"
+    missing_listing_id = uuid.uuid4()
+    async with database.session_scope() as session:
+        admin = await actor_for(session, ADMIN_LOGIN)
+        published = await publish_listing(session, admin, "legacy-phone-claim")
+        actor = await product_actor(session)
+        legacy = SavedCollection(
+            organization_id=actor.organization_id,
+            access_token_hash=token_hash(legacy_token),
+            claimed_phone_number=None,
+            last_activity_at=MOMENT,
+            expires_at=MOMENT + timedelta(days=30),
+        )
+        session.add(legacy)
+        await session.flush()
+        module = SavedCollections(session, actor)
+
+        claimed = await module.record(
+            SavedCommand(
+                action=SavedAction.ADD,
+                command_key="legacy-phone-claim-add",
+                collection_token=legacy_token,
+                listing_id=published.listing_id,
+                phone_number="33 9876 5432",
+            ),
+            at=MOMENT,
+        )
+        session.add(
+            SharedSelection(
+                organization_id=actor.organization_id,
+                collection_id=legacy.id,
+                access_token_hash=token_hash(snapshot_token),
+                snapshot=[
+                    {
+                        "listing_id": str(missing_listing_id),
+                        "slug": "retirada",
+                        "title": "Propiedad retirada",
+                        "public_location": "Zapopan, Jalisco",
+                    }
+                ],
+                created_at=MOMENT,
+                expires_at=MOMENT + timedelta(days=1),
+            )
+        )
+        await session.flush()
+        snapshot = await module.shared(snapshot_token, at=MOMENT)
+
+        assert claimed.phone_claimed is True
+        assert legacy.claimed_phone_number == "+523398765432"
+        assert snapshot.items[0].listing_id == missing_listing_id
+        assert snapshot.items[0].available is False
+
+
+async def test_an_unavailable_listing_cannot_be_added_to_phone_history(
+    database: Database,
+) -> None:
+    async with database.session_scope() as session:
+        admin = await actor_for(session, ADMIN_LOGIN)
+        published = await publish_listing(session, admin, "unavailable-phone-history")
+        await CatalogAdministration(session).record(
+            admin,
+            SetPublicationState(
+                listing_id=published.listing_id,
+                state=ListingPublicationState.UNPUBLISHED,
+                command_key="unpublish-before-phone-save",
+            ),
+        )
+        module = SavedCollections(session, await product_actor(session))
+
+        with pytest.raises(NotFound, match="ya no está disponible"):
+            await module.record(
+                SavedCommand(
+                    action=SavedAction.ADD,
+                    command_key="unavailable-phone-save",
+                    listing_id=published.listing_id,
+                    phone_number="33 2468 1357",
+                ),
+                at=MOMENT,
+            )
+
+
 async def test_saved_collection_protection_merges_devices_without_fingerprinting(
     database: Database,
 ) -> None:
@@ -220,6 +378,7 @@ async def test_saved_collection_protection_merges_devices_without_fingerprinting
                 SavedAction.ADD,
                 "saved-device-one",
                 listing_id=first_listing.listing_id,
+                phone_number="33 1111 1111",
             ),
             at=MOMENT,
         )
@@ -228,6 +387,7 @@ async def test_saved_collection_protection_merges_devices_without_fingerprinting
                 SavedAction.ADD,
                 "saved-device-two",
                 listing_id=second_listing.listing_id,
+                phone_number="33 1111 1111",
             ),
             at=MOMENT,
         )
@@ -266,6 +426,7 @@ async def test_saved_collection_lifecycle_handles_stale_and_duplicate_state(
                 SavedAction.ADD,
                 "saved-cycle-add-first",
                 listing_id=listing.listing_id,
+                phone_number="33 4444 4444",
             ),
             at=MOMENT,
         )
@@ -349,7 +510,9 @@ async def test_saved_collection_lifecycle_handles_stale_and_duplicate_state(
             await module.shared("ss-inexistente", at=MOMENT)
 
         protected = await module.protect(first.collection_id, contact_id, at=MOMENT)
-        assert (await module.protect(protected.id, contact_id, at=MOMENT)).id == protected.id
+        assert (
+            await module.protect(protected.id, contact_id, at=MOMENT)
+        ).id == protected.id
         deleted = await module.record(
             SavedCommand(
                 SavedAction.DELETE,
@@ -359,7 +522,9 @@ async def test_saved_collection_lifecycle_handles_stale_and_duplicate_state(
             at=MOMENT,
         )
         assert deleted.changed is True
-        assert (await module.read(first.collection_token, at=MOMENT)).collection_id is None
+        assert (
+            await module.read(first.collection_token, at=MOMENT)
+        ).collection_id is None
         with pytest.raises(NotFound):
             await module.protect(first.collection_id, contact_id, at=MOMENT)
 
@@ -368,6 +533,7 @@ async def test_saved_collection_lifecycle_handles_stale_and_duplicate_state(
                 SavedAction.ADD,
                 "saved-cycle-expiring",
                 listing_id=listing.listing_id,
+                phone_number="33 4444 4444",
             ),
             at=MOMENT,
         )
@@ -375,13 +541,16 @@ async def test_saved_collection_lifecycle_handles_stale_and_duplicate_state(
         assert row is not None
         row.expires_at = MOMENT
         await session.flush()
-        assert (await module.read(expiring.collection_token, at=MOMENT)).collection_id is None
+        assert (
+            await module.read(expiring.collection_token, at=MOMENT)
+        ).collection_id is None
 
         other = await module.record(
             SavedCommand(
                 SavedAction.ADD,
                 "saved-cycle-other-device",
                 listing_id=listing.listing_id,
+                phone_number="33 4444 4444",
             ),
             at=MOMENT,
         )
@@ -390,6 +559,7 @@ async def test_saved_collection_lifecycle_handles_stale_and_duplicate_state(
                 SavedAction.ADD,
                 "saved-cycle-primary-device",
                 listing_id=listing.listing_id,
+                phone_number="33 4444 4444",
             ),
             at=MOMENT,
         )
@@ -397,6 +567,34 @@ async def test_saved_collection_lifecycle_handles_stale_and_duplicate_state(
         merged = await module.protect(other.collection_id, contact_id, at=MOMENT)
         assert len((await module.read(other.collection_token, at=MOMENT)).items) == 1
         assert merged.id == primary.collection_id
+
+        corrupt_one = await module.record(
+            SavedCommand(
+                SavedAction.ADD,
+                "saved-cycle-corrupt-merge-one",
+                listing_id=listing.listing_id,
+                phone_number="33 4444 4444",
+            ),
+            at=MOMENT,
+        )
+        corrupt_two = await module.record(
+            SavedCommand(
+                SavedAction.ADD,
+                "saved-cycle-corrupt-merge-two",
+                listing_id=listing.listing_id,
+                phone_number="33 4444 4444",
+            ),
+            at=MOMENT,
+        )
+        corrupt_one_row = await session.get(SavedCollection, corrupt_one.collection_id)
+        corrupt_two_row = await session.get(SavedCollection, corrupt_two.collection_id)
+        assert corrupt_one_row is not None and corrupt_two_row is not None
+        corrupt_one_row.merged_into_id = corrupt_two_row.id
+        corrupt_two_row.merged_into_id = corrupt_one_row.id
+        await session.flush()
+        assert (
+            await module.read(corrupt_one.collection_token, at=MOMENT)
+        ).collection_id is None
 
 
 async def test_channel_handoff_is_opaque_expiring_single_use_and_identity_bound(
@@ -421,7 +619,9 @@ async def test_channel_handoff_is_opaque_expiring_single_use_and_identity_bound(
         )
         assert created.token.startswith("LAR-")
         assert str(contact_id) not in created.token
-        assert extract_handoff_reference(f"Referencia {created.token}.") == created.token
+        assert (
+            extract_handoff_reference(f"Referencia {created.token}.") == created.token
+        )
         with pytest.raises(HandoffIdentityMismatch):
             await module.resolve(
                 created.token,
@@ -476,6 +676,7 @@ async def test_channel_handoff_protects_saved_and_website_context(
                 SavedAction.ADD,
                 "handoff-protection-saved",
                 listing_id=listing.listing_id,
+                phone_number="33 5555 5555",
             ),
             at=MOMENT,
         )
@@ -784,9 +985,7 @@ async def test_hermes_website_responder_seeds_only_authorized_context(
         captured["kwargs"] = kwargs
         return TurnResult("Respuesta autorizada", hermes_session_id="hermes-web-next")
 
-    monkeypatch.setattr(
-        "realestate.domain.public.responders.run_turn", fake_run_turn
-    )
+    monkeypatch.setattr("realestate.domain.public.responders.run_turn", fake_run_turn)
     async with database.session_scope() as session:
         admin = await actor_for(session, ADMIN_LOGIN)
         published = await publish_listing(session, admin, "responder")
@@ -840,7 +1039,9 @@ async def test_discovery_and_analytics_share_public_truth_without_behavioral_pro
         projection = await DiscoveryPublication(session, actor).project(
             listing.listing_id, at=MOMENT
         )
-        offers = projection.structured_data["offers"] if projection.structured_data else []
+        offers = (
+            projection.structured_data["offers"] if projection.structured_data else []
+        )
         assert projection.canonical_path == f"/propiedades/{listing.slug}"
         assert offers and "price" not in offers[0]
 

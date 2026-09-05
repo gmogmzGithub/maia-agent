@@ -368,6 +368,7 @@ async def test_no_buyer_surface_contains_identity_phone_or_conversation(
                 command_key="privacy-save-1",
                 collection_token=None,
                 listing_id=campaign.listing.listing_id,
+                phone_number=PHONE,
             ),
             at=MOMENT,
         )

@@ -432,20 +432,23 @@ The public site's navigation and Listing pages remain in Mexican Spanish. Maia
 may explain an authorized Listing in the Contact's requested language without
 requiring a translated copy of the entire site.
 
-Saving a Listing requires no account. Product creates a server-authoritative Saved
-Collection and gives the browser an opaque first-party session identifier through
-a Secure, HttpOnly, SameSite cookie; the token contains no personal data and is
-not used for advertising. A local cache makes the interface immediate and can
-queue offline intent, but it is never the only copy or authoritative confirmation.
+Saving a Listing requires no password-based account, but the first save requires
+a Phone Claim. Product stores that self-asserted claim with the
+Organization-scoped Saved Collection and gives the browser an opaque first-party
+session identifier through a Secure, HttpOnly, SameSite cookie; neither the cookie
+nor any response contains the phone. The claim is not a verified Contact identity
+and is never used to resolve or merge Contacts.
 
 The save control distinguishes `Guardada` only after server confirmation from
 `Pendiente de guardar` while offline or retrying. Add and remove operations are
-idempotent, automatically retried, deduplicated across tabs, and reconciled after
-reconnection without silently discarding a Listing.
+idempotent, receive a fresh command key for every user toggle, are deduplicated
+across tabs, and reconcile after reconnection without silently discarding a
+Listing. Only transport or server-availability failures enter the offline queue;
+a conclusive client or policy rejection is shown immediately and is not retried.
 
 A customer may voluntarily protect and synchronize the Saved Collection through
 their verified WhatsApp Contact without creating a password-based account. Product
-does not link an anonymous collection to a Contact merely because they start a
+does not link a phone-claimed collection to a Contact merely because they start a
 conversation; the customer explicitly chooses to share or protect it. When a saved
 Listing becomes unavailable, the collection retains a clearly marked historical
 item and may offer authorized alternatives rather than removing it silently.
@@ -454,21 +457,23 @@ The control combines a heart with the explicit verb `Guardar`, and the destinati
 is `Mis propiedades guardadas`. Product displays `Guardada` only after server
 confirmation, `Pendiente de guardar` while offline or retrying, and a clear retry
 action after a conclusive failure. After the first successful save, a non-blocking
-prompt may offer `Proteger con WhatsApp`; saving never requires that step.
+prompt may offer `Proteger con WhatsApp`; saving requires the Phone Claim but not
+that verification step.
 
 Protection opens the official WhatsApp channel with an opaque reference and links
 the collection only after verified-channel confirmation. Product explains that an
-unprotected anonymous collection cannot be recovered after the browser data is
-cleared and never substitutes fingerprinting. Anonymous collections expire after
-12 months without activity; protected collections follow Contact retention, and
-customers may empty or delete them at any time.
+unprotected phone-claimed collection cannot be recovered after the browser data
+is cleared and never substitutes phone-only lookup or fingerprinting. Unprotected
+collections expire after 12 months without activity; protected collections follow
+Contact retention, and customers may empty or delete them at any time. Deleting
+the collection also clears its Phone Claim.
 
 `Compartir mi selección` creates a revocable opaque read-only URL containing no
 identity or conversations. `Hablar con Maia sobre mis propiedades guardadas`
 explicitly shares the selected Listing identifiers with Maia; beginning an ordinary
 conversation never shares them automatically.
 
-Protecting a collection merges the anonymous browser collection with any existing
+Protecting a collection merges the browser collection with any existing
 Protected Saved Collection for that verified Contact, deduplicating Listings; all
 linked devices then use the same server-authoritative collection. A Shared
 Selection is a fixed snapshot: later collection edits do not change an already

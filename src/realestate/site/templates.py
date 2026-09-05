@@ -355,6 +355,7 @@ def listing_card(
         return_to=f"/propiedades/{slug}",
         already_saved=already_saved,
         compact=True,
+        phone_required=bool(listing.get("_save_phone_required")),
     )
     return f"""<article class="{classes}" data-analytics="ListingImpression" data-listing-id="{listing_id}" data-surface="{escape(surface)}"{attributes}><div class="card-media-wrap"><a class="card-media" href="{detail_url}">{media}</a>{save}{label}</div><div class="card-body"><p class="card-kicker">{escape(operation)} · {escape(property_type)}</p><h3><a href="{detail_url}">{escape(listing.get("title"))}</a></h3><p class="location">{escape(listing.get("public_location") or "Área Metropolitana de Guadalajara")}</p><div class="offers">{offers}</div>{facts}</div></article>"""
 
@@ -385,6 +386,7 @@ def technical_sheet(
         listing_id,
         return_to=f"/propiedades/{slug}{sponsorship_query}",
         already_saved=bool(listing.get("_saved")),
+        phone_required=bool(listing.get("_save_phone_required")),
     )
     return f"""<article class="listing-detail tier-{escape(tier.lower())}"><header class="detail-heading section-shell"><nav class="breadcrumbs" aria-label="Ruta"><a href="/">Inicio</a><span>/</span><a href="/propiedades">Propiedades</a><span>/</span><span aria-current="page">{escape(listing.get("title"))}</span></nav><div><p class="sr-only">Presentación {escape(tier_label)}</p><p class="detail-location">{escape(listing.get("public_location"))}</p><h1>{escape(listing.get("title"))}</h1></div><div class="detail-heading-actions">{save}<button class="text-button" type="button" data-share-page data-share-title="{escape(listing.get("title"))}">Compartir</button></div></header>{media_mosaic(media, listing.get("title"), slug, sponsorship_query)}<nav class="detail-subnav" aria-label="Secciones de la propiedad"><a href="#resumen">Resumen</a><a href="#datos">Características</a><a href="#especialista">Especialista</a><a href="#publicacion">Publicación</a></nav><div class="detail-layout section-shell"><main><section id="resumen" class="detail-summary"><p class="eyebrow">La propiedad</p><h2>Lo esencial, sin ruido.</h2>{highlights}<p class="detail-description">{escape(description)}</p></section><section id="datos" class="facts-section"><p class="eyebrow">Ficha técnica</p><h2>Datos autorizados</h2>{facts}</section><section id="especialista" class="property-expert"><span class="expert-initials" aria-hidden="true">EL</span><div><p class="eyebrow">Tu especialista en esta propiedad</p><h2>Equipo Larevia</h2><p>Asesoría inmobiliaria personalizada · Atención en español</p><small>Te acompañamos para verificar disponibilidad y coordinar la visita.</small></div></section></main><aside class="interest-rail"><div class="rail-card"><div class="offers offers-large">{offers}</div><h2>¿Te interesa esta propiedad?</h2><p>Maia conserva el contexto y te acompaña hacia el WhatsApp oficial cuando necesites verificar una visita.</p>{interest_actions(listing, sponsored_exposure=sponsored_exposure)}</div></aside></div><section id="publicacion" class="section-shell attribution"><p class="eyebrow">Publicación</p><h2>Origen y autoridad</h2><p>{escape(listing.get("attribution"))}</p><p class="muted">Fuente: {escape(listing.get("source_name"))}</p></section></article>"""
 
@@ -435,11 +437,12 @@ def interest_actions(
 
 def saved_page(result: dict[str, Any]) -> str:
     items = list(result.get("items") or [])
-    content = "".join(saved_item(item) for item in items)
+    phone_required = not bool(result.get("phone_claimed") or result.get("protected"))
+    content = "".join(saved_item(item, phone_required=phone_required) for item in items)
     if not content:
         content = empty_state(
             "Todavía no has guardado propiedades",
-            "Usa el corazón en cualquier resultado o ficha. No necesitas una cuenta.",
+            "Usa el corazón en cualquier resultado o ficha. Te pediremos tu teléfono antes del primer guardado; no necesitas contraseña.",
             '<a class="button button-secondary" href="/propiedades">Explorar propiedades</a>',
         )
     protection = ""
@@ -452,9 +455,10 @@ def saved_page(result: dict[str, Any]) -> str:
     return f"""<header class="collection-hero section-shell"><p class="eyebrow">Tu selección privada</p><h1>Propiedades guardadas</h1><p>Una lista tranquila para volver, revisar y compartir. La confirmación del servidor siempre es la verdad.</p></header><section class="section-shell"><div class="saved-grid">{content}</div>{controls}{protection}</section>"""
 
 
-def saved_item(item: dict[str, Any]) -> str:
+def saved_item(item: dict[str, Any], *, phone_required: bool = False) -> str:
     listing = item.get("listing")
     if item.get("available") and listing:
+        listing["_save_phone_required"] = phone_required
         return f'<div class="saved-item">{listing_card(listing, surface="Saved", already_saved=True)}</div>'
     return f"""<article class="listing-card unavailable-card"><div class="card-body"><p class="eyebrow">Ya no disponible</p><h2>{escape(item.get("title"))}</h2><p>{escape(item.get("public_location"))}</p><form action="/guardadas" method="post"><input type="hidden" name="action" value="Remove"><input type="hidden" name="listing_id" value="{escape(item.get("listing_id"))}"><input type="hidden" name="command_key" value="remove-{uuid.uuid4()}"><button class="text-button" type="submit">Quitar de guardadas</button></form><a href="/propiedades">Ver propiedades actuales</a></div></article>"""
 
@@ -465,6 +469,13 @@ def shared_page(result: dict[str, Any]) -> str:
         "Esta selección está vacía", "No contiene propiedades para mostrar."
     )
     return f"""<header class="collection-hero section-shell"><p class="eyebrow">Selección compartida · Sólo lectura</p><h1>Propiedades elegidas</h1><p>Una fotografía fija de la selección al momento de compartirla, sin identidad ni edición.</p></header><section class="section-shell"><div class="saved-grid">{content}</div></section>"""
+
+
+def phone_required_page(
+    *, listing_id: str, return_to: str, command_key: str, error: str = ""
+) -> str:
+    error_html = f'<p class="form-error">{escape(error)}</p>' if error else ""
+    return f"""<section class="state-page phone-required-page section-shell"><span class="state-mark" aria-hidden="true"></span><p class="eyebrow">Tu selección</p><h1>Guarda esta propiedad con tu teléfono</h1><p>Tu número vincula esta selección en este navegador y nos permite conservar tu historial de guardadas. No crea una cuenta ni se considera verificado.</p>{error_html}<form class="phone-required-form" action="/guardadas" method="post"><input type="hidden" name="action" value="Add"><input type="hidden" name="listing_id" value="{escape(listing_id)}"><input type="hidden" name="command_key" value="{escape(command_key)}"><input type="hidden" name="return_to" value="{escape(return_to)}"><label for="saved-phone-page">Número de teléfono</label><input id="saved-phone-page" name="phone_number" type="tel" inputmode="tel" autocomplete="tel" placeholder="33 1234 5678" required><button class="button button-primary" type="submit">Guardar propiedad</button></form><p class="fine-print">Para recuperar la selección en otro dispositivo deberás verificarla por el WhatsApp oficial.</p></section>"""
 
 
 def conversation_page(
@@ -593,12 +604,17 @@ def save_form(
     return_to: str,
     already_saved: bool = False,
     compact: bool = False,
+    phone_required: bool = False,
 ) -> str:
     action = "Remove" if already_saved else "Add"
     pressed = "true" if already_saved else "false"
     label = "Guardada" if already_saved else "Guardar"
     compact_class = " save-form-compact" if compact else ""
-    return f"""<form class="save-form{compact_class}" action="/guardadas" method="post" data-save-form><input type="hidden" name="action" value="{action}"><input type="hidden" name="listing_id" value="{listing_id}"><input type="hidden" name="command_key" value="save-{uuid.uuid4()}"><input type="hidden" name="return_to" value="{escape(return_to)}"><button class="save-button" type="submit" aria-pressed="{pressed}">{icon("heart")}<span data-save-label>{label}</span></button></form>"""
+    phone_dialog = ""
+    if not already_saved:
+        phone_dialog = """<dialog class="phone-dialog" data-phone-dialog><div class="phone-dialog-heading"><div><p class="eyebrow">Tu selección</p><h2>Guarda con tu teléfono</h2></div><button type="button" data-phone-close aria-label="Cerrar">×</button></div><p>Tu número nos permite conservar tu historial de guardadas en este navegador. No crea una cuenta ni se considera verificado.</p><label>Número de teléfono<input name="phone_number" type="tel" inputmode="tel" autocomplete="tel" placeholder="33 1234 5678"></label><p class="form-error" data-phone-error hidden></p><button class="button button-primary" type="submit">Guardar propiedad</button><p class="fine-print">Para recuperar la selección en otro dispositivo deberás verificarla por el WhatsApp oficial.</p></dialog>"""
+    required = "true" if phone_required and not already_saved else "false"
+    return f"""<form class="save-form{compact_class}" action="/guardadas" method="post" data-save-form data-phone-required="{required}"><input type="hidden" name="action" value="{action}"><input type="hidden" name="listing_id" value="{listing_id}"><input type="hidden" name="command_key" value="save-{uuid.uuid4()}"><input type="hidden" name="return_to" value="{escape(return_to)}"><button class="save-button" type="submit" aria-pressed="{pressed}">{icon("heart")}<span data-save-label>{label}</span></button>{phone_dialog}</form>"""
 
 
 def offer_badge(offer: dict[str, Any]) -> str:

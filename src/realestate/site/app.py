@@ -40,6 +40,7 @@ from realestate.site.templates import (
     gallery,
     handoff_page,
     home,
+    phone_required_page,
     report_page,
     saved_page,
     search_page,
@@ -107,7 +108,17 @@ def _detail(response: GatewayResponse) -> str:
         detail = response.data.get("detail")
         if isinstance(detail, str):
             return detail
+        if isinstance(detail, dict) and isinstance(detail.get("message"), str):
+            return str(detail["message"])
     return "La operación no está disponible en este momento."
+
+
+def _error_code(response: GatewayResponse) -> str:
+    if isinstance(response.data, dict):
+        code = response.data.get("code")
+        if isinstance(code, str):
+            return code
+    return ""
 
 
 def _data(response: GatewayResponse) -> dict[str, Any]:
@@ -174,9 +185,7 @@ def _measurement_headers(
     return headers
 
 
-def _set_session_cookie(
-    response: Response, request: Request, *, secure: bool
-) -> str:
+def _set_session_cookie(response: Response, request: Request, *, secure: bool) -> str:
     """Ensure the browser has a capping reference, minting one if needed."""
     existing = request.cookies.get(SESSION_COOKIE)
     if existing:
@@ -517,12 +526,23 @@ def create_site_app(
     @site.post("/guardadas")
     async def mutate_saved(request: Request) -> Response:
         form = await request.form()
+        action = str(form.get("action") or "")
+        rendered_command_key = str(form.get("command_key") or "")
         body: dict[str, Any] = {
-            "action": str(form.get("action") or ""),
-            "command_key": str(form.get("command_key") or ""),
+            "action": action,
+            "command_key": rendered_command_key,
         }
+        if action in {"Add", "Remove"}:
+            # Add and Remove are state-setting operations. A response lost after
+            # commit is safe to repeat, while every actual click must be a new
+            # business command even if stale page JavaScript reuses its key.
+            body["command_key"] = (
+                f"{rendered_command_key[:120]}:{action}:{uuid.uuid4().hex}"
+            )
         if form.get("listing_id"):
             body["listing_id"] = str(form["listing_id"])
+        if form.get("phone_number"):
+            body["phone_number"] = str(form["phone_number"])
         result = await product.request(
             "POST",
             "/internal/public-site/saved",
@@ -535,9 +555,34 @@ def create_site_app(
         if result.status_code >= 400:
             if "application/json" in request.headers.get("accept", ""):
                 return Response(
-                    json.dumps({"detail": _detail(result)}),
+                    json.dumps(
+                        {"detail": _detail(result), "code": _error_code(result)}
+                    ),
                     status_code=result.status_code,
                     media_type="application/json",
+                )
+            if _error_code(result) in {"phone_required", "invalid_phone"}:
+                return _html(
+                    document(
+                        title="Identifica tus guardadas · Larevia",
+                        description="Ingresa tu teléfono para guardar la propiedad.",
+                        body=phone_required_page(
+                            listing_id=str(form.get("listing_id") or ""),
+                            return_to=str(form.get("return_to") or "/propiedades"),
+                            command_key=rendered_command_key,
+                            error=(
+                                _detail(result)
+                                if _error_code(result) == "invalid_phone"
+                                else ""
+                            ),
+                        ),
+                        origin=configuration.site_public_origin,
+                        canonical_path="/guardadas",
+                        indexable=False,
+                    ),
+                    status_code=result.status_code,
+                    private=True,
+                    noindex=True,
                 )
             return _html(
                 document(
@@ -1125,16 +1170,21 @@ async def _annotate_saved(
 ) -> None:
     """Render server-confirmed save state without exposing the HttpOnly token."""
     token = request.cookies.get(SAVED_COOKIE)
-    if not token or not listings:
+    if not listings:
         return
-    result = await product.request(
-        "GET",
-        "/internal/public-site/saved",
-        token_header=("X-Collection-Token", token),
-    )
-    saved_ids = {str(item.get("listing_id")) for item in _data(result).get("items", [])}
+    data: dict[str, Any] = {}
+    if token:
+        result = await product.request(
+            "GET",
+            "/internal/public-site/saved",
+            token_header=("X-Collection-Token", token),
+        )
+        data = _data(result)
+    saved_ids = {str(item.get("listing_id")) for item in data.get("items", [])}
+    phone_claimed = bool(data.get("phone_claimed") or data.get("protected"))
     for listing in listings:
         listing["_saved"] = str(listing.get("listing_id")) in saved_ids
+        listing["_save_phone_required"] = not phone_claimed
 
 
 app = create_site_app()

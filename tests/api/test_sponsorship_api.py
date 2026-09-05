@@ -512,6 +512,47 @@ async def test_gallery_depth_at_the_border_also_records_the_milestone(wired) -> 
         assert AnalyticsEventName.SIGNIFICANT_GALLERY_EXPLORATION.value in names
 
 
+async def test_public_measurement_rejects_a_malformed_sponsored_exposure(wired) -> None:
+    client, _database = wired
+    listing_id = str(uuid.uuid4())
+    headers = site({"X-Sponsored-Exposure": "not-a-uuid"})
+    conversation = await client.post(
+        "/internal/public-site/conversation",
+        json={
+            "message": "Quiero conocer esta propiedad",
+            "command_key": "invalid-exposure-conversation",
+            "listing_ids": [listing_id],
+        },
+        headers=headers,
+    )
+    listing_open = await client.post(
+        "/internal/public-site/measurement/listing-open",
+        json={
+            "event_key": "invalid-exposure-listing-open",
+            "listing_id": listing_id,
+            "surface": "TechnicalSheet",
+            "occurred_at": "2026-08-28T18:00:00+00:00",
+        },
+        headers=headers,
+    )
+    gallery_depth = await client.post(
+        "/internal/public-site/measurement/gallery-depth",
+        json={
+            "event_key": "invalid-exposure-gallery-depth",
+            "listing_id": listing_id,
+            "photographs": 5,
+            "gallery_fraction": 0.8,
+            "occurred_at": "2026-08-28T18:00:00+00:00",
+        },
+        headers=headers,
+    )
+
+    assert conversation.status_code == 409
+    assert listing_open.status_code == 422
+    assert gallery_depth.status_code == 422
+    assert "exposición patrocinada no es válida" in listing_open.text
+
+
 async def test_a_listing_open_is_recorded_once_per_session_and_day(wired) -> None:
     client, database = wired
     listing_id = await a_listing(database, "api-apertura")

@@ -1,8 +1,9 @@
-"""Progressive, server-backed Saved Collections (ADR-0040)."""
+"""Phone-claimed, server-backed Saved Collections (ADR-0063)."""
 
 from __future__ import annotations
 
 import hashlib
+import re
 import secrets
 import uuid
 from dataclasses import dataclass
@@ -22,8 +23,40 @@ from realestate.domain.commercial.idempotency import CommercialCommands
 from realestate.domain.public.catalog import PublicListingView
 from realestate.domain.public.listing import PublicListing
 
-ANONYMOUS_COLLECTION_LIFETIME = timedelta(days=365)
+UNPROTECTED_COLLECTION_LIFETIME = timedelta(days=365)
 SHARED_SELECTION_LIFETIME = timedelta(days=30)
+
+
+class PhoneClaimRequired(ValueError):
+    """A first save cannot become durable without a customer phone claim."""
+
+
+class InvalidPhoneClaim(ValueError):
+    """The supplied phone cannot be represented as a bounded phone claim."""
+
+
+def normalize_phone_claim(raw: str | None) -> str:
+    """Normalize a Mexican-site phone claim without treating it as verified identity.
+
+    Ten local digits receive Mexico's country code. Longer E.164-compatible
+    values retain their country code. This value is never used to resolve or
+    merge Contacts; only a provider-authenticated channel identity may do that.
+    """
+    if raw is None or not raw.strip():
+        raise PhoneClaimRequired(
+            "Ingresa tu número de teléfono para guardar esta propiedad."
+        )
+    value = raw.strip()
+    if not re.fullmatch(r"[+0-9().\-\s]+", value):
+        raise InvalidPhoneClaim("Ingresa un número de teléfono válido.")
+    digits = "".join(character for character in value if character in "0123456789")
+    if value.startswith("00"):
+        digits = digits[2:]
+    if len(digits) == 10:
+        digits = f"52{digits}"
+    if not 10 <= len(digits) <= 15 or digits.startswith("0"):
+        raise InvalidPhoneClaim("Ingresa un número de teléfono válido.")
+    return f"+{digits}"
 
 
 class SavedAction(str, Enum):
@@ -40,6 +73,7 @@ class SavedCommand:
     command_key: str
     collection_token: str | None = None
     listing_id: uuid.UUID | None = None
+    phone_number: str | None = None
 
 
 @dataclass(frozen=True)
@@ -58,6 +92,7 @@ class SavedResult:
     collection_id: uuid.UUID | None
     collection_token: str | None
     protected: bool
+    phone_claimed: bool
     changed: bool
     items: tuple[SavedItemView, ...]
     shared_token: str | None = None
@@ -88,20 +123,30 @@ class SavedCollections:
 
     async def record(self, command: SavedCommand, *, at: datetime) -> SavedResult:
         token = command.collection_token
-        collection = await self._resolve(token, at=at, lock=True) if token else None
+        collection = await self._resolve(token, at=at, lock=True)
         issued: str | None = None
         if collection is None:
             if command.action not in {SavedAction.ADD}:
-                return SavedResult(None, None, False, False, ())
+                return SavedResult(None, None, False, False, False, ())
+            phone_claim = normalize_phone_claim(command.phone_number)
             issued = _new_token("sc")
             collection = SavedCollection(
                 organization_id=self._actor.organization_id,
                 access_token_hash=token_hash(issued),
+                claimed_phone_number=phone_claim,
                 last_activity_at=at,
-                expires_at=at + ANONYMOUS_COLLECTION_LIFETIME,
+                expires_at=at + UNPROTECTED_COLLECTION_LIFETIME,
             )
             self._session.add(collection)
             await self._session.flush()
+        elif (
+            collection.protected_contact_id is None
+            and collection.claimed_phone_number is None
+            and command.action in {SavedAction.ADD, SavedAction.SHARE}
+        ):
+            collection.claimed_phone_number = normalize_phone_claim(
+                command.phone_number
+            )
 
         replayed = await self._commands.claim(
             self._actor,
@@ -119,25 +164,33 @@ class SavedCollections:
             shared_token = self._selection_token(collection, command.command_key)
         collection.last_activity_at = at
         if collection.protected_contact_id is None:
-            collection.expires_at = at + ANONYMOUS_COLLECTION_LIFETIME
+            collection.expires_at = at + UNPROTECTED_COLLECTION_LIFETIME
         await self._session.flush()
         return SavedResult(
             collection_id=collection.id,
             collection_token=issued,
             protected=collection.protected_contact_id is not None,
+            phone_claimed=(
+                collection.claimed_phone_number is not None
+                or collection.protected_contact_id is not None
+            ),
             changed=changed,
             items=await self._items(collection, at=at),
             shared_token=shared_token,
         )
 
     async def read(self, token: str | None, *, at: datetime) -> SavedResult:
-        collection = await self._resolve(token, at=at) if token else None
+        collection = await self._resolve(token, at=at)
         if collection is None:
-            return SavedResult(None, None, False, False, ())
+            return SavedResult(None, None, False, False, False, ())
         return SavedResult(
             collection_id=collection.id,
             collection_token=None,
             protected=collection.protected_contact_id is not None,
+            phone_claimed=(
+                collection.claimed_phone_number is not None
+                or collection.protected_contact_id is not None
+            ),
             changed=False,
             items=await self._items(collection, at=at),
         )
@@ -167,6 +220,7 @@ class SavedCollections:
         )
         if existing is None or existing.id == source.id:
             source.protected_contact_id = contact_id
+            source.claimed_phone_number = None
             source.expires_at = None
             source.last_activity_at = at
             await self._session.flush()
@@ -192,7 +246,9 @@ class SavedCollections:
             else:
                 item.collection_id = existing.id
         source.merged_into_id = existing.id
+        source.claimed_phone_number = None
         source.deleted_at = at
+        existing.claimed_phone_number = None
         existing.last_activity_at = at
         await self._session.flush()
         return existing
@@ -282,6 +338,7 @@ class SavedCollections:
                 )
             )
             collection.deleted_at = at
+            collection.claimed_phone_number = None
             return True, None
         if command.action is SavedAction.SHARE:
             items = await self._item_rows(collection)
@@ -328,7 +385,9 @@ class SavedCollections:
                 SavedCollection.id == row.merged_into_id,
                 SavedCollection.organization_id == self._actor.organization_id,
             )
-            row = await self._session.scalar(follow.with_for_update() if lock else follow)
+            row = await self._session.scalar(
+                follow.with_for_update() if lock else follow
+            )
         else:
             return None
         if row is None or (

@@ -312,7 +312,8 @@ h3 { margin:1.25rem 0 .45rem; font-size:1rem; font-weight:700 }
 .card > :last-child { margin-bottom:0 }
 .note { margin:14px 0; padding:14px 16px; border-radius:var(--radius-small);
   background:var(--selected); color:var(--brand) }
-.grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px 20px }
+.grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px 20px;
+  align-items:start }
 .full { grid-column:1/-1 }
 .field { min-width:0 }
 label { display:block; color:var(--ink); font-size:.91rem; font-weight:650 }
@@ -326,7 +327,7 @@ textarea { min-height:104px; resize:vertical }
 fieldset { min-width:0; margin:0; padding:11px 14px; border:1px solid var(--line);
   border-radius:12px }
 legend { padding:0 5px; font-size:.86rem; font-weight:680 }
-.actions { display:flex; gap:9px; flex-wrap:wrap; margin-top:18px }
+.actions { display:flex; gap:9px; flex-wrap:wrap; align-items:center; margin-top:18px }
 /* 44px minimum touch target on every control. */
 button, .button { display:inline-flex; align-items:center; justify-content:center;
   min-height:44px; padding:10px 16px; border:1px solid transparent; border-radius:11px;
@@ -371,13 +372,30 @@ td > a:first-child { font-weight:650 }
 .tag.bad { border-color:#edc8bd; background:var(--blocked); color:var(--overdue) }
 .tag.ok { border-color:#bed8c5; background:var(--confirmed); color:var(--ok) }
 .tag.warn { border-color:#ead59b; background:var(--attention); color:var(--warn) }
-.filters { display:flex; flex-wrap:wrap; gap:13px 16px; align-items:flex-end }
-.filters .field { flex:1 1 190px }
+.filters { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr));
+  gap:16px; align-items:start }
+.filters .field { min-width:0 }
 .filters label { font-size:.86rem }
+.field-label { display:block; margin-bottom:6px; color:var(--ink); font-size:.86rem;
+  font-weight:650 }
 label.check, label.checkbox { display:flex; align-items:center; gap:9px; min-height:42px;
   font-weight:450 }
 label.check input, label.checkbox input, .checks input { width:18px; height:18px;
   min-height:18px; margin:0; accent-color:var(--brand) }
+.filters fieldset { min-height:100%; display:grid; align-content:start; gap:8px;
+  padding:15px 16px }
+.filters fieldset label.check { margin:0 }
+.filter-actions { margin-top:18px; padding-top:2px }
+.form-card { padding:24px }
+.form-card .actions { margin-top:18px }
+.opportunity-filters { grid-template-columns:minmax(230px,1fr) minmax(230px,1fr)
+  minmax(330px,1.3fr) auto; align-items:end }
+.opportunity-filters .filter-actions { align-self:end; flex-wrap:nowrap; margin-top:0;
+  padding-top:0 }
+.filter-group { min-width:0 }
+.inline-checks { display:flex; min-height:46px; align-items:center; gap:6px 16px;
+  flex-wrap:wrap; padding:0 2px }
+.inline-checks label.check { min-height:30px; margin:0 }
 .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:12px }
 .stat { min-width:0; padding:19px; border:1px solid var(--line-soft);
   border-radius:var(--radius); background:var(--surface); box-shadow:var(--shadow) }
@@ -440,6 +458,32 @@ label.check input, label.checkbox input, .checks input { width:18px; height:18px
 .next-obligation { padding:24px; border:1px solid var(--line-soft);
   border-radius:var(--radius-large); background:var(--surface); box-shadow:var(--shadow) }
 .next-obligation h2 { margin:.7rem 0 .3rem; font-size:1.5rem }
+.opportunity-cards { display:grid; gap:12px; margin:0; padding:0; list-style:none }
+.opportunity-card { min-width:0; padding:18px; border:1px solid var(--line-soft);
+  border-radius:var(--radius); background:var(--surface); box-shadow:var(--shadow) }
+.opportunity-card:hover { background:var(--surface-soft) }
+.opportunity-card-header { display:grid; grid-template-columns:minmax(0,1fr) auto;
+  gap:14px; align-items:start; padding-bottom:14px; border-bottom:1px solid var(--line-soft) }
+.opportunity-card-title { min-width:0 }
+.opportunity-card-title a { font-size:1.05rem; font-weight:740 }
+.opportunity-card-title .muted { margin-top:2px }
+.opportunity-card-body { display:grid; grid-template-columns:minmax(160px,.9fr)
+  minmax(220px,1.2fr) minmax(170px,.9fr) minmax(160px,.8fr); gap:16px;
+  padding-top:15px }
+.opportunity-field { min-width:0 }
+.opportunity-field-label { display:block; margin-bottom:4px; color:var(--muted);
+  font-size:.66rem; font-weight:760; letter-spacing:.04em; text-transform:uppercase }
+.opportunity-field strong { display:block; font-size:.94rem }
+.opportunity-primary-action { justify-self:end; align-self:center; min-width:116px }
+.opportunity-help { grid-column:1/-1; margin-top:14px; padding-top:12px;
+  border-top:1px solid var(--line-soft) }
+.opportunity-help > summary { width:max-content; max-width:100%; min-height:36px;
+  padding:5px 0; color:var(--brand); font-size:.86rem; font-weight:700 }
+.opportunity-help-body { display:grid; grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:12px; margin-top:8px }
+.opportunity-help-body div { min-width:0; padding:12px; border:1px solid var(--line-soft);
+  border-radius:12px; background:#fff }
+.opportunity-help-body strong { display:block; margin-bottom:3px; font-size:.84rem }
 .workspace { display:grid; gap:16px }
 .conversation-workspace { grid-template-columns:minmax(220px,.78fr) minmax(400px,1.8fr)
   minmax(250px,.92fr); align-items:start }
@@ -537,6 +581,8 @@ textarea.preview { min-height:430px; font:13px/1.4 ui-monospace,monospace }
   .read-only { margin-right:-32px; margin-left:-32px; padding-right:32px; padding-left:32px }
   .priority-row { grid-template-columns:78px minmax(230px,2fr) minmax(130px,1fr) auto;
     gap:14px; padding:16px }
+  .opportunity-filters { grid-template-columns:repeat(2,minmax(0,1fr)) }
+  .opportunity-filters .filter-actions { justify-self:start }
 }
 @media (max-width:1023px) {
   .crm-shell { display:block }
@@ -562,7 +608,7 @@ textarea.preview { min-height:430px; font:13px/1.4 ui-monospace,monospace }
   .funnel { grid-template-columns:repeat(3,minmax(0,1fr)) }
 }
 @media (max-width:760px) {
-  .grid, .checks { grid-template-columns:1fr }
+  .grid, .checks, .opportunity-filters { grid-template-columns:1fr }
   .main-wrap { padding:24px 16px 106px }
   .page-header { margin-bottom:24px }
   h1 { font-size:clamp(1.75rem,9vw,2.15rem); letter-spacing:-.04em }
@@ -596,8 +642,9 @@ textarea.preview { min-height:430px; font:13px/1.4 ui-monospace,monospace }
   .mobile-more-menu ul { margin:0; padding:0; list-style:none }
   .mobile-more-menu a { min-height:46px; padding:7px 9px }
   .card { padding:18px; border-radius:15px }
-  .filters .field { flex-basis:100% }
   .actions > button, .actions > .button { flex:1 1 auto }
+  .opportunity-filters .filter-actions { justify-self:stretch; flex-wrap:wrap }
+  .inline-checks { display:grid; grid-template-columns:1fr; gap:6px }
   .table-scroll { overflow:visible; border:0; border-radius:0; background:transparent;
     box-shadow:none }
   table, thead, tbody, tr, th, td { display:block; width:100% }
@@ -620,6 +667,9 @@ textarea.preview { min-height:430px; font:13px/1.4 ui-monospace,monospace }
     text-transform:none }
   .priority-action { justify-self:stretch; width:100%; margin-top:4px }
   .conversation-workspace, .opportunity-workspace { grid-template-columns:1fr }
+  .opportunity-card-header, .opportunity-card-body, .opportunity-help-body {
+    grid-template-columns:1fr }
+  .opportunity-primary-action { justify-self:stretch; width:100% }
   .conversation-workspace .context-panel { grid-column:auto }
   .workspace-panel { padding:17px; border-radius:17px }
   .sticky-rail { position:static }

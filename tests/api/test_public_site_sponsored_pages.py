@@ -241,7 +241,7 @@ async def test_a_paid_card_is_labelled_visibly_and_accessibly(path) -> None:
         if LISTING_ID in block
     )
     assert SPONSORED_LABEL not in organic_article
-    assert "aria-label" not in organic_article
+    assert SPONSORED_ARIA_LABEL not in organic_article
     assert "sponsored" not in organic_article
 
 
