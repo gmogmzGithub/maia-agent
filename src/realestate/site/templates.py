@@ -186,8 +186,16 @@ def home(
         )
     )
     return f"""
-<section class="hero"><figure class="hero-photo">{hero_media}</figure><div class="hero-scrim" aria-hidden="true"></div><div class="hero-content"><p class="eyebrow">Larevia · Área Metropolitana de Guadalajara</p><h1>Encuentra tu lugar.</h1><p>Propiedades en Guadalajara, Zapopan y Tlaquepaque, con Maia para ayudarte a decidir.</p>{hero_search_form()}<div class="hero-suggestions" aria-label="Búsquedas sugeridas"><a href="/propiedades?operation=Sale&zone=Zapopan">Comprar en Zapopan</a><a href="/propiedades?operation=Rental&property_type=Apartment">Rentar departamento</a><a href="/maia">Cuéntaselo a Maia</a></div></div></section>
-<div class="coverage-strip" aria-label="Cobertura y autoridad"><span>Guadalajara</span><span>Zapopan</span><span>Tlaquepaque</span><strong>Inventario autorizado</strong></div>
+<section class="hero">
+    <figure class="hero-photo">{hero_media}</figure>
+    <div class="hero-scrim" aria-hidden="true"> </div>
+        <div class="hero-content">
+            <h1>Encuentra tu lugar.</h1>
+            <p>Maia para ayudarte a decidir.</p>
+            {hero_search_form()}
+        </div>
+</section>
+
 <section class="section-shell inventory-section" aria-labelledby="seleccion"><div class="section-heading"><div><p class="eyebrow">Selección actual</p><h2 id="seleccion">Propiedades para explorar</h2></div><a class="direction-link" href="/propiedades">Ver todas {icon("arrow")}</a></div>{inventory}</section>
 <section class="section-shell zones-section" id="zonas" aria-labelledby="zonas-title"><div class="section-heading"><div><p class="eyebrow">Tres municipios, una búsqueda clara</p><h2 id="zonas-title">Explora por zona</h2></div></div>{zone_cards(listings)}</section>
 <section class="process-section" id="como-funciona" aria-labelledby="proceso-title"><div class="section-shell process-layout"><div><p class="eyebrow">Acompañamiento inmobiliario que sí continúa</p><h2 id="proceso-title">De la búsqueda a una visita verificada.</h2><p>Maia ayuda a precisar la necesidad; Product conserva la verdad de inventario, disponibilidad y citas.</p></div><ol class="steps"><li><span>01</span><strong>Explora</strong><p>Consulta propiedades y datos autorizados.</p></li><li><span>02</span><strong>Conversa</strong><p>Maia conserva el contexto sin pedir una cuenta.</p></li><li><span>03</span><strong>Verifica</strong><p>La visita se confirma por el WhatsApp oficial.</p></li></ol></div></section>
