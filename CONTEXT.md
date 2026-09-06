@@ -523,19 +523,24 @@ _Avoid_: Listing Gallery, Property Document source, contract
 
 **Saved Collection**:
 A customer-controlled set of saved Listings held authoritatively by Product,
-usable anonymously and optionally linked to a verified Contact for recovery and
-cross-device continuity.
+started with a Phone Claim and optionally linked to a verified Contact for
+recovery and cross-device continuity.
 _Avoid_: Browser-only favorites, inferred Property Need, automatic lead capture
 
-**Anonymous Collection Session**:
-An opaque first-party identifier that lets one browser access a Saved Collection
-without an account or personal identity.
+**Phone Claim**:
+A customer-entered phone number required before the first save; it attributes a
+Saved Collection but is not a verified Contact identity or an account.
+_Avoid_: Contact, verified WhatsApp identity, account
+
+**Saved Collection Session**:
+An opaque first-party identifier that lets one browser access its Saved
+Collection after a Phone Claim without exposing that phone to the browser.
 _Avoid_: Contact identity, advertising tracker, public sharing token
 
 **Protected Saved Collection**:
 A Saved Collection explicitly linked through the Contact's verified WhatsApp
 channel for recovery and cross-device continuity without a password-based account.
-_Avoid_: Anonymous Collection Session, automatic Contact linkage, public profile
+_Avoid_: Saved Collection Session, automatic Contact linkage, public profile
 
 **Shared Selection**:
 A revocable, opaque, read-only snapshot of chosen saved Listings that contains no

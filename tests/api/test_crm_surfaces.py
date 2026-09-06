@@ -293,6 +293,9 @@ async def test_every_surface_ships_the_accessible_spanish_shell(
     assert "focus-visible" in html
     assert "min-height:44px" in html
     assert "@media (max-width:760px)" in html
+    assert ".filters { display:grid" in html
+    assert ".form-card" in html
+    assert ".opportunity-card-body" in html
     # Progressive enhancement may expose the pending state, but forms remain
     # ordinary server-rendered submissions when JavaScript is unavailable.
     assert 'aria-live="polite"' in html
@@ -1322,7 +1325,7 @@ async def test_the_panel_reports_coverage_and_the_specific_gaps(wired) -> None:
     assert 'href="/crm/oportunidades?stage=Qualified"' in before.text
     assert "Selecciona una etapa para ver sus contactos." in before.text
     assert "0%" in before.text
-    assert "no cumple la promesa de seguimiento" in before.text
+    assert "no cumple la cobertura de seguimiento" in before.text
     assert "Requieren asignación" in before.text
     assert "espera asignación manual" in before.text
 
@@ -1377,7 +1380,7 @@ async def test_the_panel_lists_overdue_actions_for_their_owner(wired) -> None:
     assert "Cola de asignación" not in as_advisor.text
 
 
-async def test_the_opportunity_list_filters_and_flags_the_promise(wired) -> None:
+async def test_the_opportunity_list_filters_and_explains_the_work(wired) -> None:
     client, database = wired
     async with database.session_scope() as session:
         from realestate.domain.commercial.organization import (
@@ -1420,7 +1423,15 @@ async def test_the_opportunity_list_filters_and_flags_the_promise(wired) -> None
         f"/crm/oportunidades?stage={OpportunityStage.QUALIFIED.value}", auth=ADMIN
     )
 
-    assert "Hueco" in everything.text
+    assert "Promesa" not in everything.text
+    assert "Hueco" not in everything.text
+    assert "opportunity-filters" in everything.text
+    assert "inline-checks" in everything.text
+    assert "Momento del proceso" in everything.text
+    assert "Qué toca ahora" in everything.text
+    assert "¿Qué significa?" in everything.text
+    assert "Puede avanzar a" in everything.text
+    assert "Requiere atención" in everything.text
     assert "Sin asesor" in everything.text
     assert "Ana Demo" in gaps.text
     assert "Ana Demo" in unassigned.text

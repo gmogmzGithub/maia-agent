@@ -342,7 +342,7 @@ def test_a_sponsored_card_renders_the_visible_chip_and_an_accessible_name() -> N
     # An organic card carries neither.
     organic = site_templates.listing_card(card["listing"], surface="Search")
     assert SPONSORED_LABEL not in organic
-    assert "aria-label" not in organic
+    assert SPONSORED_ARIA_LABEL not in organic
 
 
 def test_the_homepage_paid_section_is_its_own_labelled_region() -> None:

@@ -47,7 +47,13 @@ from realestate.domain.public.measurement import (
     ListingOpen,
     PublicMeasurement,
 )
-from realestate.domain.public.saved import SavedAction, SavedCommand, SavedCollections
+from realestate.domain.public.saved import (
+    InvalidPhoneClaim,
+    PhoneClaimRequired,
+    SavedAction,
+    SavedCommand,
+    SavedCollections,
+)
 from realestate.domain.public.sponsored import PublicSponsored
 from realestate.domain.sponsorship.sharing import (
     ShareUnavailable,
@@ -86,6 +92,7 @@ class SavedBody(BaseModel):
     action: SavedAction
     command_key: str = Field(min_length=8, max_length=200)
     listing_id: uuid.UUID | None = None
+    phone_number: str | None = Field(default=None, max_length=32)
 
 
 class ConversationBody(BaseModel):
@@ -287,11 +294,22 @@ async def mutate_saved(
                     command_key=body.command_key,
                     collection_token=token,
                     listing_id=body.listing_id,
+                    phone_number=body.phone_number,
                 ),
                 at=utc_now(),
             )
             await session.commit()
             return _json(result)
+    except PhoneClaimRequired as exc:
+        return _json(
+            {"detail": str(exc), "code": "phone_required"},
+            status_code=status.HTTP_428_PRECONDITION_REQUIRED,
+        )
+    except InvalidPhoneClaim as exc:
+        return _json(
+            {"detail": str(exc), "code": "invalid_phone"},
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        )
     except (ValueError, CommercialError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 

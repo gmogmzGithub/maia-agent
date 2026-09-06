@@ -9,18 +9,28 @@ from typing import Any
 import httpx
 import pytest
 from PIL import Image
+from starlette.requests import Request
 
+from realestate.config import Settings
 from realestate.domain.public.catalog import SearchQuery
 from realestate.domain.public.responders import _json_default
-from realestate.site.app import _absolute_schema, _detail, _responsive_image
+from realestate.site.app import (
+    _absolute_schema,
+    _detail,
+    _measurement_headers,
+    _responsive_image,
+    create_site_app,
+)
 from realestate.site.gateway import GatewayResponse, HttpProductSiteGateway
 from realestate.site.templates import (
     characteristics,
     facts_table,
     price,
+    report_page,
     responsive_image,
     saved_item,
     saved_page,
+    search_results_grid,
     search_page,
     shared_page,
 )
@@ -78,6 +88,27 @@ async def test_http_gateway_keeps_product_auth_server_side(
     assert client.closed is True
 
 
+async def test_site_lifespan_closes_the_gateway_it_owns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = StubHttpClient()
+    monkeypatch.setattr(
+        "realestate.site.gateway.httpx.AsyncClient", lambda **_kwargs: client
+    )
+    app = create_site_app(
+        Settings(
+            _env_file=None,
+            PLUGIN_API_TOKEN="test-token",
+            SITE_PUBLIC_ORIGIN="https://larevia.test",
+        )
+    )
+
+    async with app.router.lifespan_context(app):
+        assert app.state.gateway is not None
+
+    assert client.closed is True
+
+
 def test_public_image_and_schema_helpers_fail_safely() -> None:
     small = Image.new("RGB", (320, 200), color=(20, 60, 40))
     small_bytes = io.BytesIO()
@@ -113,8 +144,31 @@ def test_public_image_and_schema_helpers_fail_safely() -> None:
     }
     unavailable = GatewayResponse(503, {"detail": 503}, b"", "text/plain", {})
     assert _detail(unavailable) == "La operación no está disponible en este momento."
+    nested = GatewayResponse(
+        409,
+        {"detail": {"message": "La operación fue rechazada."}},
+        b"",
+        "application/json",
+        {},
+    )
+    assert _detail(nested) == "La operación fue rechazada."
     reference = uuid.UUID("11111111-1111-4111-8111-111111111111")
     assert _json_default(reference) == str(reference)
+
+
+def test_measurement_headers_forward_the_sponsored_exposure() -> None:
+    exposure = "11111111-1111-4111-8111-111111111111"
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/propiedades/casa",
+            "headers": [],
+            "query_string": f"patrocinio={exposure}".encode(),
+        }
+    )
+
+    assert _measurement_headers(request)["X-Sponsored-Exposure"] == exposure
 
 
 def test_template_empty_and_fallback_states_remain_actionable() -> None:
@@ -146,13 +200,58 @@ def test_template_empty_and_fallback_states_remain_actionable() -> None:
         '<div class="image-placeholder"'
     )
     assert price({"price_amount": None}) == "Precio disponible previa consulta"
-    assert price(
-        {"price_amount": "por definir", "price_currency": "MXN", "operation": "Rental"}
-    ) == "$por definir MXN / mes"
-    assert characteristics(
-        {"bedrooms": 3, "bathrooms": 2, "parking_spaces": 2}, limit=1
-    ).count("<li>") == 1
+    assert (
+        price(
+            {
+                "price_amount": "por definir",
+                "price_currency": "MXN",
+                "operation": "Rental",
+            }
+        )
+        == "$por definir MXN / mes"
+    )
+    assert (
+        characteristics(
+            {"bedrooms": 3, "bathrooms": 2, "parking_spaces": 2}, limit=1
+        ).count("<li>")
+        == 1
+    )
     assert "Consulta los datos" in facts_table({})
+
+    structured_report = report_page(
+        {
+            "summary": [{"label": "Visitas", "value": 1}],
+            "lines": [
+                {"style": "heading", "text": "Resultados conocidos"},
+                {"style": "body", "text": "Una visita conocida"},
+                {"style": "heading", "text": "Definiciones"},
+                {"style": "body", "text": "Texto interno de definición"},
+            ],
+        },
+        token="report-token",
+    )
+    assert "Una visita conocida" in structured_report
+    assert "Texto interno de definición" not in structured_report
+    trailing_sponsored = search_results_grid(
+        [],
+        {
+            "cards": [
+                {
+                    "campaign_id": "22222222-2222-4222-8222-222222222222",
+                    "exposure_id": "33333333-3333-4333-8333-333333333333",
+                    "listing": {
+                        "listing_id": "44444444-4444-4444-8444-444444444444",
+                        "slug": "patrocinada-sin-organicas",
+                        "title": "Patrocinada sin orgánicas",
+                        "media": [],
+                        "offers": [],
+                        "physical_facts": {},
+                    },
+                }
+            ]
+        },
+    )
+    assert "Patrocinada sin orgánicas" in trailing_sponsored
 
 
 @pytest.mark.parametrize(

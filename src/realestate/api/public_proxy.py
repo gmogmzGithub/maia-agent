@@ -53,9 +53,7 @@ async def public_root(request: Request) -> Response:
     return await _proxy(request, "")
 
 
-@router.api_route(
-    "/{path:path}", methods=["GET", "HEAD", "POST"]
-)
+@router.api_route("/{path:path}", methods=["GET", "HEAD", "POST"])
 async def public_path(request: Request, path: str) -> Response:
     if path.split("/", 1)[0] not in _PUBLIC_ROOTS:
         return PlainTextResponse("not found", status_code=404)
@@ -68,6 +66,10 @@ async def _proxy(request: Request, path: str) -> Response:
         for key, value in request.headers.items()
         if key.lower() in _FORWARDED_REQUEST_HEADERS
     }
+    # httpx clients retain Set-Cookie values. Supplying the downstream Cookie
+    # header even when it is empty prevents the shared proxy client from ever
+    # replaying browser A's saved-collection token into browser B's request.
+    headers["cookie"] = request.headers.get("cookie", "")
     try:
         upstream = await request.app.state.public_site_proxy.request(
             request.method,

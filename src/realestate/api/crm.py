@@ -142,6 +142,7 @@ from realestate.domain.outbound import DenialReason, Purpose
 from realestate.domain.commercial.views import (
     CommercialInbox,
     InboxFilters,
+    OpportunityRow,
     RestrictionView,
 )
 from realestate.domain.journeys import (
@@ -267,6 +268,178 @@ def _action_cell(
     due = local(action.due_at)
     marker = tag("Vencida", "bad") if overdue else tag("A tiempo", "ok")
     return f"{escape(label)}<br><span class='muted'>{escape(due)}</span><br>{marker}"
+
+
+STAGE_EXPLANATIONS = {
+    OpportunityStage.NEW.value: (
+        "Apenas entró. Hay que entender qué busca y si podemos atenderla.",
+        "Conversar o calificarla cuando ya estén claros los mínimos.",
+    ),
+    OpportunityStage.IN_CONVERSATION.value: (
+        "Ya hay intercambio, pero todavía falta confirmar información importante.",
+        "Calificar la necesidad o cerrar si no puede avanzar.",
+    ),
+    OpportunityStage.QUALIFIED.value: (
+        "Ya sabemos lo mínimo para que una persona responsable la trabaje.",
+        "Buscar opciones, agendar visita o negociar según lo que pida el contacto.",
+    ),
+    OpportunityStage.SEARCHING.value: (
+        "El equipo está buscando propiedades que coincidan con la necesidad.",
+        "Enviar opciones o pasar a visita cuando haya una propiedad concreta.",
+    ),
+    OpportunityStage.VISITING.value: (
+        "Ya hay una visita o seguimiento directo sobre una visita.",
+        "Registrar qué pasó y decidir si vuelve a búsqueda o pasa a negociación.",
+    ),
+    OpportunityStage.NEGOTIATING.value: (
+        "El contacto está evaluando condiciones, documentos o una posible oferta.",
+        "Registrar documentos, resultado o cierre cuando exista evidencia.",
+    ),
+    OpportunityStage.DORMANT.value: (
+        "Está pausada con una condición concreta para retomarla.",
+        "Esperar la condición registrada o abrir una nueva oportunidad si cambia el caso.",
+    ),
+    OpportunityStage.WON.value: (
+        "La operación quedó concluida con evidencia aceptada.",
+        "No requiere seguimiento comercial activo.",
+    ),
+    OpportunityStage.LOST.value: (
+        "Terminó sin operación concluida y con motivo registrado.",
+        "No se reactiva; si la persona vuelve, se abre una oportunidad nueva.",
+    ),
+}
+
+ACTION_EXPLANATIONS = {
+    NextActionKind.QUALIFY.value: "Confirmar zona, presupuesto, horizonte y requisitos.",
+    NextActionKind.CALL.value: "Llamar y registrar el resultado.",
+    NextActionKind.WHATSAPP_MESSAGE.value: "Responder por el canal oficial y registrar resultado.",
+    NextActionKind.SEND_LISTINGS.value: "Enviar propiedades concretas que sí coincidan.",
+    NextActionKind.SCHEDULE_VISIT.value: "Coordinar una visita verificable.",
+    NextActionKind.VISIT_FOLLOW_UP.value: "Registrar qué pasó después de la visita.",
+    NextActionKind.DOCUMENT_REVIEW.value: "Revisar documentos o pedir lo que falta.",
+    NextActionKind.OTHER.value: "Ejecutar la acción descrita en la nota.",
+}
+
+
+def _stage_help(stage: str) -> tuple[str, str]:
+    return STAGE_EXPLANATIONS.get(
+        stage,
+        ("Estado comercial de esta oportunidad.", "Abrir la oportunidad y revisar."),
+    )
+
+
+def _next_stage_text(stage: str) -> str:
+    allowed = [
+        STAGE_LABELS.get(value, value)
+        for value in ADVANCEABLE_STAGES
+        if value in ALLOWED_TRANSITIONS[stage]
+    ]
+    return ", ".join(allowed) if allowed else "No tiene avance pendiente."
+
+
+def _opportunity_work_text(
+    next_action: NextAction | None,
+    *,
+    overdue: bool,
+    exception_reason: str | None,
+    covered: bool,
+    has_advisor: bool,
+) -> tuple[str, str, str, str]:
+    if not has_advisor:
+        return (
+            "Asignar asesor",
+            "Sin una persona responsable, nadie queda obligado a continuar.",
+            "bad",
+            "Asignar",
+        )
+    if next_action is None:
+        if exception_reason is not None:
+            reason = EXCEPTION_REASON_LABELS.get(exception_reason, exception_reason)
+            return (
+                "Revisar pausa de seguimiento",
+                f"No hay acción porque se registró: {reason}.",
+                "warn",
+                "Revisar",
+            )
+        return (
+            "Agendar seguimiento",
+            "Falta una acción concreta con fecha y responsable.",
+            "bad",
+            "Agendar",
+        )
+    label = ACTION_KIND_LABELS.get(next_action.kind, next_action.kind)
+    explanation = ACTION_EXPLANATIONS.get(next_action.kind, "Ejecutar y registrar resultado.")
+    if overdue:
+        return (
+            label,
+            f"Vencía {local(next_action.due_at)}. {explanation}",
+            "bad",
+            "Resolver",
+        )
+    if not covered:
+        return (
+            label,
+            f"Programada para {local(next_action.due_at)}. Revisa qué falta para dejarla cubierta.",
+            "warn",
+            "Abrir",
+        )
+    return (
+        label,
+        f"Programada para {local(next_action.due_at)}. {explanation}",
+        "ok",
+        "Abrir",
+    )
+
+
+def _opportunity_cards(rows: list[OpportunityRow], *, moment: datetime) -> str:
+    if not rows:
+        return empty(
+            "No hay oportunidades que coincidan.",
+            "Cambia los filtros o revisa la bandeja de conversaciones.",
+        )
+    cards = []
+    for row in rows:
+        stage = row.opportunity.stage
+        stage_description, stage_next = _stage_help(stage)
+        work_label, work_detail, _work_kind, action_label = _opportunity_work_text(
+            row.next_action,
+            overdue=row.overdue,
+            exception_reason=row.exception_reason,
+            covered=row.covered,
+            has_advisor=row.opportunity.responsible_advisor_id is not None,
+        )
+        covered_label = "Al día" if row.covered else "Requiere atención"
+        covered_kind = "ok" if row.covered else "bad"
+        next_stages = _next_stage_text(stage)
+        cards.append(
+            f"""<li class="opportunity-card">
+<div class="opportunity-card-header">
+<div class="opportunity-card-title"><a href="/crm/oportunidades/{row.opportunity.id}">
+{escape(row.contact_name or row.channel_identity or "Contacto sin nombre")}</a>
+<div class="muted">{escape(row.channel_identity or "")} · {escape(KIND_LABELS[row.opportunity.kind])}</div></div>
+<a class="button opportunity-primary-action" href="/crm/oportunidades/{row.opportunity.id}">{escape(action_label)}</a>
+</div>
+<div class="opportunity-card-body">
+<div class="opportunity-field"><span class="opportunity-field-label">Momento</span>
+<strong>{escape(STAGE_LABELS[stage])}</strong><span class="muted">{escape(stage_description)}</span></div>
+<div class="opportunity-field"><span class="opportunity-field-label">Qué toca ahora</span>
+<strong>{escape(work_label)} {tag('Vencida', 'bad') if row.overdue else ''}</strong>
+<span class="muted">{escape(work_detail)}</span></div>
+<div class="opportunity-field"><span class="opportunity-field-label">Responsable</span>
+<strong>{escape(row.advisor_name or "Sin asesor")}</strong>
+{tag("Sin asesor", "bad") if row.opportunity.responsible_advisor_id is None else ""}</div>
+<div class="opportunity-field"><span class="opportunity-field-label">Estado de atención</span>
+<strong>{tag(covered_label, covered_kind)}</strong>
+<span class="muted">Actividad: {escape(relative(row.opportunity.last_activity_at, now=moment))}</span></div>
+<details class="opportunity-help"><summary>¿Qué significa?</summary>
+<div class="opportunity-help-body">
+<div><strong>Momento</strong><span class="muted">Dónde está la relación comercial hoy.</span></div>
+<div><strong>Qué toca ahora</strong><span class="muted">La acción concreta que alguien debe hacer o corregir.</span></div>
+<div><strong>Puede avanzar a</strong><span class="muted">{escape(next_stages or stage_next)}</span></div>
+</div></details>
+</div></li>"""
+        )
+    return f'<ol class="opportunity-cards">{"".join(cards)}</ol>'
 
 
 def _restriction_note(restriction: RestrictionView) -> str:
@@ -513,7 +686,7 @@ async def panel(
                 "oportunidades calificadas activas",
             )
             + (" no cumple" if uncovered == 1 else " no cumplen")
-            + " la promesa de seguimiento.",
+            + " la cobertura de seguimiento.",
             "warn",
         )
 
@@ -527,7 +700,7 @@ async def panel(
         for row in coverage.gaps[:15]
     )
     gaps_table = table(
-        "Oportunidades calificadas activas que no cumplen la promesa",
+        "Oportunidades calificadas activas que requieren atención",
         ("Contacto", "Etapa", "Asesor", "Siguiente acción"),
         gap_rows,
         empty_message="No hay huecos de seguimiento.",
@@ -965,53 +1138,28 @@ async def opportunities(
             now=moment,
         )
 
-    body = "".join(
-        f"<tr><td><a href='/crm/oportunidades/{row.opportunity.id}'>"
-        f"{escape(row.contact_name or row.channel_identity or 'Contacto sin nombre')}</a>"
-        f"<br><span class='muted'>{escape(row.channel_identity or '')}</span></td>"
-        f"<td>{escape(KIND_LABELS[row.opportunity.kind])}</td>"
-        f"<td>{_stage_tag(row.opportunity.stage)}</td>"
-        f"<td>{escape(row.advisor_name or '—')}"
-        + (
-            ""
-            if row.opportunity.responsible_advisor_id
-            else "<br>" + tag("Sin asesor", "bad")
-        )
-        + "</td>"
-        f"<td>{_action_cell(row.next_action, row.overdue, row.exception_reason)}</td>"
-        f"<td>{escape(local(row.opportunity.last_activity_at))}</td>"
-        f"<td>{tag('Cumple', 'ok') if row.covered else tag('Hueco', 'bad')}</td></tr>"
-        for row in rows
+    listing = (
+        f'<section aria-labelledby="lista-oportunidades">'
+        f'<div class="work-section-header"><div><h2 id="lista-oportunidades">'
+        f'{counted(len(rows), "oportunidad", "oportunidades")}</h2>'
+        '<p>Ordenadas por lo que requiere atención primero.</p></div></div>'
+        f"{_opportunity_cards(rows, moment=moment)}</section>"
     )
-    listing = table(
-        counted(len(rows), "oportunidad", "oportunidades"),
-        (
-            "Contacto",
-            "Tipo",
-            "Etapa",
-            "Asesor",
-            "Siguiente acción",
-            "Última actividad",
-            "Promesa",
-        ),
-        body,
-        empty_message="No hay oportunidades que coincidan.",
-        empty_hint="Cambia los filtros o revisa la bandeja de conversaciones.",
-    )
-    filter_form = f"""<form class="card" method="get" action="/crm/oportunidades">
-<div class="filters">
-<div class="field"><label for="o-stage">Etapa
+    filter_form = f"""<form class="card form-card" method="get" action="/crm/oportunidades">
+<div class="filters opportunity-filters">
+<div class="field"><label for="o-stage">Momento del proceso
 <select id="o-stage" name="stage"><option value="">Todas las activas</option>
 {options(tuple(STAGE_LABELS), chosen or "", STAGE_LABELS)}</select></label></div>
 <div class="field"><label for="o-scope">Alcance
 <select id="o-scope" name="scope">{options(InboxFilters.SCOPES if actor.is_administrator else ("all", "mine"), scope, SCOPE_LABELS)}</select></label></div>
-<div class="field"><fieldset><legend>Filtros</legend>
-{checkbox("huecos", "Sólo huecos de seguimiento", huecos == "1")}
+<div class="field filter-group" role="group" aria-label="Filtros"><span class="field-label">Filtros</span>
+<div class="inline-checks">
+{checkbox("huecos", "Sólo oportunidades que requieren atención", huecos == "1")}
 {checkbox("cerradas", "Incluir cerradas y en pausa", cerradas == "1")}
-</fieldset></div>
-</div>
-<div class="actions"><button type="submit">Aplicar filtros</button>
-<a class="button quiet" href="/crm/oportunidades">Limpiar</a></div></form>"""
+</div></div>
+<div class="actions filter-actions"><button type="submit">Aplicar filtros</button>
+<a class="button quiet" href="/crm/oportunidades">Limpiar</a></div>
+</div></form>"""
     return shell(
         actor, "Oportunidades", filter_form + listing, active="/crm/oportunidades"
     )

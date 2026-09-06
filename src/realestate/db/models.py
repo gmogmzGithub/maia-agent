@@ -3804,6 +3804,9 @@ class SavedCollection(Base):
     id: Mapped[uuid.UUID] = _uuid_pk()
     organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
     access_token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    # Self-asserted and deliberately separate from Contact identity. Only a
+    # verified channel handoff may populate ``protected_contact_id``.
+    claimed_phone_number: Mapped[str | None] = mapped_column(String(32), nullable=True)
     protected_contact_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("contacts.id", ondelete="RESTRICT"), nullable=True
     )
@@ -3845,6 +3848,15 @@ class SavedCollection(Base):
             "organization_id", "id", name="uq_saved_collections_org_id"
         ),
         Index("ix_saved_collections_expiry", "expires_at"),
+        Index(
+            "ix_saved_collections_claimed_phone",
+            "organization_id",
+            "claimed_phone_number",
+            "created_at",
+            postgresql_where=sql_text(
+                "claimed_phone_number IS NOT NULL AND deleted_at IS NULL"
+            ),
+        ),
     )
 
 

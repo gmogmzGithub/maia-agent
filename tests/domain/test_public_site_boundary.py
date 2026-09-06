@@ -112,7 +112,30 @@ async def test_internal_contract_exercises_every_product_owned_operation(wired) 
         invalid_save = await client.post(
             "/internal/public-site/saved",
             headers=authorization,
-            json={"action": "Add", "command_key": "boundary-invalid-save"},
+            json={
+                "action": "Add",
+                "command_key": "boundary-invalid-save",
+                "phone_number": "33 1234 5678",
+            },
+        )
+        missing_phone = await client.post(
+            "/internal/public-site/saved",
+            headers=authorization,
+            json={
+                "action": "Add",
+                "command_key": "boundary-missing-phone",
+                "listing_id": str(listing.listing_id),
+            },
+        )
+        invalid_phone = await client.post(
+            "/internal/public-site/saved",
+            headers=authorization,
+            json={
+                "action": "Add",
+                "command_key": "boundary-invalid-phone",
+                "listing_id": str(listing.listing_id),
+                "phone_number": "0000000000",
+            },
         )
         added = await client.post(
             "/internal/public-site/saved",
@@ -121,6 +144,7 @@ async def test_internal_contract_exercises_every_product_owned_operation(wired) 
                 "action": "Add",
                 "command_key": "boundary-add-listing",
                 "listing_id": str(listing.listing_id),
+                "phone_number": "33 1234 5678",
             },
         )
         collection_token = added.json()["collection_token"]
@@ -214,6 +238,10 @@ async def test_internal_contract_exercises_every_product_owned_operation(wired) 
     assert missing_media.status_code == 404
     assert empty.json()["items"] == []
     assert invalid_save.status_code == 409
+    assert missing_phone.status_code == 428
+    assert missing_phone.json()["code"] == "phone_required"
+    assert invalid_phone.status_code == 422
+    assert invalid_phone.json()["code"] == "invalid_phone"
     assert current.json()["items"][0]["listing_id"] == str(listing.listing_id)
     assert selection.status_code == 200 and len(selection.json()["items"]) == 1
     assert missing_selection.status_code == 410
@@ -323,6 +351,55 @@ async def test_host_proxy_forwards_only_public_headers_and_never_product_auth(
     assert "authorization" not in captured[0].headers
     assert "x-private" not in captured[0].headers
     assert captured[0].headers["cookie"] == "larevia_saved=sc-browser"
+
+
+async def test_unbound_public_host_and_non_public_proxy_path_are_refused(wired) -> None:
+    app, _listing = wired
+    authorization = {
+        "Authorization": "Bearer site-contract-token",
+        "X-Site-Host": "unbound.example",
+    }
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://product.test"
+    ) as client:
+        unbound = await client.get(
+            "/internal/public-site/catalog", headers=authorization
+        )
+        private_path = await client.get("/not-a-public-surface")
+
+    assert unbound.status_code == 503
+    assert private_path.status_code == 404
+
+
+async def test_host_proxy_never_reuses_one_browsers_saved_cookie_for_another(
+    wired,
+) -> None:
+    app, _listing = wired
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(
+            200,
+            text="sitio separado",
+            headers={"Set-Cookie": "larevia_saved=sc-first; HttpOnly"},
+        )
+
+    app.state.public_site_proxy = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://site.test"
+    )
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://product.test"
+    ) as first_browser:
+        await first_browser.get("/guardadas")
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://product.test"
+    ) as second_browser:
+        await second_browser.get("/guardadas")
+
+    assert len(captured) == 2
+    assert captured[0].headers.get("cookie", "") == ""
+    assert captured[1].headers.get("cookie", "") == ""
 
 
 async def test_public_proxy_fails_honestly_when_site_process_is_unavailable(

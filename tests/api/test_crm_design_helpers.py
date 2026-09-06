@@ -12,6 +12,7 @@ from realestate.api.crm import (
     _history_card,
     _journey_card,
     _next_action_card,
+    _opportunity_work_text,
     _outcome_form,
     _stage_card,
 )
@@ -142,6 +143,47 @@ def test_active_workflow_components_render_current_work_and_history() -> None:
     assert "Cerrar excepción" in _exception_card(opportunity, exception)
     assert "Registrar excepción" in _exception_card(opportunity, None)
     assert "Historial de etapas" in _history_card([transition])
+
+
+def test_opportunity_list_explains_each_actionable_work_state() -> None:
+    action = NextAction(
+        kind=NextActionKind.CALL.value,
+        due_at=NOW,
+    )
+
+    paused = _opportunity_work_text(
+        None,
+        overdue=False,
+        exception_reason=OpportunityExceptionReason.ADMIN_REVIEW.value,
+        covered=True,
+        has_advisor=True,
+    )
+    overdue = _opportunity_work_text(
+        action,
+        overdue=True,
+        exception_reason=None,
+        covered=False,
+        has_advisor=True,
+    )
+    uncovered = _opportunity_work_text(
+        action,
+        overdue=False,
+        exception_reason=None,
+        covered=False,
+        has_advisor=True,
+    )
+    current = _opportunity_work_text(
+        action,
+        overdue=False,
+        exception_reason=None,
+        covered=True,
+        has_advisor=True,
+    )
+
+    assert paused[0] == "Revisar pausa de seguimiento" and paused[2] == "warn"
+    assert overdue[3] == "Resolver" and "Vencía" in overdue[1]
+    assert uncovered[2] == "warn" and "qué falta" in uncovered[1]
+    assert current[2] == "ok" and "Llamar" in current[0]
 
 
 def test_closed_and_advisor_variants_hide_or_explain_unavailable_work() -> None:
