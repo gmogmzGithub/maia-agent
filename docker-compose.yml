@@ -198,10 +198,13 @@ services:
       - 127.0.0.1
       - --port
       - "8081"
+      - --reload
     network_mode: service:product
     depends_on:
       product:
         condition: service_healthy
+    volumes:
+      - ./src:/app/src
     logging:
       options:
         max-size: 10m
