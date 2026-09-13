@@ -36,6 +36,18 @@ async def health(request: Request, response: Response) -> dict[str, object]:
         state.calendar.check_health(),
     )
     loop_state = request.app.state.background_loop.state
+    ledger = getattr(request.app.state, "trace_ledger", None)
+    telemetry = (
+        ledger.health.as_dict()
+        if ledger is not None
+        else {"status": "not_configured", "detail": "Telemetry is not initialized"}
+    )
+    settings = getattr(request.app.state, "settings", None)
+    if ledger is not None and (settings is None or not settings.telemetry_hmac_key):
+        telemetry = {
+            "status": "degraded",
+            "detail": "TELEMETRY_HMAC_KEY is not configured",
+        }
 
     # WhatsApp is reported but does not gate the aggregate: an expired
     # test-number token is an expected Stage 0 condition, not an outage, and the
@@ -54,6 +66,10 @@ async def health(request: Request, response: Response) -> dict[str, object]:
             "telegram": telegram,
             "calendar": calendar,
             "background_loop": loop_state.as_dict(),
+            # Observability is deliberately visible but non-gating: a customer
+            # operation must not be refused merely because diagnostics cannot
+            # be persisted (ADR-0064).
+            "operational_telemetry": telemetry,
         },
     }
 

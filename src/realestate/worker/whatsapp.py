@@ -78,6 +78,15 @@ from realestate.hermes.sessions import (
     session_for_cycle,
     trusted_context,
 )
+from realestate.domain.clock import utc_now
+from realestate.observability.events import (
+    OperationalOutcome,
+    TelemetryEvent,
+    TelemetrySeverity,
+    TraceContext,
+    customer_trace_handle,
+)
+from realestate.observability.recording import TelemetryEmitter
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +101,8 @@ class WhatsAppWorker:
         messaging: OrganizationMetaMessagingClients | None = None,
         sales_profile: str,
         schedule: WeeklySchedule | OrganizationAppointmentPolicies,
+        telemetry: TelemetryEmitter | None = None,
+        telemetry_hmac_key: str = "",
         max_concurrent: int = 3,
     ) -> None:
         self._database = database
@@ -103,6 +114,64 @@ class WhatsAppWorker:
         # worker computes no availability.
         self._schedule = schedule
         self._max_concurrent = max_concurrent
+        self._telemetry = telemetry
+        self._telemetry_hmac_key = telemetry_hmac_key
+
+    def _trace_for(
+        self,
+        group: ClaimedGroup,
+        conversation: Conversation,
+        lead: Lead | None,
+    ) -> TraceContext:
+        """Resume the Product-minted ingress trace for this claimed group."""
+        interaction_id = next(
+            (message.interaction_id for message in group.messages if message.interaction_id),
+            uuid.uuid4(),
+        )
+        handle: str | None = None
+        if lead is not None and self._telemetry_hmac_key:
+            handle = customer_trace_handle(
+                key=self._telemetry_hmac_key,
+                organization_id=conversation.organization_id,
+                channel=lead.channel,
+                channel_account_id=lead.channel_account_id,
+                provider_user_id=lead.provider_user_id,
+            )
+        return TraceContext(
+            interaction_id=interaction_id,
+            attempt_id=uuid.uuid4(),
+            organization_id=conversation.organization_id,
+            customer_trace_handle=handle,
+            channel=lead.channel if lead is not None else None,
+        )
+
+    async def _emit(
+        self,
+        context: TraceContext,
+        *,
+        event_name: str,
+        stage: str,
+        outcome: OperationalOutcome,
+        severity: TelemetrySeverity,
+        duration_ms: int | None = None,
+        error_code: str | None = None,
+        error_type: str | None = None,
+    ) -> None:
+        if self._telemetry is None:
+            return
+        await self._telemetry.emit(
+            TelemetryEvent(
+                occurred_at=utc_now(),
+                context=context,
+                event_name=event_name,
+                stage=stage,
+                outcome=outcome,
+                severity=severity,
+                duration_ms=duration_ms,
+                error_code=error_code,
+                error_type=error_type,
+            )
+        )
 
     # -- One tick ---------------------------------------------------------
 
@@ -153,6 +222,14 @@ class WhatsAppWorker:
             cycle = await session.get(LeadEngagementCycle, conversation.cycle_id)
             assert cycle is not None
             lead = await session.get(Lead, conversation.lead_id)
+            trace = self._trace_for(group, conversation, lead)
+            await self._emit(
+                trace,
+                event_name="worker.group_claimed",
+                stage="worker_claim",
+                outcome=OperationalOutcome.SUCCEEDED,
+                severity=TelemetrySeverity.INFO,
+            )
 
             try:
                 schedule = self._schedule
@@ -163,15 +240,28 @@ class WhatsAppWorker:
                         )
                     ).schedule
                 reply = await self._run_hermes_turn(
-                    session, inbox, group, cycle, lead, schedule
+                    session, inbox, group, cycle, lead, schedule, trace
                 )
             except Exception as exc:
-                logger.exception("Processing failed for conversation %s", conversation_id)
+                logger.error(
+                    "Processing failed for conversation %s (type=%s)",
+                    conversation_id,
+                    type(exc).__name__,
+                )
+                await self._emit(
+                    trace,
+                    event_name="hermes.turn_completed",
+                    stage="hermes_turn",
+                    outcome=OperationalOutcome.FAILED_RETRYABLE,
+                    severity=TelemetrySeverity.ERROR,
+                    error_code="hermes_turn_failed",
+                    error_type=type(exc).__name__,
+                )
                 await self._handle_failure(session, inbox, group, conversation, exc)
                 return
 
             await self._settle(
-                session, inbox, group, conversation, reply, schedule
+                session, inbox, group, conversation, reply, schedule, trace
             )
 
     # -- The Hermes turn --------------------------------------------------
@@ -184,6 +274,7 @@ class WhatsAppWorker:
         cycle: LeadEngagementCycle,
         lead: Lead | None,
         schedule: WeeklySchedule,
+        trace: TraceContext,
     ) -> str:
         role_session = await session_for_cycle(
             session, cycle.id, cycle.organization_id
@@ -241,6 +332,14 @@ class WhatsAppWorker:
                 .where(Property.id == conversation.property_uuid)
             )
 
+        started = utc_now()
+        await self._emit(
+            trace,
+            event_name="hermes.turn_started",
+            stage="hermes_turn",
+            outcome=OperationalOutcome.SUCCEEDED,
+            severity=TelemetrySeverity.INFO,
+        )
         turn = await run_turn(
             self._hermes,
             role_session,
@@ -261,6 +360,14 @@ class WhatsAppWorker:
             required_property_reference=required_property_reference,
             minimum_history_messages=recovered_messages,
             window_seconds=RECONCILIATION_WINDOW_SECONDS,
+        )
+        await self._emit(
+            trace,
+            event_name="hermes.turn_completed",
+            stage="hermes_turn",
+            outcome=OperationalOutcome.SUCCEEDED,
+            severity=TelemetrySeverity.INFO,
+            duration_ms=int((utc_now() - started).total_seconds() * 1_000),
         )
         return turn.text
 
@@ -329,6 +436,7 @@ class WhatsAppWorker:
         conversation: Conversation,
         reply: str,
         schedule: WeeklySchedule,
+        trace: TraceContext,
     ) -> None:
         """Release the draft only when the group truly covers the Conversation.
 
@@ -388,11 +496,27 @@ class WhatsAppWorker:
             # has already recorded and logged why.
             await session.commit()
             await inbox.settle(group)
+            await self._emit(
+                trace,
+                event_name="outbound.eligibility_checked",
+                stage="outbound_eligibility",
+                outcome=OperationalOutcome.REFUSED_AS_DESIGNED,
+                severity=TelemetrySeverity.INFO,
+                error_code="outbound_ineligible",
+                error_type="OutboundEligibility",
+            )
             return
 
         # Committed here, as the previous committing enqueue did: the reply must
         # survive even if the lease is lost before settlement below.
         await session.commit()
+        await self._emit(
+            trace,
+            event_name="outbound.queued",
+            stage="outbox_enqueue",
+            outcome=OperationalOutcome.SUCCEEDED,
+            severity=TelemetrySeverity.INFO,
+        )
 
         if notice is not None:
             # Persisted immediately: without it, the next turn would release the

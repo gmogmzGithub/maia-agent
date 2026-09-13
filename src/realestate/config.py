@@ -316,6 +316,19 @@ class Settings(BaseSettings):
     worker_enabled: bool = Field(default=True, alias="WORKER_ENABLED")
     log_level: str = Field(default="DEBUG", alias="LOG_LEVEL")
 
+    # --- Operational telemetry (ADR-0064) ----------------------------------
+    # A dedicated HMAC key derives customer trace handles. It is intentionally
+    # neither a provider credential nor the plugin credential: rotating one
+    # capability must not silently change an unrelated privacy boundary.
+    telemetry_hmac_key: str = Field(default="", alias="TELEMETRY_HMAC_KEY")
+    telemetry_retention_days: int = Field(default=30, alias="TELEMETRY_RETENTION_DAYS", ge=1, le=365)
+    telemetry_sweep_seconds: float = Field(
+        default=86_400.0, alias="TELEMETRY_SWEEP_SECONDS", ge=60.0
+    )
+    telemetry_sweep_batch_size: int = Field(
+        default=500, alias="TELEMETRY_SWEEP_BATCH_SIZE", ge=1, le=10_000
+    )
+
     @property
     def bootstrap_credential_references(self) -> dict[str, str]:
         """Which environment variable holds which provider credential.
