@@ -113,3 +113,29 @@ def test_privacy_filter_removes_exception_text() -> None:
     assert "secret-token" not in record.getMessage()
     assert "RuntimeError" in record.getMessage()
     assert record.exc_info is None
+
+
+def test_successful_liveness_probe_is_not_an_access_log_event() -> None:
+    probe = logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        __file__,
+        1,
+        '%s - "%s %s HTTP/%s" %d',
+        ("127.0.0.1:8080", "GET", "/live", "1.1", 200),
+        None,
+    )
+    failure = logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        __file__,
+        1,
+        '%s - "%s %s HTTP/%s" %d',
+        ("127.0.0.1:8080", "GET", "/live", "1.1", 503),
+        None,
+    )
+
+    privacy = PrivacyFilter()
+    assert not privacy.filter(probe)
+    assert privacy.filter(failure)
+    assert failure.args[0] == "<redacted-client>"

@@ -44,6 +44,12 @@ class PrivacyFilter(logging.Filter):
                 pass
             else:
                 safe_path = str(path).split("?", 1)[0]
+                # Docker's liveness probe calls this endpoint continuously.
+                # A successful probe is not an operator event; preserving it
+                # would bury the lifecycle and failure evidence this logger is
+                # for. Failed probes remain visible.
+                if method == "GET" and safe_path == "/live" and int(status_code) < 400:
+                    return False
                 record.args = ("<redacted-client>", method, safe_path, version, status_code)
                 return True
         exception_type: str | None = None
