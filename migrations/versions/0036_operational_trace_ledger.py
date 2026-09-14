@@ -1,7 +1,7 @@
 """Add the redacted, bounded operational trace ledger.
 
-Revision ID: 0032_operational_trace_ledger
-Revises: 0031_saved_phone_claim
+Revision ID: 0036_operational_trace_ledger
+Revises: 0035_anonymous_close
 """
 
 from __future__ import annotations
@@ -13,8 +13,8 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 
-revision: str = "0032_operational_trace_ledger"
-down_revision: str | None = "0031_saved_phone_claim"
+revision: str = "0036_operational_trace_ledger"
+down_revision: str | None = "0035_anonymous_close"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

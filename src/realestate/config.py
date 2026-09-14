@@ -298,6 +298,7 @@ class Settings(BaseSettings):
     # byte-stable, which preserves prompt caching.
     sales_profile: str = Field(default="sales", alias="HERMES_SALES_PROFILE")
     admin_profile: str = Field(default="admin", alias="HERMES_ADMIN_PROFILE")
+    website_profile: str = Field(default="website", alias="HERMES_WEBSITE_PROFILE")
 
     # --- Telegram Administrative Channel (P-040) -----------------------------
     telegram_bot_token: str = Field(default="", alias="TELEGRAM_BOT_TOKEN")

@@ -192,6 +192,8 @@ _RESET_ORDER = (
     "public_analytics_events",
     "channel_handoffs",
     "website_messages",
+    "website_turn_requests",
+    "website_search_receipts",
     "website_conversations",
     "shared_selections",
     "saved_collection_items",

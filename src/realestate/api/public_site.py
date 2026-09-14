@@ -190,13 +190,15 @@ def _json(value: object, *, status_code: int = 200) -> JSONResponse:
     return JSONResponse(jsonable_encoder(value), status_code=status_code)
 
 
-def _decimal(raw: str | None) -> Decimal | None:
+def _decimal(
+    raw: str | None, *, detail: str = "El precio no es válido."
+) -> Decimal | None:
     if not raw:
         return None
     try:
         return Decimal(raw)
     except InvalidOperation as exc:
-        raise HTTPException(status_code=422, detail="El precio no es válido.") from exc
+        raise HTTPException(status_code=422, detail=detail) from exc
 
 
 @router.get("/catalog")
@@ -207,6 +209,10 @@ async def catalog(
     property_type: str | None = None,
     minimum_price: str | None = None,
     maximum_price: str | None = None,
+    minimum_bedrooms: int | None = None,
+    minimum_bathrooms: str | None = None,
+    minimum_parking_spaces: int | None = None,
+    minimum_construction_m2: str | None = None,
     sort: str = "relevance",
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=12, ge=1, le=24),
@@ -222,6 +228,16 @@ async def catalog(
                     property_type=property_type,
                     minimum_price=_decimal(minimum_price),
                     maximum_price=_decimal(maximum_price),
+                    minimum_bedrooms=minimum_bedrooms,
+                    minimum_bathrooms=_decimal(
+                        minimum_bathrooms,
+                        detail="El número de baños no es válido.",
+                    ),
+                    minimum_parking_spaces=minimum_parking_spaces,
+                    minimum_construction_m2=_decimal(
+                        minimum_construction_m2,
+                        detail="La superficie de construcción no es válida.",
+                    ),
                     sort=sort,
                     page=page,
                     page_size=page_size,
@@ -338,12 +354,126 @@ async def conversation(
             HermesWebsiteResponder(
                 request.app.state.database,
                 request.app.state.hermes,
-                request.app.state.settings.sales_profile,
+                request.app.state.settings.website_profile,
             ),
         )
         conversation_id, messages = await module.read(token, at=utc_now())
         await session.commit()
         return _json({"conversation_id": conversation_id, "messages": messages})
+
+
+@router.delete("/conversation")
+async def close_conversation(
+    request: Request,
+    delete_content: bool = False,
+    token: str | None = Header(default=None, alias="X-Conversation-Token"),
+) -> JSONResponse:
+    async with request.app.state.database.session_scope() as session:
+        closed = await WebsiteConversation(
+            session,
+            await _actor(request, session),
+            HermesWebsiteResponder(
+                request.app.state.database,
+                request.app.state.hermes,
+                request.app.state.settings.website_profile,
+            ),
+        ).close(token, at=utc_now(), delete_content=delete_content)
+        await session.commit()
+        return _json(
+            {
+                "closed": closed,
+                "content_deleted": closed and delete_content,
+                "detail": (
+                    "Borramos el contenido de esta conversación. Los registros "
+                    "operativos independientes conservan su propia retención."
+                    if delete_content
+                    else "La conversación terminó. Puedes iniciar una nueva."
+                ),
+            }
+        )
+
+
+@router.post("/conversation/turns")
+async def enqueue_conversation_turn(
+    request: Request,
+    body: ConversationBody,
+    token: str | None = Header(default=None, alias="X-Conversation-Token"),
+) -> JSONResponse:
+    try:
+        async with request.app.state.database.session_scope() as session:
+            actor = await _actor(request, session)
+            session_value, bot, internal = _measurement_context(request)
+            campaign_id = await _campaign_for_exposure(
+                session,
+                actor,
+                request,
+                session_value,
+                body.listing_ids[0] if len(body.listing_ids) == 1 else None,
+            )
+            moment = utc_now()
+            result = await WebsiteConversation(
+                session,
+                actor,
+                HermesWebsiteResponder(
+                    request.app.state.database,
+                    request.app.state.hermes,
+                    request.app.state.settings.website_profile,
+                ),
+            ).enqueue(
+                WebsiteCommand(
+                    message=body.message,
+                    command_key=body.command_key,
+                    conversation_token=token,
+                    listing_ids=body.listing_ids,
+                    sponsorship_campaign_id=campaign_id,
+                ),
+                at=moment,
+            )
+            if result.conversation_token is not None and not result.replayed:
+                await PublicAnalytics(session, actor).record(
+                    PublicEventCommand(
+                        event_key=f"website-conversation-started:{result.conversation_id}",
+                        name=PublicAnalyticsEventName.MAIA_STARTED,
+                        surface="Maia",
+                        occurred_at=moment,
+                        listing_id=(
+                            body.listing_ids[0]
+                            if len(body.listing_ids) == 1
+                            else None
+                        ),
+                        campaign_id=campaign_id,
+                        properties={"source": "website"},
+                        session_value=session_value,
+                        bot=bot,
+                        internal=internal,
+                    )
+                )
+            await session.commit()
+            return _json(result, status_code=status.HTTP_202_ACCEPTED)
+    except (ValueError, CommercialError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get("/conversation/turns/{turn_id}")
+async def conversation_turn(
+    request: Request,
+    turn_id: uuid.UUID,
+    token: str | None = Header(default=None, alias="X-Conversation-Token"),
+) -> JSONResponse:
+    try:
+        async with request.app.state.database.session_scope() as session:
+            result = await WebsiteConversation(
+                session,
+                await _actor(request, session),
+                HermesWebsiteResponder(
+                    request.app.state.database,
+                    request.app.state.hermes,
+                    request.app.state.settings.website_profile,
+                ),
+            ).progress(turn_id, token)
+            return _json(result)
+    except NotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/conversation")
@@ -370,7 +500,7 @@ async def converse(
                 HermesWebsiteResponder(
                     request.app.state.database,
                     request.app.state.hermes,
-                    request.app.state.settings.sales_profile,
+                    request.app.state.settings.website_profile,
                 ),
             ).handle(
                 WebsiteCommand(

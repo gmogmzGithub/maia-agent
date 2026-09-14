@@ -62,6 +62,7 @@ LISTING = {
             "space_group": "Sala",
         },
     ],
+    "first_published_at": "2026-09-13T00:00:00Z",
     "updated_at": "2026-08-28T20:00:00Z",
 }
 
@@ -208,6 +209,44 @@ class FakeProductGateway:
             return response(200, {"items": self.saved_items})
         if path == "/internal/public-site/conversation" and method == "GET":
             return response(200, {"conversation_id": None, "messages": []})
+        if path == "/internal/public-site/conversation" and method == "DELETE":
+            return response(
+                200,
+                {
+                    "closed": True,
+                    "content_deleted": (params or {}).get("delete_content") == "true",
+                    "detail": "La conversación terminó.",
+                },
+            )
+        if path == "/internal/public-site/conversation/turns" and method == "POST":
+            return response(
+                202,
+                {
+                    "turn_id": "66666666-6666-4666-8666-666666666666",
+                    "conversation_id": "55555555-5555-4555-8555-555555555555",
+                    "conversation_token": self.conversation_token,
+                    "status": "Pending",
+                    "replayed": False,
+                },
+            )
+        if path.endswith("/conversation/turns/66666666-6666-4666-8666-666666666666"):
+            return response(
+                200,
+                {
+                    "turn_id": "66666666-6666-4666-8666-666666666666",
+                    "conversation_id": "55555555-5555-4555-8555-555555555555",
+                    "status": "Complete",
+                    "result": {
+                        "reply": "Encontré una propiedad que coincide.",
+                        "criteria": {"operation": "Sale", "zone": "Zapopan"},
+                        "listing_ids": [LISTING_ID],
+                        "total": 1,
+                        "public_url": "/propiedades?operation=Sale&zone=Zapopan",
+                        "matches": [self.listing],
+                    },
+                    "error_message": None,
+                },
+            )
         if path == "/internal/public-site/conversation":
             return response(
                 200,
@@ -347,6 +386,8 @@ async def test_server_rendered_search_detail_gallery_and_local_discovery() -> No
         home = await client.get("/")
         search = await client.get(
             "/propiedades?operation=Sale&zone=Zapopan&minimum_price=6000000"
+            "&minimum_bedrooms=3&minimum_bathrooms=2"
+            "&minimum_parking_spaces=1&minimum_construction_m2=120&vista=lista"
         )
         local = await client.get("/zonas/zapopan")
         sheet = await client.get("/propiedades/casa-encino-larevia")
@@ -357,12 +398,16 @@ async def test_server_rendered_search_detail_gallery_and_local_discovery() -> No
 
     assert home.status_code == 200
     assert "Acompañamiento inmobiliario" in home.text
-    assert "hero-photo" in home.text
+    assert "hero-photo" not in home.text
+    assert "Buscador con IA" in home.text
+    assert "Cuenta demo" in home.text
+    assert 'data-ai-dialog' in home.text
+    assert 'data-account-demo' in home.text
     assert f'src="/media/{MEDIA_ID}?w=960"' in home.text
     assert '<html lang="es-MX"' in home.text
     assert '<main id="contenido">' in home.text
     assert css.status_code == 200
-    assert ".hero-search label" in css.text
+    assert ".ai-launcher" in css.text
     assert "align-items: stretch" in css.text
     assert ".search-form > .button" in css.text
     assert ".composer .button" in css.text
@@ -373,6 +418,21 @@ async def test_server_rendered_search_detail_gallery_and_local_discovery() -> No
         '<link rel="canonical" href="https://larevia.test/propiedades">' in search.text
     )
     assert 'value="6000000"' in search.text
+    assert 'name="minimum_bedrooms" value="3"' in search.text
+    assert 'name="minimum_bathrooms" value="2"' in search.text
+    assert 'name="minimum_parking_spaces" value="1"' in search.text
+    assert 'name="minimum_construction_m2" value="120"' in search.text
+    assert 'name="vista" value="lista"' in search.text
+    assert 'class="listing-grid view-list"' in search.text
+    assert "Ver 1 propiedad" in search.text
+    assert 'href="/propiedades?' in search.text and "vista=cuadricula" in search.text
+    catalog_call = next(
+        call
+        for call in gateway.calls
+        if call["path"] == "/internal/public-site/catalog"
+        and call["params"].get("minimum_bedrooms")
+    )
+    assert catalog_call["params"]["minimum_construction_m2"] == "120"
     assert local.status_code == 200 and "Propiedades en Zapopan" in local.text
     assert sheet.status_code == 200
     assert "Datos autorizados" in sheet.text
@@ -386,6 +446,107 @@ async def test_server_rendered_search_detail_gallery_and_local_discovery() -> No
     assert "Esta propiedad ya no está disponible" in withdrawn.text
     assert "Casa Encino" not in withdrawn.text
     assert missing_zone.status_code == 404
+
+
+async def test_search_cards_use_only_the_offer_selected_by_the_active_operation() -> None:
+    gateway = FakeProductGateway()
+    gateway.listing["offers"] = [
+        *gateway.listing["offers"],
+        {
+            "offer_id": str(uuid.uuid4()),
+            "operation": "Rental",
+            "price_amount": "42000.00",
+            "price_currency": "MXN",
+            "price_visibility": "Visible",
+            "consultation_copy": None,
+            "terms": {},
+        },
+    ]
+    async with await client_for(gateway) as client:
+        response = await client.get("/propiedades?operation=Rental")
+
+    card = next(
+        block
+        for block in re.findall(r"<article .*?</article>", response.text, flags=re.S)
+        if LISTING_ID in block and "sponsored" not in block
+    )
+    assert "Renta · Casa" in card
+    assert "$42,000" in card
+    assert "$9,800,000" not in card
+
+
+async def test_land_filters_hide_and_disable_residential_only_fields() -> None:
+    gateway = FakeProductGateway()
+    async with await client_for(gateway) as client:
+        response = await client.get("/propiedades?property_type=Land")
+
+    assert response.text.count("data-residential-filter hidden") == 3
+    assert 'name="minimum_bedrooms"' in response.text
+    assert 'name="minimum_bedrooms" value="" min="0" autocomplete="off" disabled' in response.text
+    assert 'data-property-type-filter' in response.text
+
+
+async def test_result_summary_names_secondary_filters_instead_of_saying_none() -> None:
+    gateway = FakeProductGateway()
+    async with await client_for(gateway) as client:
+        response = await client.get(
+            "/propiedades?minimum_price=999999999&minimum_bathrooms=2.5"
+            "&minimum_construction_m2=120&sort=price_asc"
+        )
+
+    assert "Desde $999,999,999" in response.text
+    assert "2.5+ baños" in response.text
+    assert "120+ m² de construcción" in response.text
+    assert "Menor precio" in response.text
+    assert "Sin filtros" not in response.text
+
+
+async def test_ai_modal_turns_use_async_site_contract_and_secure_cookie() -> None:
+    gateway = FakeProductGateway()
+    async with await client_for(gateway) as client:
+        accepted = await client.post(
+            "/maia/turnos",
+            json={
+                "message": "Busco una casa en Zapopan",
+                "command_key": "modal-turn-command",
+                "listing_ids": [],
+            },
+        )
+        progress = await client.get(
+            "/maia/turnos/66666666-6666-4666-8666-666666666666"
+        )
+
+    assert accepted.status_code == 202
+    assert f"{CONVERSATION_COOKIE}=wc-server-confirmed" in accepted.headers["set-cookie"]
+    assert progress.status_code == 200
+    assert progress.json()["result"]["matches"][0]["slug"] == LISTING["slug"]
+    queued = next(
+        call
+        for call in gateway.calls
+        if call["path"] == "/internal/public-site/conversation/turns"
+    )
+    assert queued["body"]["message"] == "Busco una casa en Zapopan"
+
+
+async def test_ai_modal_can_start_fresh_or_delete_visible_conversation() -> None:
+    gateway = FakeProductGateway()
+    async with await client_for(gateway) as client:
+        client.cookies.set(CONVERSATION_COOKIE, gateway.conversation_token)
+        fresh = await client.delete("/maia/conversacion")
+        client.cookies.set(CONVERSATION_COOKIE, gateway.conversation_token)
+        deleted = await client.delete("/maia/conversacion?borrar_contenido=true")
+
+    assert fresh.status_code == 200
+    assert deleted.json()["content_deleted"] is True
+    calls = [
+        call
+        for call in gateway.calls
+        if call["path"] == "/internal/public-site/conversation"
+        and call["method"] == "DELETE"
+    ]
+    assert calls[0]["params"] == {"delete_content": "false"}
+    assert calls[1]["params"] == {"delete_content": "true"}
+    assert f'{CONVERSATION_COOKIE}=""' in deleted.headers["set-cookie"]
 
 
 async def test_saved_collection_uses_server_confirmation_secure_cookie_and_deletion() -> (
@@ -625,11 +786,14 @@ async def test_media_robots_sitemap_security_and_frontend_budgets() -> None:
     assert f"https://larevia.test/media/{MEDIA_ID}" in sitemap.text
     assert "default-src 'self'" in home.headers["content-security-policy"]
     assert "browsing-topics=()" in home.headers["permissions-policy"]
-    assert len(css.content) < 40_000
-    assert len(javascript.content) < 16_000
+    # The modal, two responsive catalog views and filter sheet are intentionally
+    # shipped without a framework; these caps still catch accidental bundles.
+    assert len(css.content) < 60_000
+    assert len(javascript.content) < 32_000
     assert len(home.content) < 90_000
     assert b"letter-spacing: -" not in css.content
     assert b"@media (prefers-reduced-motion: reduce)" in css.content
+    assert b"body.ai-open { overflow: hidden; }" in css.content
     assert b":focus-visible" in css.content
     assert b"localStorage" in javascript.content
     assert b"BroadcastChannel" in javascript.content

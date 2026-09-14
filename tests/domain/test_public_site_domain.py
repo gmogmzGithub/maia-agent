@@ -12,7 +12,9 @@ from sqlalchemy import func, select
 from realestate.db.engine import Database
 from realestate.db.models import (
     AnalyticsOutboxEntry,
+    AgentRole,
     Appointment,
+    CatalogListing,
     ChannelHandoffPurpose,
     ListingPublicationState,
     PublicAnalyticsEvent,
@@ -22,6 +24,8 @@ from realestate.db.models import (
     SponsorshipContactAttribution,
     WebsiteConversation as WebsiteConversationRow,
     WebsiteMessage,
+    WebsiteTurnRequest,
+    WebsiteTurnStatus,
 )
 from realestate.domain.catalog.administration import (
     CatalogAdministration,
@@ -126,6 +130,105 @@ async def test_public_search_filters_hidden_prices_and_deduplicates_only_confirm
         assert own.listing_id in ids
         assert collaborator.listing_id not in ids
         assert all_listings.total == 2
+
+
+async def test_public_search_uses_first_publication_for_recency_and_keeps_it_on_republish(
+    database: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first_publication = MOMENT - timedelta(days=3)
+    monkeypatch.setattr(
+        "realestate.domain.catalog.administration.utc_now",
+        lambda: first_publication,
+    )
+    async with database.session_scope() as session:
+        admin = await actor_for(session, ADMIN_LOGIN)
+        older = await publish_listing(session, admin, "publicada-antes")
+        await session.commit()
+
+        second_publication = MOMENT - timedelta(days=1)
+        monkeypatch.setattr(
+            "realestate.domain.catalog.administration.utc_now",
+            lambda: second_publication,
+        )
+        newer = await publish_listing(session, admin, "publicada-despues")
+        await session.commit()
+
+        result = await PublicCatalog(session, await product_actor(session)).search(
+            SearchQuery(sort="recent"), at=MOMENT
+        )
+        assert [item.listing_id for item in result.listings] == [
+            newer.listing_id,
+            older.listing_id,
+        ]
+        assert [item.first_published_at for item in result.listings] == [
+            second_publication,
+            first_publication,
+        ]
+
+        later = MOMENT + timedelta(days=10)
+        monkeypatch.setattr(
+            "realestate.domain.catalog.administration.utc_now", lambda: later
+        )
+        catalog = CatalogAdministration(session)
+        await catalog.record(
+            admin,
+            SetPublicationState(
+                listing_id=older.listing_id,
+                state=ListingPublicationState.UNPUBLISHED,
+                command_key="stage5:unpublish:publicada-antes",
+            ),
+        )
+        await catalog.record(
+            admin,
+            SetPublicationState(
+                listing_id=older.listing_id,
+                state=ListingPublicationState.PUBLISHED,
+                command_key="stage5:republish:publicada-antes",
+            ),
+        )
+        await session.flush()
+
+        persisted = await session.get(CatalogListing, older.listing_id)
+        assert persisted is not None
+        assert persisted.first_published_at == first_publication
+
+
+async def test_public_search_applies_every_characteristic_filter_without_matching_unknowns(
+    database: Database,
+) -> None:
+    async with database.session_scope() as session:
+        admin = await actor_for(session, ADMIN_LOGIN)
+        spacious = await publish_listing(
+            session,
+            admin,
+            "amplia",
+            bedrooms=4,
+            bathrooms=3.5,
+            parking_spaces=3,
+            construction_m2=280,
+        )
+        await publish_listing(
+            session,
+            admin,
+            "compacta",
+            bedrooms=2,
+            bathrooms=1,
+            parking_spaces=1,
+            construction_m2=95,
+        )
+        await session.commit()
+
+        result = await PublicCatalog(session, await product_actor(session)).search(
+            SearchQuery(
+                minimum_bedrooms=4,
+                minimum_bathrooms=Decimal("3"),
+                minimum_parking_spaces=2,
+                minimum_construction_m2=Decimal("200"),
+            ),
+            at=MOMENT,
+        )
+
+        assert [item.listing_id for item in result.listings] == [spacious.listing_id]
 
 
 async def test_listing_withdrawal_returns_410_and_removes_media_immediately(
@@ -975,6 +1078,106 @@ async def test_website_conversation_rejects_pii_and_uses_only_eligible_context(
         assert bodies == ["", ""]
 
 
+async def test_website_turns_are_queued_idempotently_and_polled_with_their_token(
+    database: Database,
+) -> None:
+    responder = RecordingResponder("Encontré opciones públicas para ti.")
+    async with database.session_scope() as session:
+        module = WebsiteConversation(session, await product_actor(session), responder)
+        accepted = await module.enqueue(
+            WebsiteCommand(
+                "Busco una casa en Zapopan",
+                "website-async-turn-1",
+            ),
+            at=MOMENT,
+        )
+        await session.commit()
+
+        pending = await module.progress(
+            accepted.turn_id, accepted.conversation_token
+        )
+        assert pending.status == WebsiteTurnStatus.PENDING.value
+
+        duplicate = await module.enqueue(
+            WebsiteCommand(
+                "Este texto no debe sustituir el original",
+                "website-async-turn-1",
+                conversation_token=accepted.conversation_token,
+            ),
+            at=MOMENT,
+        )
+        assert duplicate.turn_id == accepted.turn_id
+        assert duplicate.replayed is True
+
+        request = await session.get(WebsiteTurnRequest, accepted.turn_id)
+        assert request is not None
+        completed = await module.perform_request(request, at=MOMENT)
+        request.status = WebsiteTurnStatus.COMPLETE.value
+        request.result = {
+            "reply": completed.reply,
+            "messages": [
+                {"role": item.role, "body": item.body}
+                for item in completed.messages
+            ],
+        }
+        await session.commit()
+
+        progress = await module.progress(
+            accepted.turn_id, accepted.conversation_token
+        )
+        assert progress.status == WebsiteTurnStatus.COMPLETE.value
+        assert progress.result is not None
+        assert progress.result["reply"] == "Encontré opciones públicas para ti."
+
+        with pytest.raises(NotFound, match="conversación"):
+            await module.progress(accepted.turn_id, "wc-token-inválido")
+
+
+async def test_website_conversation_can_end_continuity_and_delete_message_content(
+    database: Database,
+) -> None:
+    async with database.session_scope() as session:
+        module = WebsiteConversation(
+            session, await product_actor(session), RecordingResponder()
+        )
+        first = await module.handle(
+            WebsiteCommand("Busco una casa", "website-close-1"), at=MOMENT
+        )
+        assert first.conversation_token is not None
+
+        assert await module.close(
+            first.conversation_token, at=MOMENT, delete_content=False
+        )
+        with pytest.raises(ValueError, match="terminó"):
+            await module.handle(
+                WebsiteCommand(
+                    "Otro mensaje",
+                    "website-close-refused",
+                    conversation_token=first.conversation_token,
+                ),
+                at=MOMENT,
+            )
+
+        second = await module.handle(
+            WebsiteCommand("Una conversación nueva", "website-close-2"), at=MOMENT
+        )
+        assert second.conversation_id != first.conversation_id
+        assert await module.close(
+            second.conversation_token, at=MOMENT, delete_content=True
+        )
+        _, history = await module.read(second.conversation_token, at=MOMENT)
+        bodies = list(
+            await session.scalars(
+                select(WebsiteMessage.body).where(
+                    WebsiteMessage.conversation_id == second.conversation_id
+                )
+            )
+        )
+
+        assert history == ()
+        assert bodies == ["", ""]
+
+
 async def test_hermes_website_responder_seeds_only_authorized_context(
     database: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -998,6 +1201,7 @@ async def test_hermes_website_responder_seeds_only_authorized_context(
             conversation_id=uuid.uuid4(),
             organization_id=actor.organization_id,
             hermes_session_id="hermes-web-current",
+            turn_key="website-responder-turn",
             message="¿Cuál es el precio?",
             history=(
                 ConversationMessageView("Customer", "Hola", MOMENT),
@@ -1013,10 +1217,17 @@ async def test_hermes_website_responder_seeds_only_authorized_context(
     args = captured["args"]
     assert isinstance(kwargs, dict) and isinstance(args, tuple)
     assert result == WebsiteReply("Respuesta autorizada", "hermes-web-next")
+    role_session = captured["args"][1]
+    assert role_session.role is AgentRole.PUBLIC_SITE
+    assert captured["kwargs"]["profile"] == "sales-profile"
+    assert "website-responder-turn" in captured["args"][2]
     assert args[2].endswith("¿Cuál es el precio?")
     assert '"listing_id"' in args[2]
     assert kwargs["profile"] == "sales-profile"
-    assert kwargs["required_property_reference"] == publication.listing.physical_name
+    assert kwargs["required_property_reference"] is None
+    system_instruction = kwargs["seed"][0]["content"]
+    assert "el sitio mostrará las tarjetas" in system_instruction
+    assert "WhatsApp oficial" in system_instruction
     assert kwargs["seed"][1:] == [
         {"role": "user", "content": "Hola"},
         {"role": "assistant", "content": "Hola, ¿cómo te ayudo?"},

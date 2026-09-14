@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from datetime import date, datetime, time
 from typing import Literal, cast
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
@@ -45,6 +46,7 @@ from realestate.db.models import (
     PropertyInactiveReason,
     PropertyStatus,
     TransactionIntent,
+    WebsiteSearchReceipt,
 )
 from realestate.domain.administration import AdministrationService, Administrator
 from realestate.domain.admin_work import ALLOWED_ACTIONS, AdminWorkService
@@ -72,6 +74,7 @@ from realestate.domain.external_inventory.types import (
 )
 from realestate.domain.scheduling.calendars import CalendarDirectory
 from realestate.domain.journeys import TransactionJourneys
+from realestate.domain.public.catalog import PublicCatalog, PublicListingView, SearchQuery
 from realestate.domain.text import fold_phrase
 
 router = APIRouter(prefix="/internal/plugin", tags=["plugin"])
@@ -218,6 +221,7 @@ async def plugin_health(
             "revalidate_external_listing",
             "get_transaction_journey",
             "record_property_need",
+            "search_public_properties",
         ],
     }
 
@@ -341,8 +345,9 @@ async def get_property_information(
         role.value if role else "<unbound>",
         _safe_payload(payload),
     )
-    if role is None:
-        # The trusted session is not bound to either Role.
+    if role not in {AgentRole.SALES, AgentRole.ADMINISTRATIVE}:
+        # A public-site session has one narrower search tool and may not read
+        # unpublished document-backed property information through this path.
         logger.warning(
             "Plugin tool forbidden: get_property_information (durable=%s)",
             hermes_session_id or "<none>",
@@ -442,10 +447,160 @@ class InventorySearchRequest(BaseModel):
 
     municipality: str = Field(pattern=service_area_pattern())
     operation: str | None = Field(default=None, pattern="^(Sale|Rental|Presale)$")
-    property_type: str | None = Field(default=None, min_length=1, max_length=80)
+    property_type: str | None = Field(
+        default=None, pattern="^(House|Apartment|Land|Development)$"
+    )
     min_price: Decimal | None = Field(default=None, gt=0)
     max_price: Decimal | None = Field(default=None, gt=0)
     min_bedrooms: int | None = Field(default=None, ge=0, le=30)
+
+
+class PublicPropertySearchRequest(BaseModel):
+    """The full public catalog criteria and an opaque turn correlation key."""
+
+    model_config = {"extra": "forbid"}
+
+    turn_key: str = Field(min_length=8, max_length=200)
+    operation: str | None = Field(default=None, pattern="^(Sale|Rental|Presale)$")
+    zone: str | None = Field(default=None, pattern=service_area_pattern())
+    property_type: str | None = Field(
+        default=None,
+        pattern="^(House|Apartment|Land|Development)$",
+    )
+    minimum_price: Decimal | None = Field(default=None, ge=0)
+    maximum_price: Decimal | None = Field(default=None, ge=0)
+    minimum_bedrooms: int | None = Field(default=None, ge=0, le=30)
+    minimum_bathrooms: Decimal | None = Field(default=None, ge=0, le=30)
+    minimum_parking_spaces: int | None = Field(default=None, ge=0, le=30)
+    minimum_construction_m2: Decimal | None = Field(default=None, ge=0)
+    sort: str = Field(
+        default="relevance",
+        pattern="^(relevance|recent|price_asc|price_desc)$",
+    )
+
+
+@router.post(
+    "/tools/search_public_properties",
+    dependencies=[Depends(require_plugin_token)],
+)
+async def search_public_properties(
+    request: Request,
+    payload: PublicPropertySearchRequest,
+    hermes_session_id: str = Header(default="", alias=SESSION_HEADER),
+) -> dict[str, object]:
+    trusted = await resolve_trusted(request, hermes_session_id)
+    if trusted is None or trusted.role is not AgentRole.PUBLIC_SITE:
+        return {"result": "forbidden"}
+
+    async with request.app.state.database.session_scope() as session:
+        existing = await session.scalar(
+            select(WebsiteSearchReceipt).where(
+                WebsiteSearchReceipt.organization_id == trusted.organization_id,
+                WebsiteSearchReceipt.turn_key == payload.turn_key,
+            )
+        )
+        if existing is not None:
+            return dict(existing.response)
+
+        result = await PublicCatalog(
+            session,
+            Actor.product(trusted.organization_id, "WebsitePublicSearch"),
+        ).search(
+            SearchQuery(
+                operation=payload.operation,
+                zone=payload.zone,
+                property_type=payload.property_type,
+                minimum_price=payload.minimum_price,
+                maximum_price=payload.maximum_price,
+                minimum_bedrooms=payload.minimum_bedrooms,
+                minimum_bathrooms=payload.minimum_bathrooms,
+                minimum_parking_spaces=payload.minimum_parking_spaces,
+                minimum_construction_m2=payload.minimum_construction_m2,
+                sort=payload.sort,
+                page_size=3,
+            ),
+            at=utc_now(),
+        )
+        criteria = {
+            key: value
+            for key, value in {
+                "operation": result.query.operation,
+                "zone": result.query.zone,
+                "property_type": result.query.property_type,
+                "minimum_price": _json_number(result.query.minimum_price),
+                "maximum_price": _json_number(result.query.maximum_price),
+                "minimum_bedrooms": result.query.minimum_bedrooms,
+                "minimum_bathrooms": _json_number(result.query.minimum_bathrooms),
+                "minimum_parking_spaces": result.query.minimum_parking_spaces,
+                "minimum_construction_m2": _json_number(
+                    result.query.minimum_construction_m2
+                ),
+                "sort": result.query.sort,
+            }.items()
+            if value is not None
+        }
+        public_params = {
+            key: str(value)
+            for key, value in criteria.items()
+            if not (key == "sort" and value == "relevance")
+        }
+        public_url = "/propiedades"
+        if public_params:
+            public_url += f"?{urlencode(public_params)}"
+        matches = [_public_search_match(item) for item in result.listings]
+        response: dict[str, object] = {
+            "result": "found" if result.total else "not_found",
+            "criteria": criteria,
+            "public_url": public_url,
+            "total": result.total,
+            "matches": matches,
+        }
+        session.add(
+            WebsiteSearchReceipt(
+                organization_id=trusted.organization_id,
+                hermes_session_id=hermes_session_id,
+                turn_key=payload.turn_key,
+                criteria=criteria,
+                listing_ids=[str(item["listing_id"]) for item in matches],
+                total=result.total,
+                public_url=public_url,
+                response=response,
+            )
+        )
+        await session.commit()
+        return response
+
+
+def _json_number(value: Decimal | None) -> int | float | None:
+    if value is None:
+        return None
+    integral = value.to_integral_value()
+    return int(integral) if value == integral else float(value)
+
+
+def _public_search_match(listing: PublicListingView) -> dict[str, object]:
+    return {
+        "listing_id": str(listing.listing_id),
+        "slug": listing.slug,
+        "title": listing.title,
+        "public_location": listing.public_location,
+        "property_type": listing.property_type,
+        "physical_facts": listing.physical_facts,
+        "offers": [
+            {
+                "operation": offer.operation,
+                "price_amount": (
+                    str(offer.price_amount)
+                    if offer.price_amount is not None
+                    else None
+                ),
+                "price_currency": offer.price_currency,
+                "consultation_copy": offer.consultation_copy,
+            }
+            for offer in listing.offers
+        ],
+        "cover_url": listing.cover.url if listing.cover is not None else None,
+    }
 
 
 @router.post("/tools/search_inventory", dependencies=[Depends(require_plugin_token)])

@@ -54,10 +54,21 @@ async def publish_listing(
     price: Decimal = Decimal("5000000"),
     hidden_price: bool = False,
     tier: str = "Larevia",
+    bedrooms: int = 3,
+    bathrooms: int | float = 2,
+    parking_spaces: int = 2,
+    construction_m2: int | float = 180,
     storage: InMemoryMediaStorage | None = None,
 ) -> PublishedListing:
     """Create one fully eligible public Listing without bypassing Product."""
     catalog = CatalogAdministration(session)
+    physical_facts = {
+        "city": zone,
+        "bedrooms": bedrooms,
+        "bathrooms": bathrooms,
+        "parking_spaces": parking_spaces,
+        "construction_m2": construction_m2,
+    }
     if property_id is None:
         physical = await catalog.record(
             actor,
@@ -65,7 +76,7 @@ async def publish_listing(
                 property_key=f"casa-{suffix}",
                 name=f"Casa {suffix.title()}",
                 property_type="House",
-                facts={"city": zone, "bedrooms": 3, "construction_m2": 180},
+                facts=physical_facts,
                 provenance={"kind": "Test"},
                 command_key=f"stage5:property:{suffix}",
             ),
@@ -76,7 +87,7 @@ async def publish_listing(
             ReviewPropertyFacts(
                 property_uuid=property_id,
                 review_state=FactsReviewState.APPROVED,
-                facts={"city": zone, "bedrooms": 3, "construction_m2": 180},
+                facts=physical_facts,
                 command_key=f"stage5:property-review:{suffix}",
             ),
         )

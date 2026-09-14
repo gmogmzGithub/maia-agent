@@ -19,6 +19,7 @@ EXPECTED_MODELS = {
     "config.yaml": "test-admin-model",
     "profiles/sales/config.yaml": "test-sales-model",
     "profiles/admin/config.yaml": "test-admin-model",
+    "profiles/website/config.yaml": "test-sales-model",
 }
 
 
@@ -64,5 +65,9 @@ def test_entrypoint_pins_product_sessions_to_eager_maia_tools(tmp_path: Path) ->
             "platform_toolsets": {"product": ["realestate"]},
         }, relative
 
-    for role in ("sales", "admin"):
+    for role in ("sales", "admin", "website"):
         assert read(home / "profiles" / role / "SOUL.md") == read(ROLES / role / "SOUL.md")
+
+    website_soul = " ".join(read(ROLES / "website" / "SOUL.md").lower().split())
+    assert "el sitio mostrará las tarjetas" in website_soul
+    assert "no enumeres ni repitas sus detalles" in website_soul

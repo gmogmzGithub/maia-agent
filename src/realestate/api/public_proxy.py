@@ -53,6 +53,11 @@ async def public_root(request: Request) -> Response:
     return await _proxy(request, "")
 
 
+@router.delete("/maia/conversacion")
+async def public_conversation_close(request: Request) -> Response:
+    return await _proxy(request, "maia/conversacion")
+
+
 @router.api_route("/{path:path}", methods=["GET", "HEAD", "POST"])
 async def public_path(request: Request, path: str) -> Response:
     if path.split("/", 1)[0] not in _PUBLIC_ROOTS:

@@ -5,11 +5,11 @@ from __future__ import annotations
 import re
 import secrets
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Protocol, cast
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from realestate.db.models import (
@@ -17,6 +17,9 @@ from realestate.db.models import (
     WebsiteConversationStatus,
     WebsiteMessage,
     WebsiteMessageRole,
+    WebsiteSearchReceipt,
+    WebsiteTurnRequest,
+    WebsiteTurnStatus,
 )
 from realestate.domain.commercial.actors import Actor, NotFound
 from realestate.domain.public.catalog import PublicListingView
@@ -60,6 +63,7 @@ class WebsiteTurn:
     #: turn cannot attach the model's continuity to the wrong Organization.
     organization_id: uuid.UUID
     hermes_session_id: str | None
+    turn_key: str
     message: str
     history: tuple[ConversationMessageView, ...]
     listings: tuple[PublicListingView, ...]
@@ -69,6 +73,11 @@ class WebsiteTurn:
 class WebsiteReply:
     text: str
     hermes_session_id: str
+    criteria: dict[str, object] = field(default_factory=dict)
+    listing_ids: tuple[uuid.UUID, ...] = ()
+    total: int = 0
+    public_url: str | None = None
+    matches: tuple[dict[str, object], ...] = ()
 
 
 class WebsiteResponder(Protocol):
@@ -92,6 +101,29 @@ class WebsiteConversationResult:
     messages: tuple[ConversationMessageView, ...]
     requires_verified_channel: bool
     replayed: bool
+    criteria: dict[str, object] = field(default_factory=dict)
+    listing_ids: tuple[uuid.UUID, ...] = ()
+    total: int = 0
+    public_url: str | None = None
+    matches: tuple[dict[str, object], ...] = ()
+
+
+@dataclass(frozen=True)
+class WebsiteTurnAccepted:
+    turn_id: uuid.UUID
+    conversation_id: uuid.UUID
+    conversation_token: str | None
+    status: str
+    replayed: bool
+
+
+@dataclass(frozen=True)
+class WebsiteTurnProgress:
+    turn_id: uuid.UUID
+    conversation_id: uuid.UUID
+    status: str
+    result: dict[str, object] | None
+    error_message: str | None
 
 
 class WebsiteConversation:
@@ -108,11 +140,7 @@ class WebsiteConversation:
     async def handle(
         self, command: WebsiteCommand, *, at: datetime
     ) -> WebsiteConversationResult:
-        text = command.message.strip()
-        if not text:
-            raise ValueError("Escribe un mensaje para Maia.")
-        if len(text) > MAX_MESSAGE_CHARS:
-            raise ValueError("El mensaje es demasiado largo.")
+        text = self._validated_message(command.message)
         row = await self._resolve(command.conversation_token, lock=True)
         issued: str | None = None
         if row is None:
@@ -136,8 +164,134 @@ class WebsiteConversation:
         ):
             row.sponsorship_campaign_id = command.sponsorship_campaign_id
 
+        return await self._perform(command, row=row, issued=issued, text=text, at=at)
+
+    async def enqueue(
+        self, command: WebsiteCommand, *, at: datetime
+    ) -> WebsiteTurnAccepted:
+        text = self._validated_message(command.message)
+        issued: str | None = None
+        existing = await self._session.scalar(
+            select(WebsiteTurnRequest).where(
+                WebsiteTurnRequest.organization_id == self._actor.organization_id,
+                WebsiteTurnRequest.command_key == command.command_key,
+            )
+        )
+        if existing is not None:
+            row = await self._session.get(
+                WebsiteConversationRow, existing.conversation_id
+            )
+            if row is None or row.organization_id != self._actor.organization_id:
+                raise NotFound("No encontramos esa conversación.")
+            if command.conversation_token:
+                resolved = await self._resolve(command.conversation_token)
+                if resolved is None or resolved.id != row.id:
+                    raise NotFound("No encontramos esa conversación.")
+            else:
+                issued = f"wc-{secrets.token_urlsafe(32)}"
+                row.access_token_hash = token_hash(issued)
+            return WebsiteTurnAccepted(
+                existing.id, row.id, issued, existing.status, True
+            )
+
+        row = await self._resolve(command.conversation_token, lock=True)
+        if row is None:
+            issued = f"wc-{secrets.token_urlsafe(32)}"
+            row = WebsiteConversationRow(
+                organization_id=self._actor.organization_id,
+                access_token_hash=token_hash(issued),
+                listing_context=[],
+                sponsorship_campaign_id=command.sponsorship_campaign_id,
+                status=WebsiteConversationStatus.OPEN.value,
+                created_at=at,
+                last_activity_at=at,
+            )
+            self._session.add(row)
+            await self._session.flush()
+        elif row.status == WebsiteConversationStatus.CLOSED.value:
+            raise ValueError("Esta conversación terminó. Inicia una nueva.")
+
+        request = WebsiteTurnRequest(
+            organization_id=self._actor.organization_id,
+            conversation_id=row.id,
+            command_key=command.command_key,
+            message=text,
+            listing_ids=[str(item) for item in command.listing_ids],
+            sponsorship_campaign_id=command.sponsorship_campaign_id,
+            status=WebsiteTurnStatus.PENDING.value,
+            attempts=0,
+            created_at=at,
+        )
+        self._session.add(request)
+        await self._session.flush()
+        return WebsiteTurnAccepted(
+            request.id, row.id, issued, request.status, False
+        )
+
+    async def progress(
+        self, turn_id: uuid.UUID, token: str | None
+    ) -> WebsiteTurnProgress:
+        conversation = await self._resolve(token)
+        if conversation is None:
+            raise NotFound("No encontramos esa conversación.")
+        request = await self._session.scalar(
+            select(WebsiteTurnRequest).where(
+                WebsiteTurnRequest.organization_id == self._actor.organization_id,
+                WebsiteTurnRequest.conversation_id == conversation.id,
+                WebsiteTurnRequest.id == turn_id,
+            )
+        )
+        if request is None:
+            raise NotFound("No encontramos ese turno.")
+        return WebsiteTurnProgress(
+            request.id,
+            request.conversation_id,
+            request.status,
+            dict(request.result) if request.result is not None else None,
+            request.error_message,
+        )
+
+    async def perform_request(
+        self, request: WebsiteTurnRequest, *, at: datetime
+    ) -> WebsiteConversationResult:
+        row = await self._session.scalar(
+            select(WebsiteConversationRow).where(
+                WebsiteConversationRow.organization_id == self._actor.organization_id,
+                WebsiteConversationRow.id == request.conversation_id,
+            )
+        )
+        if row is None:
+            raise NotFound("No encontramos esa conversación.")
+        if row.status == WebsiteConversationStatus.CLOSED.value:
+            raise ValueError("Esta conversación terminó. Inicia una nueva.")
+        return await self._perform(
+            WebsiteCommand(
+                message=request.message,
+                command_key=request.command_key,
+                listing_ids=tuple(uuid.UUID(item) for item in request.listing_ids),
+                sponsorship_campaign_id=request.sponsorship_campaign_id,
+            ),
+            row=row,
+            issued=None,
+            text=request.message,
+            at=at,
+        )
+
+    async def _perform(
+        self,
+        command: WebsiteCommand,
+        *,
+        row: WebsiteConversationRow,
+        issued: str | None,
+        text: str,
+        at: datetime,
+    ) -> WebsiteConversationResult:
+
         replay = await self._replay(row.id, command.command_key)
         if replay is not None:
+            search = await self._search_receipt(
+                row.organization_id, command.command_key
+            )
             return WebsiteConversationResult(
                 row.id,
                 issued,
@@ -145,6 +299,19 @@ class WebsiteConversation:
                 await self._history(row.id, at=at),
                 False,
                 True,
+                dict(search.criteria) if search is not None else {},
+                (
+                    tuple(uuid.UUID(item) for item in search.listing_ids)
+                    if search is not None
+                    else ()
+                ),
+                search.total if search is not None else 0,
+                search.public_url if search is not None else None,
+                (
+                    tuple(dict(item) for item in search.response.get("matches", []))
+                    if search is not None
+                    else ()
+                ),
             )
 
         listings = await self._context(row, command.listing_ids, at=at)
@@ -164,6 +331,7 @@ class WebsiteConversation:
                 conversation_id=row.id,
                 organization_id=row.organization_id,
                 hermes_session_id=row.hermes_session_id,
+                turn_key=command.command_key,
                 message=text,
                 history=history,
                 listings=listings,
@@ -211,7 +379,21 @@ class WebsiteConversation:
             await self._history(row.id, at=at),
             requires_verified,
             False,
+            reply.criteria,
+            reply.listing_ids,
+            reply.total,
+            reply.public_url,
+            reply.matches,
         )
+
+    @staticmethod
+    def _validated_message(message: str) -> str:
+        text = message.strip()
+        if not text:
+            raise ValueError("Escribe un mensaje para Maia.")
+        if len(text) > MAX_MESSAGE_CHARS:
+            raise ValueError("El mensaje es demasiado largo.")
+        return text
 
     async def read(
         self, token: str | None, *, at: datetime
@@ -220,6 +402,40 @@ class WebsiteConversation:
         if row is None:
             return None, ()
         return row.id, await self._history(row.id, at=at)
+
+    async def close(
+        self, token: str | None, *, at: datetime, delete_content: bool
+    ) -> bool:
+        """End visible continuity and optionally erase retained message bodies."""
+
+        row = await self._resolve(token, lock=True)
+        if row is None:
+            return False
+        row.status = WebsiteConversationStatus.CLOSED.value
+        row.last_activity_at = at
+        await self._session.execute(
+            update(WebsiteTurnRequest)
+            .where(
+                WebsiteTurnRequest.organization_id == self._actor.organization_id,
+                WebsiteTurnRequest.conversation_id == row.id,
+                WebsiteTurnRequest.status == WebsiteTurnStatus.PENDING.value,
+            )
+            .values(
+                status=WebsiteTurnStatus.FAILED.value,
+                error_message="La conversación terminó antes de responder.",
+                completed_at=at,
+            )
+        )
+        if delete_content:
+            await self._session.execute(
+                update(WebsiteMessage)
+                .where(
+                    WebsiteMessage.organization_id == self._actor.organization_id,
+                    WebsiteMessage.conversation_id == row.id,
+                )
+                .values(body="", content_expired_at=at)
+            )
+        return True
 
     async def _resolve(
         self, token: str | None, *, lock: bool = False
@@ -288,6 +504,19 @@ class WebsiteConversation:
                 select(WebsiteMessage).where(
                     WebsiteMessage.conversation_id == conversation_id,
                     WebsiteMessage.command_key == f"{command_key}:maia",
+                )
+            ),
+        )
+
+    async def _search_receipt(
+        self, organization_id: uuid.UUID, turn_key: str
+    ) -> WebsiteSearchReceipt | None:
+        return cast(
+            WebsiteSearchReceipt | None,
+            await self._session.scalar(
+                select(WebsiteSearchReceipt).where(
+                    WebsiteSearchReceipt.organization_id == organization_id,
+                    WebsiteSearchReceipt.turn_key == turn_key,
                 )
             ),
         )

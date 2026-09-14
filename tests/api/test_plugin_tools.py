@@ -196,6 +196,43 @@ def test_stage_six_inventory_tools_forward_only_bounded_product_arguments(
     }
 
 
+def test_public_site_search_forwards_only_shareable_catalog_criteria(forwarded) -> None:
+    decoded(
+        tools.search_public_properties(
+            {
+                "turn_key": "website-turn-1",
+                "operation": "Sale",
+                "zone": "Zapopan",
+                "property_type": "House",
+                "minimum_price": 2_000_000,
+                "maximum_price": 9_000_000,
+                "minimum_bedrooms": 3,
+                "minimum_bathrooms": 2,
+                "minimum_parking_spaces": 1,
+                "minimum_construction_m2": 120,
+                "sort": "recent",
+                "ignored": "never forwarded",
+            },
+            session_id="website-session",
+        )
+    )
+
+    assert forwarded[0]["path"] == "/internal/plugin/tools/search_public_properties"
+    assert forwarded[0]["json_body"] == {
+        "turn_key": "website-turn-1",
+        "operation": "Sale",
+        "zone": "Zapopan",
+        "property_type": "House",
+        "minimum_price": 2_000_000,
+        "maximum_price": 9_000_000,
+        "minimum_bedrooms": 3,
+        "minimum_bathrooms": 2,
+        "minimum_parking_spaces": 1,
+        "minimum_construction_m2": 120,
+        "sort": "recent",
+    }
+
+
 def test_stage_six_inventory_tools_fail_closed_locally(forwarded) -> None:
     assert (
         decoded(tools.search_inventory({"municipality": "Monterrey"}))["result"]
@@ -656,8 +693,9 @@ def test_no_tool_outside_the_frozen_stage_0_surface_can_be_registered() -> None:
     scope expansion (P-069)."""
     assert set(plugin.REGISTERED_TOOLS) <= set(plugin.FROZEN_TOOL_SURFACE)
     # Eight Stage 0 contracts, two human-operation tools, two Stage 6 inventory
-    # tools, one Stage 10 read-only Journey view, and one evidence-aware need write.
-    assert len(plugin.FROZEN_TOOL_SURFACE) == 14
+    # tools, one Stage 10 Journey view, one evidence-aware need write, and the
+    # dedicated public-site search contract.
+    assert len(plugin.FROZEN_TOOL_SURFACE) == 15
 
 
 def test_each_registered_schema_names_the_tool_it_belongs_to() -> None:

@@ -345,6 +345,46 @@ def test_a_sponsored_card_renders_the_visible_chip_and_an_accessible_name() -> N
     assert SPONSORED_ARIA_LABEL not in organic
 
 
+def test_a_search_sponsorship_uses_only_the_active_operation_offer() -> None:
+    card = {
+        "campaign_id": "11111111-1111-1111-1111-111111111111",
+        "exposure_id": "33333333-3333-3333-3333-333333333333",
+        "listing": {
+            "listing_id": "22222222-2222-2222-2222-222222222222",
+            "slug": "casa-doble-oferta",
+            "title": "Casa Doble Oferta",
+            "property_type": "House",
+            "public_location": "Zapopan, Jalisco",
+            "presentation_tier": "Premium",
+            "media": [],
+            "offers": [
+                {
+                    "operation": "Sale",
+                    "price_amount": "8500000",
+                    "price_currency": "MXN",
+                },
+                {
+                    "operation": "Rental",
+                    "price_amount": "38000",
+                    "price_currency": "MXN",
+                },
+            ],
+            "physical_facts": {},
+        },
+    }
+
+    html = site_templates.sponsored_card(
+        card,
+        surface="Search",
+        position=1,
+        operation="Rental",
+    )
+
+    assert "Renta · Casa" in html
+    assert "$38,000" in html
+    assert "$8,500,000" not in html
+
+
 def test_the_homepage_paid_section_is_its_own_labelled_region() -> None:
     """A dedicated section with a heading, not cards mixed into the selection.
 
