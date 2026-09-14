@@ -292,6 +292,9 @@ def create_site_app(
 
     @site.get("/propiedades", response_class=HTMLResponse)
     async def properties(request: Request) -> HTMLResponse:
+        view = (
+            "lista" if request.query_params.get("vista") == "lista" else "cuadricula"
+        )
         params = {
             key: value
             for key, value in request.query_params.multi_items()
@@ -302,6 +305,10 @@ def create_site_app(
                 "property_type",
                 "minimum_price",
                 "maximum_price",
+                "minimum_bedrooms",
+                "minimum_bathrooms",
+                "minimum_parking_spaces",
+                "minimum_construction_m2",
                 "sort",
                 "page",
             }
@@ -319,6 +326,7 @@ def create_site_app(
                 "query": params,
             }
         )
+        data["query"] = {**dict(data.get("query") or params), "view": view}
         listings = list(data.get("listings") or [])
         await _annotate_saved(listings, request, product)
         sponsored = await _sponsored(
@@ -753,6 +761,78 @@ def create_site_app(
             data.get("conversation_token"),
             secure=secure_cookies,
         )
+        return response
+
+    @site.post("/maia/turnos")
+    async def enqueue_maia_turn(request: Request) -> Response:
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return Response(
+                json.dumps({"detail": "El mensaje no es válido."}),
+                status_code=422,
+                media_type="application/json",
+            )
+        result = await product.request(
+            "POST",
+            "/internal/public-site/conversation/turns",
+            body=body,
+            token_header=_token_header(
+                "X-Conversation-Token", request.cookies.get(CONVERSATION_COOKIE)
+            ),
+            headers=_measurement_headers(request),
+        )
+        data = _data(result)
+        response = Response(
+            json.dumps(data, default=str),
+            status_code=result.status_code,
+            media_type="application/json",
+            headers=_response_headers(private=True),
+        )
+        _set_cookie(
+            response,
+            CONVERSATION_COOKIE,
+            data.get("conversation_token"),
+            secure=secure_cookies,
+        )
+        return response
+
+    @site.get("/maia/turnos/{turn_id}")
+    async def maia_turn(request: Request, turn_id: uuid.UUID) -> Response:
+        result = await product.request(
+            "GET",
+            f"/internal/public-site/conversation/turns/{turn_id}",
+            token_header=_token_header(
+                "X-Conversation-Token", request.cookies.get(CONVERSATION_COOKIE)
+            ),
+        )
+        return Response(
+            json.dumps(_data(result), default=str),
+            status_code=result.status_code,
+            media_type="application/json",
+            headers=_response_headers(private=True),
+        )
+
+    @site.delete("/maia/conversacion")
+    async def close_maia_conversation(
+        request: Request, borrar_contenido: bool = False
+    ) -> Response:
+        result = await product.request(
+            "DELETE",
+            "/internal/public-site/conversation",
+            params={"delete_content": str(borrar_contenido).lower()},
+            token_header=_token_header(
+                "X-Conversation-Token", request.cookies.get(CONVERSATION_COOKIE)
+            ),
+        )
+        response = Response(
+            json.dumps(_data(result), default=str),
+            status_code=result.status_code,
+            media_type="application/json",
+            headers=_response_headers(private=True),
+        )
+        if result.status_code < 400:
+            response.delete_cookie(CONVERSATION_COOKIE, path="/")
         return response
 
     @site.post("/handoffs")

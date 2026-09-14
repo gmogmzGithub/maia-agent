@@ -13,8 +13,21 @@ from sqlalchemy import func, select
 from realestate.app import create_app
 from realestate.config import Settings
 from realestate.db.engine import Database
-from realestate.db.models import AnalyticsEventName, AnalyticsOutboxEntry
-from tests.conftest import DATABASE_URL, requires_postgres, reset_property_inventory
+from realestate.api.plugin import SESSION_HEADER
+from realestate.db.models import (
+    AgentRole,
+    AnalyticsEventName,
+    AnalyticsOutboxEntry,
+    WebsiteSearchReceipt,
+)
+from realestate.hermes.sessions import bind_role_session
+from tests.conftest import (
+    DATABASE_URL,
+    env,
+    larevia_organization_id,
+    requires_postgres,
+    reset_property_inventory,
+)
 from tests.fixtures.commercial import ADMIN_LOGIN, actor_for, provision, reset
 from tests.fixtures.media import InMemoryMediaStorage
 from tests.fixtures.public_site import publish_listing
@@ -71,6 +84,16 @@ async def test_internal_contract_requires_dedicated_loopback_credential(wired) -
             "/internal/public-site/catalog",
             headers={"Authorization": "Bearer site-contract-token"},
         )
+        filtered = await client.get(
+            "/internal/public-site/catalog",
+            params={
+                "minimum_bedrooms": 3,
+                "minimum_bathrooms": "2",
+                "minimum_parking_spaces": 2,
+                "minimum_construction_m2": "180",
+            },
+            headers={"Authorization": "Bearer site-contract-token"},
+        )
         media = await client.get(
             f"/internal/public-site/media/{listing.media_id}",
             headers={"Authorization": "Bearer site-contract-token"},
@@ -79,9 +102,128 @@ async def test_internal_contract_requires_dedicated_loopback_credential(wired) -
     assert refused.status_code == 401
     assert catalog.status_code == 200
     assert catalog.json()["listings"][0]["listing_id"] == str(listing.listing_id)
+    assert filtered.status_code == 200
+    assert filtered.json()["query"] == {
+        **catalog.json()["query"],
+        "minimum_bedrooms": 3,
+        "minimum_bathrooms": 2,
+        "minimum_parking_spaces": 2,
+        "minimum_construction_m2": 180,
+    }
     assert media.status_code == 200
     assert media.content.startswith(b"\xff\xd8\xff")
     assert media.headers["etag"]
+
+
+async def test_website_session_can_only_search_public_share_inventory(wired) -> None:
+    app, listing = wired
+    session_id = "website-public-search-session"
+    async with app.state.database.session_scope() as session:
+        await bind_role_session(
+            session,
+            organization_id=await larevia_organization_id(session),
+            role=AgentRole.PUBLIC_SITE,
+            hermes_session_id=session_id,
+        )
+
+    headers = {
+        "Authorization": f"Bearer {env('PLUGIN_API_TOKEN')}",
+        SESSION_HEADER: session_id,
+    }
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://product.test"
+    ) as client:
+        searched = await client.post(
+            "/internal/plugin/tools/search_public_properties",
+            headers=headers,
+            json={
+                "turn_key": "website-public-turn-1",
+                "operation": "Sale",
+                "zone": "Zapopan",
+                "minimum_bedrooms": 3,
+                "sort": "recent",
+            },
+        )
+        replayed = await client.post(
+            "/internal/plugin/tools/search_public_properties",
+            headers=headers,
+            json={
+                "turn_key": "website-public-turn-1",
+                "zone": "Guadalajara",
+            },
+        )
+        property_document = await client.post(
+            "/internal/plugin/tools/get_property_information",
+            headers=headers,
+            json={"reference": "casa-boundary"},
+        )
+        broad_inventory = await client.post(
+            "/internal/plugin/tools/list_properties",
+            headers=headers,
+            json={},
+        )
+        invalid_property_type = await client.post(
+            "/internal/plugin/tools/search_public_properties",
+            headers=headers,
+            json={
+                "turn_key": "website-public-invalid-type",
+                "property_type": "casa",
+            },
+        )
+
+    assert searched.status_code == 200
+    assert searched.json()["result"] == "found"
+    assert searched.json()["matches"][0]["listing_id"] == str(listing.listing_id)
+    assert searched.json()["public_url"].startswith("/propiedades?")
+    assert replayed.json() == searched.json()
+    assert property_document.json() == {"result": "forbidden"}
+    assert broad_inventory.json() == {"result": "forbidden"}
+    assert invalid_property_type.status_code == 422
+    async with app.state.database.session_scope() as session:
+        receipts = list(await session.scalars(select(WebsiteSearchReceipt)))
+    assert len(receipts) == 1
+
+
+async def test_public_site_turn_contract_enqueues_and_polls_without_a_long_request(
+    wired,
+) -> None:
+    app, _listing = wired
+    authorization = {"Authorization": "Bearer site-contract-token"}
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://product.test"
+    ) as client:
+        accepted = await client.post(
+            "/internal/public-site/conversation/turns",
+            headers=authorization,
+            json={
+                "message": "Busco una casa en Zapopan",
+                "command_key": "boundary-async-website-turn",
+            },
+        )
+        token = accepted.json()["conversation_token"]
+        turn_id = accepted.json()["turn_id"]
+        progress = await client.get(
+            f"/internal/public-site/conversation/turns/{turn_id}",
+            headers={
+                **authorization,
+                "X-Conversation-Token": token,
+            },
+        )
+        replay = await client.post(
+            "/internal/public-site/conversation/turns",
+            headers={**authorization, "X-Conversation-Token": token},
+            json={
+                "message": "No reemplaces el texto original",
+                "command_key": "boundary-async-website-turn",
+            },
+        )
+
+    assert accepted.status_code == 202
+    assert progress.status_code == 200
+    assert progress.json()["status"] == "Pending"
+    assert replay.status_code == 202
+    assert replay.json()["turn_id"] == turn_id
+    assert replay.json()["replayed"] is True
 
 
 async def test_internal_contract_exercises_every_product_owned_operation(wired) -> None:
@@ -351,6 +493,34 @@ async def test_host_proxy_forwards_only_public_headers_and_never_product_auth(
     assert "authorization" not in captured[0].headers
     assert "x-private" not in captured[0].headers
     assert captured[0].headers["cookie"] == "larevia_saved=sc-browser"
+
+
+async def test_host_proxy_forwards_conversation_close_to_the_public_site(wired) -> None:
+    app, _listing = wired
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(200, json={"closed": True})
+
+    app.state.public_site_proxy = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="http://site.test"
+    )
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://product.test"
+    ) as client:
+        result = await client.delete(
+            "/maia/conversacion?borrar_contenido=false",
+            headers={"Cookie": "larevia_conversation=wc-browser"},
+        )
+
+    assert result.status_code == 200
+    assert result.json() == {"closed": True}
+    assert len(captured) == 1
+    assert captured[0].method == "DELETE"
+    assert captured[0].url.path == "/maia/conversacion"
+    assert captured[0].url.params["borrar_contenido"] == "false"
+    assert captured[0].headers["cookie"] == "larevia_conversation=wc-browser"
 
 
 async def test_unbound_public_host_and_non_public_proxy_path_are_refused(wired) -> None:

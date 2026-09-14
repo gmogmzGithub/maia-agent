@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 import json
 import uuid
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 from urllib.parse import urlencode
@@ -36,6 +37,17 @@ _ICON_PATHS = {
     "menu": '<path d="M4 7h16M4 12h16M4 17h16"/>',
     "message": '<path d="M4 5.5h16v11H9l-5 4z"/>',
     "search": '<circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/>',
+    "user": '<circle cx="12" cy="8" r="3.5"/><path d="M5.5 20c.4-4 2.5-6 6.5-6s6.1 2 6.5 6"/>',
+    "grid": '<rect x="4" y="4" width="6" height="6"/><rect x="14" y="4" width="6" height="6"/><rect x="4" y="14" width="6" height="6"/><rect x="14" y="14" width="6" height="6"/>',
+    "list": '<path d="M9 6h11M9 12h11M9 18h11"/><circle cx="5" cy="6" r="1"/><circle cx="5" cy="12" r="1"/><circle cx="5" cy="18" r="1"/>',
+    "expand": '<path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5"/>',
+    "plus": '<path d="M12 5v14M5 12h14"/>',
+    "trash": '<path d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v5M14 11v5"/>',
+    "close": '<path d="m6 6 12 12M18 6 6 18"/>',
+    "bed": '<path d="M3 18v-7M21 18v-5a2 2 0 0 0-2-2H9v7M3 14h18M6 11V8h3a2 2 0 0 1 2 2v1"/>',
+    "bath": '<path d="M4 13h16v2a5 5 0 0 1-5 5H9a5 5 0 0 1-5-5zM7 13V6a3 3 0 0 1 5-2l1 1"/>',
+    "parking": '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M9 17V7h4a3 3 0 0 1 0 6H9"/>',
+    "area": '<path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/>',
 }
 
 
@@ -115,23 +127,45 @@ def document(
 <body>
 <a class="skip-link" href="#contenido">Ir al contenido principal</a>
 <header class="site-header" data-site-header>
-  <a class="wordmark" href="/" aria-label="Larevia, inicio">Larevia</a>
-  <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="navegacion-principal" data-nav-toggle>{icon("menu")}<span>Menú</span></button>
-  <nav id="navegacion-principal" aria-label="Navegación principal" data-site-nav>
-    <a href="/propiedades">Propiedades</a><a href="/#zonas">Zonas</a><a href="/#como-funciona">Cómo funciona</a><a href="/guardadas">Guardadas</a>
-    <a class="nav-admin" href="/admin/properties">Administrar propiedades</a>
-    <a class="nav-maia" href="/maia">{icon("message")} Hablar con Maia</a>
-  </nav>
+  <div class="header-start">
+    <a class="wordmark" href="/" aria-label="Larevia, inicio">Larevia</a>
+    <nav id="navegacion-principal" class="header-primary" aria-label="Navegación principal" data-site-nav>
+      <a href="/propiedades?operation=Sale">Comprar</a>
+      <a href="/propiedades?operation=Rental">Rentar</a>
+      <a href="/#zonas">Zonas</a>
+    </nav>
+  </div>
+  {ai_launcher("header")}
+  <div class="header-actions">
+    <a class="saved-link" href="/guardadas">{icon("heart")}<span>Guardadas</span></a>
+    <button class="account-toggle" type="button" aria-expanded="false" aria-controls="cuenta-demo" data-account-toggle>{icon("user")}<span>Cuenta demo</span></button>
+    <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="navegacion-principal" data-nav-toggle>{icon("menu")}<span class="sr-only">Menú</span></button>
+  </div>
 </header>
-<main id="contenido">{body}</main>
+{account_demo_panel()}
+<div class="page-layer" data-page-layer><main id="contenido">{body}</main>
 <footer class="site-footer">
   <div class="footer-brand"><a class="wordmark wordmark-footer" href="/">Larevia</a><p>Acompañamiento inmobiliario que sí continúa.</p></div>
   <nav aria-label="Navegación secundaria"><a href="/propiedades">Propiedades</a><a href="/#zonas">Zonas</a><a href="/maia">Maia</a><a href="/#vende">Vende o renta</a></nav>
   <div class="footer-meta"><p>Guadalajara · Zapopan · Tlaquepaque</p></div>
-</footer>
+</footer></div>
+{ai_dialog()}
 <div class="sr-only" id="live-region" role="status" aria-live="polite"></div>
 </body>
 </html>"""
+
+
+def ai_launcher(location: str) -> str:
+    compact = " ai-launcher-main" if location == "main" else ""
+    return f"""<button class="ai-launcher{compact}" type="button" data-ai-launcher aria-haspopup="dialog"><span class="ai-launcher-query">{icon("search")}<span data-ai-prompt aria-hidden="true">Buscar casas en Zapopan</span><span class="sr-only">Abrir Buscador con IA</span></span><strong>Buscador con IA</strong></button>"""
+
+
+def account_demo_panel() -> str:
+    return """<aside id="cuenta-demo" class="account-demo" data-account-demo hidden><div><span class="demo-badge">Demo</span><button type="button" data-account-close aria-label="Cerrar Cuenta demo">×</button></div><h2>Cuenta demo</h2><p>Esta vista representa el espacio de cuenta que llegará después. No crea un perfil ni guarda datos personales.</p><a href="/guardadas">Ver propiedades guardadas</a><a class="admin-link" href="/admin/properties">Administrar propiedades</a></aside>"""
+
+
+def ai_dialog() -> str:
+    return f"""<dialog class="ai-dialog" data-ai-dialog aria-labelledby="ai-dialog-title"><section class="ai-window"><header class="ai-window-header"><div><span class="ai-status-dot" aria-hidden="true"></span><strong id="ai-dialog-title">Maia</strong><small>Buscador con IA</small></div><div class="ai-window-actions"><button type="button" data-ai-expand aria-pressed="false" aria-label="Expandir conversación" title="Expandir">{icon("expand")}</button><button type="button" data-ai-new data-ai-conversation-action aria-label="Nueva conversación" title="Nueva conversación">{icon("plus")}</button><button type="button" data-ai-delete data-ai-conversation-action aria-label="Borrar conversación" title="Borrar conversación">{icon("trash")}</button><button type="button" data-ai-close aria-label="Cerrar conversación" title="Cerrar">{icon("close")}</button></div></header><div class="ai-window-body"><div class="ai-empty" data-ai-empty><p class="eyebrow">Búsqueda conversacional</p><h2>¿Qué propiedad estás buscando?</h2><p>Cuéntame una zona, presupuesto o característica. Consultaré únicamente el inventario público actual.</p><div class="ai-suggestions"><button type="button" data-ai-suggestion="Busca casas en Zapopan">Casas en Zapopan</button><button type="button" data-ai-suggestion="Busca departamentos en renta">Departamentos en renta</button><button type="button" data-ai-suggestion="Muéstrame propiedades con tres recámaras">Tres recámaras</button></div></div><ol class="ai-thread" data-ai-thread aria-label="Conversación con Maia"></ol><p class="ai-status" data-ai-status role="status" aria-live="polite" hidden></p></div><form class="ai-composer" data-ai-form action="/maia" method="post"><label class="sr-only" for="ai-message">Mensaje para Maia</label><textarea id="ai-message" name="message" maxlength="2000" rows="1" placeholder="Pregunta o describe tu búsqueda…" required data-ai-input></textarea><button type="submit" aria-label="Enviar a Maia">{icon("arrow")}</button></form><p class="ai-fallback"><a href="/maia">Abrir la versión accesible en una página</a></p></section></dialog>"""
 
 
 def sponsored_section(result: dict[str, Any]) -> str:
@@ -145,37 +179,23 @@ def sponsored_section(result: dict[str, Any]) -> str:
     return f"""<section class="section-shell sponsored-section" aria-labelledby="patrocinadas"><div class="section-heading"><div><p class="eyebrow">{escape(SPONSORED_LABEL)}</p><h2 id="patrocinadas">Propiedades con visibilidad patrocinada</h2></div></div><p class="muted sponsored-disclosure">{escape(result.get("disclosure"))}</p><div class="listing-grid">{rendered}</div></section>"""
 
 
-def sponsored_card(card: dict[str, Any], *, surface: str, position: int) -> str:
+def sponsored_card(
+    card: dict[str, Any], *, surface: str, position: int, operation: str = ""
+) -> str:
     return listing_card(
         dict(card.get("listing") or {}),
         surface=surface,
         sponsored_exposure_id=str(card.get("exposure_id") or ""),
         sponsored_campaign_id=str(card.get("campaign_id") or ""),
         sponsored_position=position,
+        operation=operation,
     )
 
 
 def home(
     listings: list[dict[str, Any]], sponsored: dict[str, Any] | None = None
 ) -> str:
-    featured = listings[0] if listings else None
-    featured_cover = (
-        next((item for item in featured.get("media", []) if item.get("is_cover")), None)
-        if featured
-        else None
-    )
-    hero_media = (
-        responsive_image(
-            featured_cover,
-            featured.get("title"),
-            loading="eager",
-            priority=True,
-            sizes="100vw",
-        )
-        if featured_cover and featured
-        else '<div class="image-placeholder" aria-hidden="true"><span>Larevia</span></div>'
-    )
-    cards = cards_grid(listings, surface="Homepage")
+    cards = cards_grid(listings[:8], surface="Homepage")
     inventory = (
         f'<div class="listing-grid">{cards}</div>'
         if cards
@@ -186,19 +206,10 @@ def home(
         )
     )
     return f"""
-<section class="hero">
-    <figure class="hero-photo">{hero_media}</figure>
-    <div class="hero-scrim" aria-hidden="true"> </div>
-        <div class="hero-content">
-            <h1>Encuentra tu lugar.</h1>
-            <p>Maia para ayudarte a decidir.</p>
-            {hero_search_form()}
-        </div>
-</section>
-
-<section class="section-shell inventory-section" aria-labelledby="seleccion"><div class="section-heading"><div><p class="eyebrow">Selección actual</p><h2 id="seleccion">Propiedades para explorar</h2></div><a class="direction-link" href="/propiedades">Ver todas {icon("arrow")}</a></div>{inventory}</section>
+<section class="home-intro section-shell"><div><p class="eyebrow">Acompañamiento inmobiliario</p><h1>Encuentra un lugar que sí encaje contigo.</h1><p>Explora inventario autorizado o describe lo que buscas; Maia te ayuda a convertir una idea en criterios claros.</p></div><div class="home-search-card">{ai_launcher("main")}<div class="home-quick-links"><a href="/propiedades?operation=Sale">Comprar</a><a href="/propiedades?operation=Rental">Rentar</a><a href="/propiedades?sort=recent">Ver propiedades nuevas</a></div></div></section>
+<section class="section-shell inventory-section" aria-labelledby="seleccion"><div class="section-heading"><div><p class="eyebrow">Selección actual</p><h2 id="seleccion">Propiedades para explorar</h2></div><a class="direction-link" href="/propiedades">Ver todas {icon("arrow")}</a></div><div class="listing-grid view-grid">{cards if cards else inventory}</div></section>
 <section class="section-shell zones-section" id="zonas" aria-labelledby="zonas-title"><div class="section-heading"><div><p class="eyebrow">Tres municipios, una búsqueda clara</p><h2 id="zonas-title">Explora por zona</h2></div></div>{zone_cards(listings)}</section>
-<section class="process-section" id="como-funciona" aria-labelledby="proceso-title"><div class="section-shell process-layout"><div><p class="eyebrow">Acompañamiento inmobiliario que sí continúa</p><h2 id="proceso-title">De la búsqueda a una visita verificada.</h2><p>Maia ayuda a precisar la necesidad; Product conserva la verdad de inventario, disponibilidad y citas.</p></div><ol class="steps"><li><span>01</span><strong>Explora</strong><p>Consulta propiedades y datos autorizados.</p></li><li><span>02</span><strong>Conversa</strong><p>Maia conserva el contexto sin pedir una cuenta.</p></li><li><span>03</span><strong>Verifica</strong><p>La visita se confirma por el WhatsApp oficial.</p></li></ol></div></section>
+<section class="process-section" id="como-funciona" aria-labelledby="proceso-title"><div class="section-shell process-layout"><div><p class="eyebrow">Acompañamiento inmobiliario que sí continúa</p><h2 id="proceso-title">De la búsqueda a una visita verificada.</h2><p>Maia ayuda a precisar lo que necesitas; Larevia conserva la verdad del inventario, disponibilidad y citas.</p></div><ol class="steps"><li><span>01</span><strong>Explora</strong><p>Consulta propiedades y datos autorizados.</p></li><li><span>02</span><strong>Conversa</strong><p>Maia conserva el contexto sin pedir una cuenta.</p></li><li><span>03</span><strong>Verifica</strong><p>La visita se confirma por el WhatsApp oficial.</p></li></ol></div></section>
 <section class="section-shell seller-section" id="vende"><div><p class="eyebrow">Para propietarios</p><h2>Vende o renta tu propiedad con una ruta humana.</h2><p>Maia reúne lo esencial y entrega la conversación al equipo de Larevia para continuar.</p></div><a class="button button-secondary" href="/maia?motivo=publicar">Quiero hablar de mi propiedad</a></section>
 <section class="section-shell experts-section" aria-labelledby="expertos-title"><div><p class="eyebrow">Especialistas inmobiliarios</p><h2 id="expertos-title">La tecnología acompaña. Las personas responden.</h2></div><article class="expert-card"><span aria-hidden="true">EL</span><div><strong>Equipo Larevia</strong><p>Asesoría inmobiliaria personalizada</p><small>Atención en español para comprar, vender o rentar.</small></div></article></section>
 {sponsored_section(sponsored or {})}
@@ -257,7 +268,11 @@ def search_page(
     listings = list(result.get("listings") or [])
     total = int(result.get("total") or 0)
     query = result.get("query") or {}
-    results = search_results_grid(listings, sponsored or {})
+    view = "lista" if query.get("view") == "lista" else "cuadricula"
+    view_class = "list" if view == "lista" else "grid"
+    results = search_results_grid(
+        listings, sponsored or {}, operation=str(query.get("operation") or "")
+    )
     if not results:
         results = empty_state(
             "No encontramos propiedades con esos criterios",
@@ -267,13 +282,18 @@ def search_page(
     more = ""
     if result.get("has_more"):
         next_query = dict(query)
+        next_query["vista"] = view
         next_query["page"] = int(query.get("page") or 1) + 1
         params = escape(urlencode(_query_params(next_query)))
         more = f'<a class="button button-secondary load-more" href="/propiedades?{params}">Mostrar más</a>'
-    return f"""<header class="catalog-hero section-shell"><nav class="breadcrumbs" aria-label="Ruta"><a href="/">Inicio</a><span>/</span><span>Propiedades</span></nav><p class="eyebrow">Inventario autorizado</p><h1>{escape(heading)}</h1><p>Decisiones claras, información actual y ninguna personalización oculta.</p></header><section class="search-shell" aria-label="Buscar propiedades"><div class="section-shell">{search_form(query)}</div></section><section class="results-shell" aria-labelledby="resultados"><div class="results-toolbar"><div><h2 id="resultados">{total} resultado{"s" if total != 1 else ""}</h2><p>{escape(_criteria_summary(query))}</p></div></div><div class="listing-grid">{results}</div>{more}</section>"""
+    view_query = _query_params(query)
+    view_query.pop("page", None)
+    grid_query = escape(urlencode({**view_query, "vista": "cuadricula"}))
+    list_query = escape(urlencode({**view_query, "vista": "lista"}))
+    return f"""<header class="catalog-hero section-shell"><nav class="breadcrumbs" aria-label="Ruta"><a href="/">Inicio</a><span>/</span><span>Propiedades</span></nav><p class="eyebrow">Inventario autorizado</p><h1>{escape(heading)}</h1><p>Información clara para comparar y decidir.</p></header><section class="search-shell" aria-label="Buscar propiedades"><div class="section-shell">{search_form(query, total=total)}</div></section><section class="results-shell" aria-labelledby="resultados"><div class="results-toolbar"><div><h2 id="resultados">{total} resultado{"s" if total != 1 else ""}</h2><p>{escape(_criteria_summary(query))}</p></div><nav class="view-switcher" aria-label="Vista de resultados"><a href="/propiedades?{grid_query}" aria-current="{'page' if view == 'cuadricula' else 'false'}" title="Cuadrícula">{icon("grid")}<span class="sr-only">Vista de cuadrícula</span></a><a href="/propiedades?{list_query}" aria-current="{'page' if view == 'lista' else 'false'}" title="Lista">{icon("list")}<span class="sr-only">Vista de lista</span></a></nav></div><div class="listing-grid view-{view_class}">{results}</div>{more}</section>"""
 
 
-def search_form(query: dict[str, Any]) -> str:
+def search_form(query: dict[str, Any], *, total: int = 0) -> str:
     operation = str(query.get("operation") or "")
     zone = str(query.get("zone") or "")
     property_type = str(query.get("property_type") or "")
@@ -281,11 +301,15 @@ def search_form(query: dict[str, Any]) -> str:
     zones = {item: item for item in ("Guadalajara", "Zapopan", "Tlaquepaque")}
     sorts = {
         "relevance": "Más relevantes",
-        "recent": "Más recientes",
+        "recent": "Más nuevas",
         "price_asc": "Menor precio",
         "price_desc": "Mayor precio",
     }
-    return f"""<form class="search-form" action="/propiedades" method="get"><label><span>Operación</span><select name="operation"><option value="">Todas</option>{_options(OPERATION_LABELS, operation)}</select></label><label><span>Zona</span><select name="zone"><option value="">Toda el área</option>{_options(zones, zone)}</select></label><label><span>Tipo</span><select name="property_type"><option value="">Todos</option>{_options(TYPE_LABELS, property_type)}</select></label><details class="filter-drawer" data-filter-drawer><summary>{icon("filter")} Más filtros</summary><div class="filter-panel"><div class="filter-panel-heading"><div><p class="eyebrow">Refina tu búsqueda</p><h2>Más filtros</h2></div><button class="filter-close" type="button" data-filter-close aria-label="Cerrar filtros">×</button></div><div class="filter-fields"><label>Precio mínimo<input inputmode="numeric" name="minimum_price" value="{escape(query.get("minimum_price"))}" autocomplete="off"></label><label>Precio máximo<input inputmode="numeric" name="maximum_price" value="{escape(query.get("maximum_price"))}" autocomplete="off"></label><label>Orden<select name="sort">{_options(sorts, sort)}</select></label></div><p class="fine-print">Sólo aplicamos los criterios que ves aquí.</p></div></details><button class="button button-primary" type="submit">{icon("search")} Buscar</button><a class="search-maia" href="/maia">Cuéntaselo a Maia</a></form>"""
+    residential_attributes = " hidden" if property_type == "Land" else ""
+    residential_input_attributes = " disabled" if property_type == "Land" else ""
+    detailed_facts = f"""<label data-residential-filter{residential_attributes}>Recámaras mínimas<input inputmode="numeric" name="minimum_bedrooms" value="{escape(query.get("minimum_bedrooms"))}" min="0" autocomplete="off"{residential_input_attributes}></label><label data-residential-filter{residential_attributes}>Baños mínimos<input inputmode="decimal" name="minimum_bathrooms" value="{escape(query.get("minimum_bathrooms"))}" min="0" step="0.5" autocomplete="off"{residential_input_attributes}></label><label data-residential-filter{residential_attributes}>Estacionamientos mínimos<input inputmode="numeric" name="minimum_parking_spaces" value="{escape(query.get("minimum_parking_spaces"))}" min="0" autocomplete="off"{residential_input_attributes}></label>"""
+    result_label = f"Ver {total} propiedad" if total == 1 else f"Ver {total} propiedades"
+    return f"""<form class="search-form" action="/propiedades" method="get"><input type="hidden" name="vista" value="{escape(query.get('view') or 'cuadricula')}"><label><span>Operación</span><select name="operation"><option value="">Todas</option>{_options(OPERATION_LABELS, operation)}</select></label><label><span>Zona</span><select name="zone"><option value="">Toda el área</option>{_options(zones, zone)}</select></label><label><span>Tipo</span><select name="property_type" data-property-type-filter><option value="">Todos</option>{_options(TYPE_LABELS, property_type)}</select></label><details class="filter-drawer" data-filter-drawer><summary>{icon("filter")} Filtros</summary><div class="filter-panel"><div class="filter-panel-heading"><div><p class="eyebrow">Refina tu búsqueda</p><h2>Filtros</h2></div><button class="filter-close" type="button" data-filter-close aria-label="Cerrar filtros">×</button></div><div class="filter-fields"><label>Precio mínimo<input inputmode="numeric" name="minimum_price" value="{escape(query.get("minimum_price"))}" autocomplete="off"></label><label>Precio máximo<input inputmode="numeric" name="maximum_price" value="{escape(query.get("maximum_price"))}" autocomplete="off"></label>{detailed_facts}<label>Construcción mínima (m²)<input inputmode="decimal" name="minimum_construction_m2" value="{escape(query.get("minimum_construction_m2"))}" min="0" autocomplete="off"></label><label>Orden<select name="sort">{_options(sorts, sort)}</select></label></div><p class="fine-print">Sólo aplicamos los criterios que ves aquí.</p><button class="button button-primary filter-apply" type="submit">{result_label}</button></div></details><button class="button button-primary" type="submit">{icon("search")} Buscar</button><button class="search-maia" type="button" data-ai-launcher>Cuéntaselo a Maia</button></form>"""
 
 
 def cards_grid(listings: list[dict[str, Any]], *, surface: str) -> str:
@@ -293,22 +317,36 @@ def cards_grid(listings: list[dict[str, Any]], *, surface: str) -> str:
 
 
 def search_results_grid(
-    listings: list[dict[str, Any]], sponsored: dict[str, Any]
+    listings: list[dict[str, Any]],
+    sponsored: dict[str, Any],
+    *,
+    operation: str = "",
 ) -> str:
     cards = list(sponsored.get("cards") or [])
     if not cards:
-        return cards_grid(listings, surface="Search")
+        return "".join(
+            listing_card(item, surface="Search", operation=operation)
+            for item in listings
+        )
     out: list[str] = []
     for index, listing in enumerate(listings):
         if index % 6 == 0 and cards:
             out.append(
-                sponsored_card(cards.pop(0), surface="Search", position=index // 6 + 1)
+                sponsored_card(
+                    cards.pop(0),
+                    surface="Search",
+                    position=index // 6 + 1,
+                    operation=operation,
+                )
             )
-        out.append(listing_card(listing, surface="Search"))
+        out.append(listing_card(listing, surface="Search", operation=operation))
     for offset, card in enumerate(cards):
         out.append(
             sponsored_card(
-                card, surface="Search", position=len(listings) // 6 + offset + 1
+                card,
+                surface="Search",
+                position=len(listings) // 6 + offset + 1,
+                operation=operation,
             )
         )
     return "".join(out)
@@ -322,18 +360,16 @@ def listing_card(
     sponsored_exposure_id: str = "",
     sponsored_campaign_id: str = "",
     sponsored_position: int = 0,
+    operation: str = "",
 ) -> str:
     already_saved = already_saved or bool(listing.get("_saved"))
-    cover = next(
-        (item for item in listing.get("media", []) if item.get("is_cover")), None
-    )
-    media = responsive_image(
-        cover,
-        listing.get("title"),
-        loading="lazy",
-        sizes="(max-width: 760px) 100vw, (max-width: 1180px) 50vw, 33vw",
-    )
-    offers = "".join(offer_badge(offer) for offer in listing.get("offers", []))
+    media = card_media(listing, surface=surface)
+    visible_offers = list(listing.get("offers", []))
+    if surface == "Search" and operation:
+        visible_offers = [
+            offer for offer in visible_offers if offer.get("operation") == operation
+        ]
+    offers = "".join(offer_badge(offer) for offer in visible_offers)
     facts = characteristics(listing.get("physical_facts") or {}, limit=4)
     listing_id = escape(listing.get("listing_id"))
     slug = escape(listing.get("slug"))
@@ -356,8 +392,8 @@ def listing_card(
         str(listing.get("property_type")),
         str(listing.get("property_type") or "Propiedad"),
     )
-    first_offer = (listing.get("offers") or [{}])[0]
-    operation = OPERATION_LABELS.get(str(first_offer.get("operation")), "")
+    first_offer = visible_offers[0] if visible_offers else {}
+    operation_label = OPERATION_LABELS.get(str(first_offer.get("operation")), "")
     save = save_form(
         listing_id,
         return_to=f"/propiedades/{slug}",
@@ -365,7 +401,11 @@ def listing_card(
         compact=True,
         phone_required=bool(listing.get("_save_phone_required")),
     )
-    return f"""<article class="{classes}" data-analytics="ListingImpression" data-listing-id="{listing_id}" data-surface="{escape(surface)}"{attributes}><div class="card-media-wrap"><a class="card-media" href="{detail_url}">{media}</a>{save}{label}</div><div class="card-body"><p class="card-kicker">{escape(operation)} · {escape(property_type)}</p><h3><a href="{detail_url}">{escape(listing.get("title"))}</a></h3><p class="location">{escape(listing.get("public_location") or "Área Metropolitana de Guadalajara")}</p><div class="offers">{offers}</div>{facts}</div></article>"""
+    recency = recency_label(listing.get("first_published_at"))
+    recency_badge = f'<span class="recency-badge">{escape(recency)}</span>' if recency else ""
+    attribution = escape(listing.get("source_name") or listing.get("attribution") or "")
+    source = f'<span class="card-source">{attribution}</span>' if attribution else ""
+    return f"""<article class="{classes}" data-analytics="ListingImpression" data-listing-id="{listing_id}" data-surface="{escape(surface)}"{attributes}><div class="card-media-wrap"><a class="card-media" href="{detail_url}">{media}</a>{save}{label}</div><div class="card-body"><p class="card-kicker">{escape(operation_label)} · {escape(property_type)}</p><div class="offers">{offers}</div><h3><a href="{detail_url}">{escape(listing.get("title"))}</a></h3><p class="location">{escape(listing.get("public_location") or "Área Metropolitana de Guadalajara")}</p>{facts}<footer class="card-meta">{source}{recency_badge}</footer></div></article>"""
 
 
 def technical_sheet(
@@ -606,6 +646,55 @@ def responsive_image(
     )
 
 
+def card_media(listing: dict[str, Any], *, surface: str) -> str:
+    title = listing.get("title")
+    items = sorted(
+        list(listing.get("media") or []),
+        key=lambda item: (not bool(item.get("is_cover")), int(item.get("sort_order") or 0)),
+    )
+    if not items:
+        return responsive_image(None, listing.get("title"), loading="lazy")
+    count = min(len(items), 4) if surface in {"Search", "Homepage"} else 1
+    if count < 3:
+        return responsive_image(
+            items[0],
+            listing.get("title"),
+            loading="lazy",
+            sizes="(max-width: 760px) 100vw, (max-width: 1180px) 50vw, 33vw",
+        )
+    photos = "".join(
+        f'<span class="card-photo card-photo-{index + 1}">{responsive_image(item, f"{title} — fotografía {index + 1}", loading="lazy", sizes="(max-width: 760px) 100vw, 33vw")}</span>'
+        for index, item in enumerate(items[:count])
+    )
+    return f'<span class="card-mosaic card-mosaic-{count}">{photos}</span>'
+
+
+def recency_label(
+    first_published_at: datetime | str | None, *, now: datetime | None = None
+) -> str:
+    """Return the short public-age label based only on first publication."""
+
+    if first_published_at is None:
+        return ""
+    if isinstance(first_published_at, str):
+        try:
+            published = datetime.fromisoformat(first_published_at.replace("Z", "+00:00"))
+        except ValueError:
+            return ""
+    else:
+        published = first_published_at
+    if published.tzinfo is None:
+        published = published.replace(tzinfo=UTC)
+    moment = now or datetime.now(UTC)
+    elapsed = moment - published.astimezone(UTC)
+    hours = elapsed.total_seconds() / 3600
+    if hours < 0 or hours >= 192:
+        return ""
+    if hours < 48:
+        return "Nueva"
+    return f"{int(hours // 24)} días"
+
+
 def save_form(
     listing_id: str,
     *,
@@ -654,12 +743,29 @@ def price(offer: dict[str, Any]) -> str:
 
 
 def characteristics(facts: dict[str, Any], *, limit: int) -> str:
+    displayed = dict(facts)
+    if displayed.get("bathrooms") in (None, "") and displayed.get(
+        "full_bathrooms"
+    ) not in (None, ""):
+        total = Decimal(str(displayed["full_bathrooms"])) + Decimal(
+            str(displayed.get("half_bathrooms") or 0)
+        ) / Decimal("2")
+        displayed["bathrooms"] = int(total) if total == int(total) else total
+    fact_icons = {
+        "bedrooms": "bed",
+        "bathrooms": "bath",
+        "parking_spaces": "parking",
+        "construction_m2": "area",
+        "land_m2": "area",
+        "age_years": "area",
+        "floors": "area",
+    }
     values: list[str] = []
     for key, label in FACT_LABELS.items():
-        if facts.get(key) not in (None, ""):
+        if displayed.get(key) not in (None, ""):
             suffix = " m²" if key in {"construction_m2", "land_m2"} else ""
             values.append(
-                f"<li><strong>{escape(facts[key])}{suffix}</strong><span>{escape(label)}</span></li>"
+                f'<li>{icon(fact_icons[key])}<span><strong>{escape(displayed[key])}{suffix}</strong><small>{escape(label)}</small></span></li>'
             )
         if len(values) == limit:
             break
@@ -667,12 +773,20 @@ def characteristics(facts: dict[str, Any], *, limit: int) -> str:
 
 
 def facts_table(facts: dict[str, Any]) -> str:
+    displayed = dict(facts)
+    if displayed.get("bathrooms") in (None, "") and displayed.get(
+        "full_bathrooms"
+    ) not in (None, ""):
+        total = Decimal(str(displayed["full_bathrooms"])) + Decimal(
+            str(displayed.get("half_bathrooms") or 0)
+        ) / Decimal("2")
+        displayed["bathrooms"] = int(total) if total == int(total) else total
     rows: list[str] = []
     for key, label in FACT_LABELS.items():
-        if facts.get(key) not in (None, ""):
+        if displayed.get(key) not in (None, ""):
             suffix = " m²" if key in {"construction_m2", "land_m2"} else ""
             rows.append(
-                f"<div><dt>{escape(label)}</dt><dd>{escape(facts[key])}{suffix}</dd></div>"
+                f"<div><dt>{escape(label)}</dt><dd>{escape(displayed[key])}{suffix}</dd></div>"
             )
     return (
         f'<dl class="facts">{"".join(rows)}</dl>'
@@ -692,7 +806,7 @@ def _query_params(query: dict[str, Any]) -> dict[str, str]:
     return {
         key: str(value)
         for key, value in query.items()
-        if value not in (None, "", False) and key != "page_size"
+        if value not in (None, "", False) and key not in {"page_size", "view"}
     }
 
 
@@ -702,4 +816,36 @@ def _criteria_summary(query: dict[str, Any]) -> str:
         str(query.get("zone") or ""),
         TYPE_LABELS.get(str(query.get("property_type")), ""),
     ]
+    if query.get("minimum_price") not in (None, ""):
+        selected.append(f"Desde ${_summary_number(query['minimum_price'])}")
+    if query.get("maximum_price") not in (None, ""):
+        selected.append(f"Hasta ${_summary_number(query['maximum_price'])}")
+    for key, label in (
+        ("minimum_bedrooms", "recámaras"),
+        ("minimum_bathrooms", "baños"),
+        ("minimum_parking_spaces", "estacionamientos"),
+    ):
+        if query.get(key) not in (None, ""):
+            selected.append(f"{_summary_number(query[key])}+ {label}")
+    if query.get("minimum_construction_m2") not in (None, ""):
+        selected.append(
+            f"{_summary_number(query['minimum_construction_m2'])}+ m² de construcción"
+        )
+    selected.append(
+        {
+            "recent": "Más nuevas",
+            "price_asc": "Menor precio",
+            "price_desc": "Mayor precio",
+        }.get(str(query.get("sort") or ""), "")
+    )
     return " · ".join(item for item in selected if item) or "Sin filtros"
+
+
+def _summary_number(value: object) -> str:
+    try:
+        number = Decimal(str(value))
+    except (ArithmeticError, ValueError):  # pragma: no cover - defensive Product data
+        return str(value)
+    if number == number.to_integral_value():
+        return f"{int(number):,}"
+    return format(number.normalize(), "f")

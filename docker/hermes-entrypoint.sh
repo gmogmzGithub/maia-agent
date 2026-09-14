@@ -9,7 +9,10 @@ set -euo pipefail
 
 readonly MAIA_ROLES_ROOT="${MAIA_ROLES_ROOT:-/opt/maia/roles}"
 
-mkdir -p "$HERMES_HOME/profiles/sales" "$HERMES_HOME/profiles/admin"
+mkdir -p \
+  "$HERMES_HOME/profiles/sales" \
+  "$HERMES_HOME/profiles/admin" \
+  "$HERMES_HOME/profiles/website"
 
 # Every config Maia writes — root and per-profile — has the same shape, so the
 # shape is spelled once here. Only the model differs.
@@ -44,5 +47,6 @@ write_profile() {
 write_config "$HERMES_HOME/config.yaml" "$ADMIN_MODEL"
 write_profile sales "$SALES_MODEL"
 write_profile admin "$ADMIN_MODEL"
+write_profile website "$SALES_MODEL"
 
 exec hermes serve --host 127.0.0.1 --port 9119

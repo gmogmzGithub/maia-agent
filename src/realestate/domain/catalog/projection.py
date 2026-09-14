@@ -90,6 +90,7 @@ class AuthorizedListing:
     publication_state: str
     authority: str
     freshness_checked_at: datetime | None
+    first_published_at: datetime | None
     revalidate_by: datetime | None
     presentation_tier: str | None
     readiness_overridden: bool
@@ -145,6 +146,7 @@ class AdministrationListing:
     authority: str
     authority_evidence: str | None
     freshness_checked_at: datetime | None
+    first_published_at: datetime | None
     revalidate_by: datetime | None
     presentation_tier: str | None
     automatic_tier: str | None
@@ -396,6 +398,7 @@ class CatalogProjection:
             authority=listing.authority,
             authority_evidence=listing.authority_evidence,
             freshness_checked_at=listing.freshness_checked_at,
+            first_published_at=listing.first_published_at,
             revalidate_by=listing.revalidate_by,
             presentation_tier=decision.readiness.tier,
             automatic_tier=listing.automatic_tier,
@@ -553,6 +556,7 @@ class CatalogProjection:
             publication_state=listing.publication_state,
             authority=listing.authority,
             freshness_checked_at=listing.freshness_checked_at,
+            first_published_at=listing.first_published_at,
             revalidate_by=listing.revalidate_by,
             presentation_tier=decision.readiness.tier,
             readiness_overridden=decision.readiness.overridden,

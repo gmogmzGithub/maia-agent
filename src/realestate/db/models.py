@@ -135,6 +135,13 @@ class WebsiteMessageRole(str, enum.Enum):
     SYSTEM = "System"
 
 
+class WebsiteTurnStatus(str, enum.Enum):
+    PENDING = "Pending"
+    RUNNING = "Running"
+    COMPLETE = "Complete"
+    FAILED = "Failed"
+
+
 class ChannelHandoffPurpose(str, enum.Enum):
     CONTINUE_WHATSAPP = "ContinueWhatsApp"
     APPOINTMENT = "Appointment"
@@ -218,6 +225,7 @@ class AgentRole(str, enum.Enum):
 
     SALES = "Sales"
     ADMINISTRATIVE = "Administrative"
+    PUBLIC_SITE = "PublicSite"
 
 
 def _uuid_pk() -> Mapped[uuid.UUID]:
@@ -1732,7 +1740,8 @@ class AgentSession(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "role IN ('Sales', 'Administrative')", name="ck_agent_sessions_role"
+            "role IN ('Sales', 'Administrative', 'PublicSite')",
+            name="ck_agent_sessions_role",
         ),
         UniqueConstraint(
             "organization_id", "channel_key", name="uq_agent_sessions_org_channel"
@@ -3512,6 +3521,9 @@ class CatalogListing(Base):
     freshness_checked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    first_published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     revalidate_by: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -3957,7 +3969,8 @@ class WebsiteConversation(Base):
             name="ck_website_conversations_status",
         ),
         CheckConstraint(
-            "(verified_contact_id IS NULL AND status IN ('Open', 'HandoffPending')) OR "
+            "(verified_contact_id IS NULL AND status IN "
+            "('Open', 'HandoffPending', 'Closed')) OR "
             "(verified_contact_id IS NOT NULL AND status IN ('Verified', 'Closed'))",
             name="ck_website_conversations_verified_contact",
         ),
@@ -4009,6 +4022,94 @@ class WebsiteMessage(Base):
             "ix_website_messages_expiry",
             "content_expires_at",
             postgresql_where=sql_text("content_expired_at IS NULL"),
+        ),
+    )
+
+
+class WebsiteTurnRequest(Base):
+    """Durable work item for one asynchronous website conversation turn."""
+
+    __tablename__ = "website_turn_requests"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    conversation_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    command_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    listing_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    sponsorship_campaign_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=WebsiteTurnStatus.PENDING.value
+    )
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('Pending', 'Running', 'Complete', 'Failed')",
+            name="ck_website_turn_requests_status",
+        ),
+        CheckConstraint("attempts >= 0", name="ck_website_turn_requests_attempts"),
+        UniqueConstraint(
+            "organization_id",
+            "command_key",
+            name="uq_website_turn_requests_org_command",
+        ),
+        _org_scoped_fk(
+            "conversation_id",
+            "website_conversations",
+            name="fk_website_turn_requests_org_conversation",
+        ),
+        _org_scoped_fk(
+            "sponsorship_campaign_id",
+            "sponsorship_campaigns",
+            name="fk_website_turn_requests_org_sponsorship",
+        ),
+        Index("ix_website_turn_requests_claim", "status", "created_at"),
+    )
+
+
+class WebsiteSearchReceipt(Base):
+    """One idempotent, PUBLIC_SHARE-only search performed for a web turn."""
+
+    __tablename__ = "website_search_receipts"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="CASCADE")
+    hermes_session_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    turn_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    criteria: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    listing_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    total: Mapped[int] = mapped_column(Integer, nullable=False)
+    public_url: Mapped[str] = mapped_column(String(1000), nullable=False)
+    response: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "turn_key",
+            name="uq_website_search_receipts_org_turn",
+        ),
+        Index(
+            "ix_website_search_receipts_session",
+            "organization_id",
+            "hermes_session_id",
+            "created_at",
         ),
     )
 

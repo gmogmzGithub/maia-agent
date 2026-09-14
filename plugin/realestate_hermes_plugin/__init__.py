@@ -55,6 +55,9 @@ FROZEN_TOOL_SURFACE: tuple[str, ...] = (
     # ADR-0031: interpretations reach Product through a bounded, evidence-aware
     # write. Identity, qualification, assignment and stage remain Product-owned.
     "record_property_need",
+    # Public-site conversations receive one read-only, PUBLIC_SHARE-only search
+    # contract. It is the fifteenth reviewed tool, not access to the other roles.
+    "search_public_properties",
 )
 
 # The tools registered so far, as ``(name, schema, handler)``. Checkpoint 1 adds
@@ -107,6 +110,11 @@ TOOLS: tuple[tuple[str, dict[str, Any], object], ...] = (
         "record_property_need",
         schemas.RECORD_PROPERTY_NEED,
         tools.record_property_need,
+    ),
+    (
+        "search_public_properties",
+        schemas.SEARCH_PUBLIC_PROPERTIES,
+        tools.search_public_properties,
     ),
 )
 

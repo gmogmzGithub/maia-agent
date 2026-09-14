@@ -922,6 +922,11 @@ class CatalogAdministration:
                     )
             before = {"publication_state": listing.publication_state}
             listing.publication_state = command.state.value
+            if (
+                command.state is ListingPublicationState.PUBLISHED
+                and listing.first_published_at is None
+            ):
+                listing.first_published_at = moment
             after = {"publication_state": listing.publication_state}
         listing.updated_at = moment
         await self._audit(actor, operation, "CatalogListing", listing.id, {
