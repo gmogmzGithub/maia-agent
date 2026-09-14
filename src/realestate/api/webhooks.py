@@ -17,6 +17,7 @@ protects the upload page; it authenticates with Meta's signature instead
 from __future__ import annotations
 
 import logging
+import uuid
 from collections.abc import Sequence
 
 from fastapi import APIRouter, Query, Request, Response, status
@@ -29,8 +30,17 @@ from realestate.channels.whatsapp.payload import parse_webhook as parse_whatsapp
 from realestate.channels.whatsapp.signature import SIGNATURE_HEADER, is_valid_signature
 from realestate.config import get_settings
 from realestate.domain.commercial.actors import CommercialError
-from realestate.domain.inbox import InboxService
+from realestate.domain.inbox import AcceptedMessage, InboxService
 from realestate.domain.outbox import OutboxService
+from realestate.domain.clock import utc_now
+from realestate.observability.events import (
+    OperationalOutcome,
+    TelemetryEvent,
+    TelemetrySeverity,
+    TraceContext,
+    customer_trace_handle,
+)
+from realestate.observability.recording import emit
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +92,7 @@ async def receive_webhook(request: Request, response: Response) -> dict[str, obj
     duplicates = 0
     unroutable = 0
 
+    accepted_results: list[tuple[InboundCustomerMessage, AcceptedMessage]] = []
     async with request.app.state.database.session_scope() as session:
         inbox = InboxService(session)
         for message in parsed.messages:
@@ -109,6 +120,7 @@ async def receive_webhook(request: Request, response: Response) -> dict[str, obj
                 accepted += 1
                 if result.cycle_created:
                     logger.info("Opened a new Lead Engagement Cycle %s", result.cycle_id)
+            accepted_results.append((message, result))
 
         outbox = OutboxService(session)
         for update in parsed.statuses:
@@ -130,6 +142,9 @@ async def receive_webhook(request: Request, response: Response) -> dict[str, obj
                     update.phone_number_id,
                     exc.message,
                 )
+
+    for inbound, result in accepted_results:
+        await _record_inbound_trace(request, inbound, result)
 
     # Reached only when every accepted message is durably stored. An exception
     # above propagates as a 500 and Meta retries.
@@ -221,6 +236,7 @@ async def _accept_customer_messages(
     accepted = 0
     duplicates = 0
     unroutable = 0
+    accepted_results: list[tuple[InboundCustomerMessage, AcceptedMessage]] = []
     async with request.app.state.database.session_scope() as session:
         inbox = InboxService(session)
         for message in messages:
@@ -246,4 +262,52 @@ async def _accept_customer_messages(
                 accepted += 1
                 if result.cycle_created:
                     logger.info("Opened a new Lead Engagement Cycle %s", result.cycle_id)
+            accepted_results.append((message, result))
+    for inbound, result in accepted_results:
+        await _record_inbound_trace(request, inbound, result)
     return accepted, duplicates, unroutable
+
+
+async def _record_inbound_trace(
+    request: Request, message: InboundCustomerMessage, result: AcceptedMessage
+) -> None:
+    """Emit an allowlisted root event after Inbox acceptance committed.
+
+    The Inbox result is Product-created trusted state, never a provider payload.
+    """
+    organization_id = result.organization_id
+    handle: str | None = None
+    key = request.app.state.settings.telemetry_hmac_key
+    if key:
+        handle = customer_trace_handle(
+            key=key,
+            organization_id=organization_id,
+            channel=message.channel.value,
+            channel_account_id=message.channel_account_id,
+            provider_user_id=message.sender_id,
+        )
+    context = TraceContext(
+        interaction_id=result.interaction_id,
+        attempt_id=uuid.uuid4(),
+        organization_id=organization_id,
+        customer_trace_handle=handle,
+        channel=message.channel.value,
+    )
+    duplicate = result.duplicate
+    await emit(
+        request.app,
+        TelemetryEvent(
+            occurred_at=utc_now(),
+            context=context,
+            event_name="inbound.deduplicated" if duplicate else "inbound.accepted",
+            stage="inbound_acceptance",
+            outcome=(
+                OperationalOutcome.REFUSED_AS_DESIGNED
+                if duplicate
+                else OperationalOutcome.SUCCEEDED
+            ),
+            severity=TelemetrySeverity.INFO,
+            error_code="duplicate_provider_delivery" if duplicate else None,
+            error_type="ProviderDelivery" if duplicate else None,
+        ),
+    )

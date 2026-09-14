@@ -942,6 +942,69 @@ credential to provision, configure, entitle and measure Brokerage Organizations,
 and refused by every surface that reads a Brokerage Organization's records.
 _Avoid_: Organization Administrator, superadmin, support engineer with data access
 
+**Operator-Local Telemetry**:
+Redacted technical evidence that lets the Platform Operator diagnose Maia's own
+runtime without exposing a Contact's messages, identities, documents or credentials.
+_Avoid_: Audit Event, Inbox, Outbox, customer-data warehouse, shared monitoring feed
+
+**Production Observability Contract**:
+The stable, privacy-safe event vocabulary and correlation rules that Maia carries
+from Sandbox into every deployment environment, independent of any log viewer.
+_Avoid_: Sandbox-only debugging, vendor dashboard, raw application logs
+
+**Interaction Trace**:
+The linked technical account of one accepted customer event, identified by one
+Interaction ID and its individual delivery, processing and side-effect attempts.
+_Avoid_: Conversation, provider retry, Audit Event, raw request log
+
+**Operational Trace Ledger**:
+A bounded, redacted local record of an Interaction Trace's lifecycle milestones
+and failures, kept for diagnosis without becoming a copy of customer records.
+_Avoid_: Inbox, Outbox, Audit Event, general log archive, customer timeline
+
+**Operational Outcome**:
+The classified technical result of one trace stage: succeeded, refused as
+designed, deferred for retry, retryable failure, terminal failure or unknown
+external outcome.
+_Avoid_: HTTP status alone, exception text, customer-facing error, incident
+
+**Trace Lookup**:
+The protected internal view of a redacted Interaction Trace, including its
+attempts, outcomes, timings and safe record references.
+_Avoid_: Customer search, conversation viewer, raw log access, support grant
+
+**Trace Index**:
+The newest-first, technical-only entry point to Trace Lookup, filterable by time,
+channel, stage, Operational Outcome and Brokerage Organization but never by
+customer-derived content or identity.
+_Avoid_: Contact search, provider-payload browser, customer timeline
+
+**Operational Metric**:
+An aggregate count or duration measurement of Maia's runtime stages, partitioned
+only by bounded technical labels and never by an Interaction Trace or customer.
+_Avoid_: Trace Lookup, analytics event, per-customer monitoring, log line
+
+**Telemetry Degradation**:
+The diagnosable state in which Maia cannot fully record or aggregate operational
+telemetry while its customer-facing dependencies remain ready to serve work.
+_Avoid_: Product outage, customer-operation refusal, silent monitoring failure
+
+**Product-Minted Trace Context**:
+The Product-owned correlation context it derives from a Hermes-issued session
+and durable trusted binding for one Interaction Trace. A typed tool never
+supplies its own interaction identity.
+_Avoid_: Customer header, model-provided ID, provider identifier, authority token
+
+**Telemetry Event Envelope**:
+The versioned, redacted common fields carried by every operational log and trace
+milestone so one Interaction Trace has the same meaning in every environment.
+_Avoid_: Ad-hoc log message, raw exception, provider payload, metric label set
+
+**Customer Trace Handle**:
+A stable, secret-derived, organization-scoped pseudonym for one channel identity
+that links its Interaction Traces without revealing a phone number or identity.
+_Avoid_: Phone number, Contact name, global customer ID, cross-organization key
+
 **Provisioning Run**:
 One named, resumable, individually reversible sequence of steps that brings a
 Brokerage Organization into existence; the Organization is not operable until the

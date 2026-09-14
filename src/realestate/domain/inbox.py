@@ -111,6 +111,8 @@ def _requeue(message: InboxMessage, now: datetime) -> None:
 @dataclass(frozen=True)
 class AcceptedMessage:
     inbox_id: uuid.UUID
+    organization_id: uuid.UUID
+    interaction_id: uuid.UUID
     conversation_id: uuid.UUID
     cycle_id: uuid.UUID
     lead_id: uuid.UUID
@@ -162,7 +164,9 @@ class InboxService:
 
     # -- Acceptance (API path) --------------------------------------------
 
-    async def accept(self, message: InboundCustomerMessage) -> AcceptedMessage:
+    async def accept(
+        self, message: InboundCustomerMessage, *, interaction_id: uuid.UUID | None = None
+    ) -> AcceptedMessage:
         """Persist one authenticated inbound message idempotently.
 
         A duplicate Meta delivery resolves to the existing record and creates no
@@ -203,6 +207,8 @@ class InboxService:
             # fields no caller reads for a duplicate.
             return AcceptedMessage(
                 inbox_id=existing.id,
+                organization_id=organization_id,
+                interaction_id=existing.interaction_id or interaction_id or uuid.uuid4(),
                 conversation_id=conversation.id,
                 cycle_id=conversation.cycle_id,
                 lead_id=conversation.lead_id,
@@ -219,6 +225,7 @@ class InboxService:
 
         row = InboxMessage(
             organization_id=organization_id,
+            interaction_id=interaction_id or uuid.uuid4(),
             conversation_id=conversation.id,
             channel=message.channel.value,
             provider_message_id=message.provider_message_id,
@@ -319,8 +326,11 @@ class InboxService:
             await self._session.rollback()
             return await self.accept(message)
 
+        assert row.interaction_id is not None
         return AcceptedMessage(
             inbox_id=row.id,
+            organization_id=organization_id,
+            interaction_id=row.interaction_id,
             conversation_id=conversation.id,
             cycle_id=cycle.id,
             lead_id=lead.id,

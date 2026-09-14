@@ -31,10 +31,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Header, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Header, Query, Request, Response, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 
 from realestate.api.operator import require_administrator, shell
 from realestate.api.ui import escape, local, table
@@ -45,6 +46,7 @@ from realestate.db.models import (
     EntitlementState,
     IntegrationProvider,
     RetentionBasis,
+    OperationalTraceEvent,
 )
 from realestate.domain.commercial.actors import Actor, CommercialError
 from realestate.domain.audit import record_audit
@@ -138,6 +140,26 @@ router = APIRouter(
 
 def _json(value: object, *, status_code: int = 200) -> JSONResponse:
     return JSONResponse(jsonable_encoder(value), status_code=status_code)
+
+
+def _trace_row(row: OperationalTraceEvent) -> dict[str, object]:
+    """The fixed, redacted shape a Platform Operator may inspect."""
+    return {
+        "interaction_id": str(row.interaction_id),
+        "attempt_id": str(row.attempt_id),
+        "organization_id": str(row.organization_id),
+        "customer_trace_handle": row.customer_trace_handle,
+        "channel": row.channel,
+        "occurred_at": row.occurred_at.isoformat(),
+        "event_name": row.event_name,
+        "stage": row.stage,
+        "outcome": row.outcome,
+        "severity": row.severity,
+        "duration_ms": row.duration_ms,
+        "error_code": row.error_code,
+        "error_type": row.error_type,
+        "error_fingerprint": row.error_fingerprint,
+    }
 
 
 def _refusal(exc: CommercialError) -> JSONResponse:
@@ -268,6 +290,62 @@ class ImportBody(BaseModel):
 
 
 # -- Organizations ------------------------------------------------------------
+
+
+@router.get("/telemetry/traces")
+async def trace_index(
+    request: Request,
+    organization_id: uuid.UUID | None = None,
+    channel: str | None = Query(default=None, max_length=32),
+    outcome: str | None = Query(default=None, max_length=40),
+    stage: str | None = Query(default=None, max_length=60),
+    customer_trace_handle: str | None = Query(default=None, pattern=r"^cth_[0-9a-f]{20}$"),
+    limit: int = Query(default=50, ge=1, le=100),
+) -> JSONResponse:
+    """Newest-first technical Trace Index; no customer-derived search fields."""
+    statement = select(OperationalTraceEvent).order_by(
+        OperationalTraceEvent.occurred_at.desc(), OperationalTraceEvent.id.desc()
+    )
+    if organization_id is not None:
+        statement = statement.where(OperationalTraceEvent.organization_id == organization_id)
+    if channel is not None:
+        statement = statement.where(OperationalTraceEvent.channel == channel)
+    if outcome is not None:
+        statement = statement.where(OperationalTraceEvent.outcome == outcome)
+    if stage is not None:
+        statement = statement.where(OperationalTraceEvent.stage == stage)
+    if customer_trace_handle is not None:
+        statement = statement.where(
+            OperationalTraceEvent.customer_trace_handle == customer_trace_handle
+        )
+    async with request.app.state.database.session_scope() as session:
+        rows = list((await session.scalars(statement.limit(limit))).all())
+    return _json({"traces": [_trace_row(row) for row in rows]})
+
+
+@router.get("/telemetry/traces/{interaction_id}")
+async def trace_lookup(request: Request, interaction_id: uuid.UUID) -> JSONResponse:
+    """One redacted Interaction Trace, in its chronological execution order."""
+    async with request.app.state.database.session_scope() as session:
+        rows = list(
+            (
+                await session.scalars(
+                    select(OperationalTraceEvent)
+                    .where(OperationalTraceEvent.interaction_id == interaction_id)
+                    .order_by(OperationalTraceEvent.occurred_at, OperationalTraceEvent.id)
+                )
+            ).all()
+        )
+    return _json({"interaction_id": str(interaction_id), "events": [_trace_row(row) for row in rows]})
+
+
+@router.get("/telemetry/metrics")
+async def telemetry_metrics(request: Request) -> Response:
+    """Protected Prometheus-compatible aggregates with bounded labels only."""
+    return Response(
+        request.app.state.operational_metrics.render_prometheus(),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
 
 
 @router.get("/organizations")

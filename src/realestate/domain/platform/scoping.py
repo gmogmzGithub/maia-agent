@@ -144,6 +144,10 @@ SCOPES: tuple[TableScope, ...] = (
     # ``actor_type = 'Platform'``. The export therefore reads it exactly like
     # every other Organization table and the platform rows simply do not match.
     _org("audit_events"),
+    # Redacted technical evidence, not conversation content and not an audit
+    # trail. Its own bounded retention removes it independently of the
+    # Organization's business-history policy (ADR-0064).
+    _org("operational_trace_events"),
     # ---- Stage 2/3: the commercial system of record -----------------------
     _org("organization_members"),
     _org("contacts"),

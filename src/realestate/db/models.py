@@ -476,6 +476,52 @@ class AuditEvent(Base):
     )
 
 
+class OperationalTraceEvent(Base):
+    """One redacted lifecycle fact from an Interaction Trace.
+
+    This is intentionally not an AuditEvent and not a customer-message table.
+    It contains only the fixed telemetry envelope, expires after its bounded
+    operational lifetime, and is safe for a Platform Operator to inspect.
+    """
+
+    __tablename__ = "operational_trace_events"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = _organization_fk(ondelete="RESTRICT")
+    interaction_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    attempt_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    customer_trace_handle: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    channel: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    event_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    stage: Mapped[str] = mapped_column(String(60), nullable=False)
+    outcome: Mapped[str] = mapped_column(String(40), nullable=False)
+    severity: Mapped[str] = mapped_column(String(12), nullable=False)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    error_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    error_fingerprint: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint("expires_at >= occurred_at", name="ck_trace_events_expiry"),
+        CheckConstraint("duration_ms IS NULL OR duration_ms >= 0", name="ck_trace_events_duration"),
+        Index(
+            "ix_trace_events_interaction",
+            "organization_id",
+            "interaction_id",
+            "occurred_at",
+        ),
+        Index(
+            "ix_trace_events_customer",
+            "organization_id",
+            "customer_trace_handle",
+            "occurred_at",
+        ),
+        Index("ix_trace_events_expiry", "expires_at"),
+    )
+
+
 class Lead(Base):
     """One provider-authenticated customer Channel Identity.
 
@@ -750,6 +796,11 @@ class InboxMessage(Base):
     __tablename__ = "inbox_messages"
 
     id: Mapped[uuid.UUID] = _uuid_pk()
+    # The Product-minted root of the operational trace for this accepted
+    # provider event. Nullable only for pre-ADR-0064 historical rows.
+    interaction_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
     # Stage 9: the Organization this row belongs to, carried explicitly rather
     # than reached through a join, so a query that forgets the parent cannot
     # answer with another Organization's work (ADR-0050). The composite foreign
@@ -822,6 +873,12 @@ class InboxMessage(Base):
             name="fk_inbox_org_conversation",
         ),
         UniqueConstraint("organization_id", "id", name="uq_inbox_org_id"),
+        Index(
+            "ix_inbox_messages_interaction",
+            "organization_id",
+            "interaction_id",
+            postgresql_where=sql_text("interaction_id IS NOT NULL"),
+        ),
         # The claim query: pending messages of one Conversation in arrival order.
         Index("ix_inbox_messages_lane", "conversation_id", "status", "sent_at"),
         # The retention sweep looks for conversations that still have content.

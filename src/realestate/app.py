@@ -65,6 +65,11 @@ from realestate.domain.properties import ArtifactStore, CatalogStore
 from realestate.hermes import HermesClient
 from realestate.hosts import host_of as site_host_of
 from realestate.infrastructure.media_storage import media_storage_from_settings
+from realestate.observability.ledger import TraceLedger
+from realestate.observability.metrics import OperationalMetrics
+from realestate.observability.recording import TelemetryEmitter
+from realestate.observability.logging import configure_product_logging
+from realestate.observability.plugin import record_plugin_tool_call
 from realestate.worker.broker import OrganizationBrokerNotifiers
 from realestate.worker.external_inventory import ExternalInventoryCleanupWorker
 from realestate.worker.analytics import AnalyticsWorker
@@ -75,6 +80,7 @@ from realestate.worker.market_intelligence import MarketIntelligenceWorker
 from realestate.worker.operations import OrganizationOperationsWorkers
 from realestate.worker.platform import PlatformWorker
 from realestate.worker.telegram import OrganizationTelegramAdminWorkers
+from realestate.worker.telemetry import TelemetryRetentionWorker
 from realestate.worker.upkeep import CommercialUpkeepWorker
 from realestate.worker.whatsapp import WhatsAppWorker
 from realestate.worker.website import WebsiteConversationWorker
@@ -240,6 +246,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Assignment Queue, which is worse than refusing to start.
     app.state.directory_plan = settings.directory_plan
     app.state.database = Database(settings.database_url)
+    app.state.trace_ledger = TraceLedger(
+        app.state.database, retention_days=settings.telemetry_retention_days
+    )
+    app.state.operational_metrics = OperationalMetrics()
+    app.state.telemetry = TelemetryEmitter(
+        app.state.trace_ledger, app.state.operational_metrics
+    )
+    app.state.telemetry_retention_worker = TelemetryRetentionWorker(
+        app.state.trace_ledger,
+        interval_seconds=settings.telemetry_sweep_seconds,
+        batch_size=settings.telemetry_sweep_batch_size,
+    )
     app.state.artifacts = ArtifactStore(Path(settings.artifact_root))
     app.state.property_catalog = CatalogStore(Path(settings.property_catalog_root))
     app.state.media_storage = media_storage_from_settings(settings)
@@ -353,6 +371,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         messaging=app.state.meta_messaging_clients,
         sales_profile=settings.sales_profile,
         schedule=app.state.appointment_policies,
+        telemetry=app.state.telemetry,
+        telemetry_hmac_key=settings.telemetry_hmac_key,
         max_concurrent=settings.max_concurrent_conversations,
     )
     app.state.website_worker = WebsiteConversationWorker(
@@ -432,6 +452,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             ("analytics and sponsorship", app.state.analytics_worker.tick),
             ("market intelligence projection", app.state.market_intelligence_worker.tick),
             ("platform upkeep", app.state.platform_worker.tick),
+            ("telemetry retention", app.state.telemetry_retention_worker.tick),
             ("human operations", app.state.operations_worker.tick),
             ("administrative", app.state.admin_worker.tick),
             ("broker notifications", app.state.broker_notifier.tick),
@@ -489,21 +510,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # uvicorn configures its own loggers but leaves the root logger without a
     # handler, which would hide the product's startup report below WARNING.
     settings = settings or get_settings()
-    if not logging.getLogger("realestate").handlers:
-        handler = logging.StreamHandler()
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s")
-        )
-        product_logger = logging.getLogger("realestate")
-        product_logger.addHandler(handler)
-        product_logger.propagate = False
-    logging.getLogger("realestate").setLevel(_log_level(settings.log_level))
+    configure_product_logging(_log_level(settings.log_level))
 
     app = FastAPI(
         title="Real Estate Lead Agent — Product Harness",
         version="0.1.0",
         lifespan=lifespan,
     )
+
+    @app.middleware("http")
+    async def instrument_plugin_tools(request, call_next):  # type: ignore[no-untyped-def]
+        if (
+            request.url.path.startswith("/internal/plugin/tools/")
+            and getattr(request.app.state, "telemetry", None) is not None
+        ):
+            return await record_plugin_tool_call(request, call_next)
+        return await call_next(request)
+
     # CORS stays disabled (P-051): no browser origin may reach this application.
     app.state.settings = settings
     # The CRM reuses the reviewed, self-hosted public typography. Serving only
