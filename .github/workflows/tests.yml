@@ -89,9 +89,14 @@ jobs:
             tests/integration/test_token_free_system_flow.py \
             tests/migrations
 
-      - name: Copy test reports
+      - name: Copy test report when pytest created it
         if: always()
-        run: docker compose cp product:/tmp/token-free-junit.xml token-free-junit.xml
+        run: |
+          if docker compose exec -T product test -f /tmp/token-free-junit.xml; then
+            docker compose cp product:/tmp/token-free-junit.xml token-free-junit.xml
+          else
+            echo "::notice::JUnit report unavailable because pytest did not reach report creation."
+          fi
 
       # A skip means a required service never came up, so an integration
       # scenario that proves nothing would otherwise report green.
@@ -179,8 +184,17 @@ jobs:
       - name: Copy test reports
         if: always()
         run: |
-          docker compose cp product:/tmp/token-free-junit.xml token-free-junit.xml
-          docker compose cp product:/tmp/token-free-coverage.xml token-free-coverage.xml
+          copy_if_present() {
+            source="$1"
+            destination="$2"
+            if docker compose exec -T product test -f "$source"; then
+              docker compose cp "product:$source" "$destination"
+            else
+              echo "::notice::Report unavailable because pytest did not reach report creation: $source"
+            fi
+          }
+          copy_if_present /tmp/token-free-junit.xml token-free-junit.xml
+          copy_if_present /tmp/token-free-coverage.xml token-free-coverage.xml
 
       - name: Refuse silently skipped scenarios
         run: |

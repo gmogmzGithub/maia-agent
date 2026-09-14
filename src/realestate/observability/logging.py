@@ -48,7 +48,8 @@ class PrivacyFilter(logging.Filter):
                 # A successful probe is not an operator event; preserving it
                 # would bury the lifecycle and failure evidence this logger is
                 # for. Failed probes remain visible.
-                if method == "GET" and safe_path == "/live" and int(status_code) < 400:
+                successful_status = str(status_code).startswith(("1", "2", "3"))
+                if method == "GET" and safe_path == "/live" and successful_status:
                     return False
                 record.args = ("<redacted-client>", method, safe_path, version, status_code)
                 return True
