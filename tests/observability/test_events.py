@@ -139,3 +139,19 @@ def test_successful_liveness_probe_is_not_an_access_log_event() -> None:
     assert not privacy.filter(probe)
     assert privacy.filter(failure)
     assert failure.args[0] == "<redacted-client>"
+
+
+def test_successful_access_logs_are_debug_events() -> None:
+    record = logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        __file__,
+        1,
+        '%s - "%s %s HTTP/%s" %d',
+        ("127.0.0.1:8080", "GET", "/media/image", "1.1", 304),
+        None,
+    )
+
+    assert PrivacyFilter().filter(record)
+    assert record.levelno == logging.DEBUG
+    assert record.levelname == "DEBUG"

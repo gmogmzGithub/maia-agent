@@ -51,6 +51,12 @@ class PrivacyFilter(logging.Filter):
                 successful_status = str(status_code).startswith(("1", "2", "3"))
                 if method == "GET" and safe_path == "/live" and successful_status:
                     return False
+                # Routine HTTP traffic is useful while debugging, but it is
+                # not an operator event. Keep failed requests at INFO so the
+                # pipeline still receives actionable failures.
+                if successful_status:
+                    record.levelno = logging.DEBUG
+                    record.levelname = logging.getLevelName(logging.DEBUG)
                 record.args = ("<redacted-client>", method, safe_path, version, status_code)
                 return True
         exception_type: str | None = None
@@ -112,5 +118,7 @@ def configure_product_logging(level: int) -> None:
     for name in ("uvicorn.access", "uvicorn.error"):
         logger = logging.getLogger(name)
         logger.addFilter(privacy)
+        logger.setLevel(logging.DEBUG)
         for configured_handler in logger.handlers:
             configured_handler.addFilter(privacy)
+            configured_handler.setLevel(level)
