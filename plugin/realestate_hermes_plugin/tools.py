@@ -304,6 +304,30 @@ def search_inventory(args: dict[str, Any], **kwargs: Any) -> str:
     return _forward("search_inventory", body, kwargs)
 
 
+def search_public_properties(args: dict[str, Any], **kwargs: Any) -> str:
+    turn_key = _text(args, "turn_key")
+    if turn_key is None:
+        return _result(
+            {"result": "invalid", "detail": "The Product turn key is required."}
+        )
+    body: dict[str, Any] = {"turn_key": turn_key}
+    for key in (
+        "operation",
+        "zone",
+        "property_type",
+        "minimum_price",
+        "maximum_price",
+        "minimum_bedrooms",
+        "minimum_bathrooms",
+        "minimum_parking_spaces",
+        "minimum_construction_m2",
+        "sort",
+    ):
+        if args.get(key) is not None:
+            body[key] = args[key]
+    return _forward("search_public_properties", body, kwargs)
+
+
 def revalidate_external_listing(args: dict[str, Any], **kwargs: Any) -> str:
     reference = _text(args, "reference")
     action = args.get("intended_action")

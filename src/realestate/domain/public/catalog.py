@@ -28,6 +28,10 @@ class SearchQuery:
     property_type: str | None = None
     minimum_price: Decimal | None = None
     maximum_price: Decimal | None = None
+    minimum_bedrooms: int | None = None
+    minimum_bathrooms: Decimal | None = None
+    minimum_parking_spaces: int | None = None
+    minimum_construction_m2: Decimal | None = None
     sort: str = "relevance"
     page: int = 1
     page_size: int = 12
@@ -52,12 +56,24 @@ class SearchQuery:
             and self.minimum_price > self.maximum_price
         ):
             raise ValueError("El precio mínimo no puede superar el máximo.")
+        for value, label in (
+            (self.minimum_bedrooms, "recámaras"),
+            (self.minimum_bathrooms, "baños"),
+            (self.minimum_parking_spaces, "estacionamientos"),
+            (self.minimum_construction_m2, "superficie de construcción"),
+        ):
+            if value is not None and value < 0:
+                raise ValueError(f"El mínimo de {label} no puede ser negativo.")
         return SearchQuery(
             operation=operation,
             zone=zone,
             property_type=property_type,
             minimum_price=self.minimum_price,
             maximum_price=self.maximum_price,
+            minimum_bedrooms=self.minimum_bedrooms,
+            minimum_bathrooms=self.minimum_bathrooms,
+            minimum_parking_spaces=self.minimum_parking_spaces,
+            minimum_construction_m2=self.minimum_construction_m2,
             sort=self.sort,
             page=max(1, self.page),
             page_size=min(24, max(1, self.page_size)),
@@ -103,6 +119,7 @@ class PublicListingView:
     technical_sheet_url: str
     offers: tuple[PublicOfferView, ...]
     media: tuple[PublicMediaView, ...]
+    first_published_at: datetime | None
     updated_at: datetime | None
 
     @property
@@ -157,6 +174,7 @@ def listing_view(listing: AuthorizedListing) -> PublicListingView:
             )
             for item in listing.media
         ),
+        first_published_at=listing.first_published_at,
         updated_at=listing.freshness_checked_at,
     )
 
@@ -226,15 +244,38 @@ class PublicCatalog:
         ):
             return False
         relevant_prices = selected or tuple(price for _, price in prices)
-        if query.minimum_price is not None and not any(
-            price >= query.minimum_price for price in relevant_prices
+        if (query.minimum_price is not None or query.maximum_price is not None) and not any(
+            (query.minimum_price is None or price >= query.minimum_price)
+            and (query.maximum_price is None or price <= query.maximum_price)
+            for price in relevant_prices
         ):
             return False
-        if query.maximum_price is not None and not any(
-            price <= query.maximum_price for price in relevant_prices
+        for key, minimum in (
+            ("bedrooms", query.minimum_bedrooms),
+            ("bathrooms", query.minimum_bathrooms),
+            ("parking_spaces", query.minimum_parking_spaces),
+            ("construction_m2", query.minimum_construction_m2),
         ):
-            return False
+            if minimum is not None:
+                actual = PublicCatalog._numeric_fact(listing.physical_facts, key)
+                if actual is None or actual < minimum:
+                    return False
         return True
+
+    @staticmethod
+    def _numeric_fact(facts: dict[str, Any], key: str) -> Decimal | None:
+        if key == "bathrooms" and facts.get(key) is None:
+            full = PublicCatalog._numeric_fact(facts, "full_bathrooms")
+            half = PublicCatalog._numeric_fact(facts, "half_bathrooms")
+            if full is not None:
+                return full + (half or Decimal("0")) / Decimal("2")
+        value = facts.get(key)
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            return Decimal(str(value))
+        except (ValueError, ArithmeticError):
+            return None
 
     @staticmethod
     def _deduplicate(listings: list[AuthorizedListing]) -> list[AuthorizedListing]:
@@ -271,7 +312,7 @@ class PublicCatalog:
             return sorted(
                 listings,
                 key=lambda item: (
-                    item.freshness_checked_at or datetime.min.replace(tzinfo=UTC),
+                    item.first_published_at or datetime.min.replace(tzinfo=UTC),
                     item.listing_key,
                 ),
                 reverse=True,

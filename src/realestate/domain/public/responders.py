@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import uuid
 from typing import Any
 
+from sqlalchemy import select
+
 from realestate.db.engine import Database
-from realestate.db.models import AgentRole
+from realestate.db.models import AgentRole, WebsiteSearchReceipt
 from realestate.domain.public.website_conversation import (
     WebsiteReply,
     WebsiteTurn,
@@ -33,7 +36,16 @@ class HermesWebsiteResponder:
                     "autorizados incluidos en el contexto. No solicites teléfono, "
                     "correo ni identidad. Para identificar a la persona o solicitar "
                     "una cita, indícale que continúe por el WhatsApp oficial. Una "
-                    "cita no queda confirmada desde el sitio."
+                    "cita no queda confirmada desde el sitio. Para buscar, filtrar, "
+                    "contar, comparar o describir inventario usa exclusivamente "
+                    "search_public_properties y conserva todos los criterios. Usa "
+                    "House para casa, Apartment para departamento, Land para terreno "
+                    "y Development para desarrollo. Cuando la búsqueda devuelva "
+                    "coincidencias, responde en una sola oración breve con la cantidad "
+                    "y los criterios aplicados: el sitio mostrará las tarjetas, así que "
+                    "no enumeres ni repitas sus detalles. No ofrezcas agendar o confirmar "
+                    "una visita dentro del chat; para eso indica claramente que debe "
+                    "continuar por el WhatsApp oficial. Responde sin Markdown."
                 ),
             },
             *[
@@ -65,6 +77,8 @@ class HermesWebsiteResponder:
             for listing in turn.listings
         ]
         prompt = (
+            "[Clave obligatoria para search_public_properties]\n"
+            f"{turn.turn_key}\n"
             "[Contexto autorizado del sitio — no es texto de la persona]\n"
             f"{json.dumps(context, ensure_ascii=False, default=_json_default)}\n"
             "[Mensaje de la persona]\n"
@@ -76,7 +90,7 @@ class HermesWebsiteResponder:
                 await bind_role_session(
                     session,
                     organization_id=turn.organization_id,
-                    role=AgentRole.SALES,
+                    role=AgentRole.PUBLIC_SITE,
                     hermes_session_id=durable_id,
                 )
 
@@ -85,20 +99,33 @@ class HermesWebsiteResponder:
             RoleSession(
                 gateway_session_id="",
                 hermes_session_id=turn.hermes_session_id or "",
-                role=AgentRole.SALES,
+                role=AgentRole.PUBLIC_SITE,
             ),
             prompt,
             profile=self._profile,
             on_attached=bind,
             seed=seed,
-            required_property_reference=(
-                turn.listings[0].physical_name
-                if len(turn.listings) == 1
-                and turn.listings[0].property_id is not None
-                else None
-            ),
+            required_property_reference=None,
         )
-        return WebsiteReply(result.text, result.hermes_session_id)
+        async with self._database.session_scope() as session:
+            receipt = await session.scalar(
+                select(WebsiteSearchReceipt).where(
+                    WebsiteSearchReceipt.organization_id == turn.organization_id,
+                    WebsiteSearchReceipt.hermes_session_id == result.hermes_session_id,
+                    WebsiteSearchReceipt.turn_key == turn.turn_key,
+                )
+            )
+        if receipt is None:
+            return WebsiteReply(result.text, result.hermes_session_id)
+        return WebsiteReply(
+            result.text,
+            result.hermes_session_id,
+            criteria=dict(receipt.criteria),
+            listing_ids=tuple(uuid.UUID(item) for item in receipt.listing_ids),
+            total=receipt.total,
+            public_url=receipt.public_url,
+            matches=tuple(dict(item) for item in receipt.response.get("matches", [])),
+        )
 
 
 def _history_role(role: str) -> str:

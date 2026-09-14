@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import io
 import uuid
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 import httpx
@@ -12,7 +14,7 @@ from PIL import Image
 from starlette.requests import Request
 
 from realestate.config import Settings
-from realestate.domain.public.catalog import SearchQuery
+from realestate.domain.public.catalog import PublicCatalog, SearchQuery
 from realestate.domain.public.responders import _json_default
 from realestate.site.app import (
     _absolute_schema,
@@ -27,6 +29,7 @@ from realestate.site.templates import (
     facts_table,
     price,
     report_page,
+    recency_label,
     responsive_image,
     saved_item,
     saved_page,
@@ -34,6 +37,37 @@ from realestate.site.templates import (
     search_page,
     shared_page,
 )
+
+
+@pytest.mark.parametrize(
+    ("elapsed", "expected"),
+    [
+        (timedelta(hours=47, minutes=59), "Nueva"),
+        (timedelta(hours=48), "2 días"),
+        (timedelta(hours=72), "3 días"),
+        (timedelta(hours=168), "7 días"),
+        (timedelta(hours=192), ""),
+    ],
+)
+def test_recency_label_uses_first_publication_boundaries(
+    elapsed: timedelta, expected: str
+) -> None:
+    now = datetime(2026, 9, 13, 20, 0, tzinfo=UTC)
+
+    assert recency_label(now - elapsed, now=now) == expected
+
+
+def test_recency_label_hides_unknown_or_future_publication() -> None:
+    now = datetime(2026, 9, 13, 20, 0, tzinfo=UTC)
+
+    assert recency_label(None, now=now) == ""
+    assert recency_label(now + timedelta(minutes=1), now=now) == ""
+
+
+def test_public_bathroom_filter_understands_document_bathroom_fields() -> None:
+    assert PublicCatalog._numeric_fact(
+        {"full_bathrooms": 2, "half_bathrooms": 1}, "bathrooms"
+    ) == Decimal("2.5")
 
 
 class StubHttpClient:
@@ -263,6 +297,10 @@ def test_template_empty_and_fallback_states_remain_actionable() -> None:
         (SearchQuery(minimum_price=-1), "mínimo"),
         (SearchQuery(maximum_price=-1), "máximo"),
         (SearchQuery(minimum_price=2, maximum_price=1), "superar"),
+        (SearchQuery(minimum_bedrooms=-1), "recámaras"),
+        (SearchQuery(minimum_bathrooms=-1), "baños"),
+        (SearchQuery(minimum_parking_spaces=-1), "estacionamientos"),
+        (SearchQuery(minimum_construction_m2=-1), "superficie"),
     ],
 )
 def test_search_query_rejects_every_unsupported_filter(
@@ -277,10 +315,18 @@ def test_search_query_clamps_browser_pagination() -> None:
         operation=" Sale ",
         zone=" Zapopan ",
         property_type=" House ",
+        minimum_bedrooms=3,
+        minimum_bathrooms=2,
+        minimum_parking_spaces=1,
+        minimum_construction_m2=120,
         page=0,
         page_size=200,
     ).normalized()
     assert normalized.operation == "Sale"
     assert normalized.zone == "Zapopan"
     assert normalized.property_type == "House"
+    assert normalized.minimum_bedrooms == 3
+    assert normalized.minimum_bathrooms == 2
+    assert normalized.minimum_parking_spaces == 1
+    assert normalized.minimum_construction_m2 == 120
     assert normalized.page == 1 and normalized.page_size == 24

@@ -49,18 +49,21 @@ STAGE_TEN_ADDITIONS = {"get_transaction_journey"}
 
 ADR_0031_ADDITIONS = {"record_property_need"}
 
+PUBLIC_SITE_ADDITIONS = {"search_public_properties"}
+
 EXPECTED_FROZEN_SURFACE = (
     STAGE_ZERO_SURFACE
     | STAGE_THREE_ADDITIONS
     | STAGE_SIX_ADDITIONS
     | STAGE_TEN_ADDITIONS
     | ADR_0031_ADDITIONS
+    | PUBLIC_SITE_ADDITIONS
 )
 
 
 def test_the_frozen_surface_is_exactly_the_reviewed_contracts() -> None:
     assert set(plugin.FROZEN_TOOL_SURFACE) == EXPECTED_FROZEN_SURFACE
-    assert len(plugin.FROZEN_TOOL_SURFACE) == 14
+    assert len(plugin.FROZEN_TOOL_SURFACE) == 15
 
 
 def test_stage_three_added_exactly_two_names() -> None:
@@ -70,6 +73,7 @@ def test_stage_three_added_exactly_two_names() -> None:
         | STAGE_SIX_ADDITIONS
         | STAGE_TEN_ADDITIONS
         | ADR_0031_ADDITIONS
+        | PUBLIC_SITE_ADDITIONS
     )
 
 
@@ -93,6 +97,7 @@ def test_every_frozen_tool_is_registered() -> None:
         "revalidate_external_listing",
         "get_transaction_journey",
         "record_property_need",
+        "search_public_properties",
     )
 
 
@@ -111,6 +116,15 @@ def test_property_need_write_accepts_only_the_reviewed_criteria_and_sources() ->
     ]
     assert item["additionalProperties"] is False
     assert parameters["additionalProperties"] is False
+
+
+def test_public_search_uses_only_canonical_property_types() -> None:
+    from realestate_hermes_plugin import schemas
+
+    property_type = schemas.SEARCH_PUBLIC_PROPERTIES["parameters"]["properties"][
+        "property_type"
+    ]
+    assert property_type["enum"] == ["House", "Apartment", "Land", "Development"]
 
 
 def test_stage_six_search_is_service_area_bounded_and_revalidation_names_the_use() -> (

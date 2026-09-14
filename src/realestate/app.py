@@ -77,6 +77,7 @@ from realestate.worker.platform import PlatformWorker
 from realestate.worker.telegram import OrganizationTelegramAdminWorkers
 from realestate.worker.upkeep import CommercialUpkeepWorker
 from realestate.worker.whatsapp import WhatsAppWorker
+from realestate.worker.website import WebsiteConversationWorker
 
 logger = logging.getLogger(__name__)
 
@@ -354,6 +355,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         schedule=app.state.appointment_policies,
         max_concurrent=settings.max_concurrent_conversations,
     )
+    app.state.website_worker = WebsiteConversationWorker(
+        database=app.state.database,
+        hermes=app.state.hermes,
+        profile=settings.website_profile,
+    )
     app.state.broker_notifier = OrganizationBrokerNotifiers(
         database=app.state.database,
         clients=app.state.telegram_clients,
@@ -415,6 +421,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         for name, responsibility in (
             ("recovery", recover),
             ("lead", app.state.worker.tick),
+            ("website conversations", app.state.website_worker.tick),
             ("lead follow-ups", app.state.followup_worker.tick),
             ("commercial upkeep", app.state.upkeep_worker.tick),
             (

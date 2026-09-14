@@ -183,6 +183,8 @@ SCOPES: tuple[TableScope, ...] = (
     _org("shared_selections", content=True, withheld=("access_token_hash",)),
     _org("website_conversations", content=True),
     _org("website_messages", content=True),
+    _org("website_turn_requests", content=True),
+    _org("website_search_receipts", content=True),
     _org("channel_handoffs", content=True, withheld=("token_hash",)),
     _org("public_analytics_events"),
     # ---- Stage 6: external inventory -------------------------------------

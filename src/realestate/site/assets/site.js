@@ -54,6 +54,23 @@
     });
   });
 
+  document.querySelectorAll("[data-property-type-filter]").forEach((select) => {
+    const form = select.closest("form");
+    const residentialFilters = [...(form?.querySelectorAll("[data-residential-filter]") || [])];
+    const updateResidentialFilters = () => {
+      const hidden = select.value === "Land";
+      residentialFilters.forEach((label) => {
+        label.hidden = hidden;
+        const field = label.querySelector("input, select");
+        if (!field) return;
+        field.disabled = hidden;
+        if (hidden) field.value = "";
+      });
+    };
+    select.addEventListener("change", updateResidentialFilters);
+    updateResidentialFilters();
+  });
+
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
     setNavigation(false);
@@ -398,4 +415,304 @@
     track("GalleryOpen", "Gallery", listingId, { count: slides.length });
     update(0);
   }
+})();
+
+(() => {
+  "use strict";
+
+  const launchers = [...document.querySelectorAll("[data-ai-launcher]")];
+  const dialog = document.querySelector("[data-ai-dialog]");
+  const account = document.querySelector("[data-account-demo]");
+  const accountToggle = document.querySelector("[data-account-toggle]");
+  const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
+  const prompts = [
+    "Buscar casas en Zapopan",
+    "Departamentos en renta",
+    "Propiedades con tres recámaras",
+    "Ver las propiedades más nuevas",
+    "Buscar dentro de mi presupuesto"
+  ];
+  let promptIndex = 0;
+  let promptTimer = null;
+  let lastLauncher = null;
+  let lastMessage = "";
+
+  const announce = (message) => {
+    const region = document.getElementById("live-region");
+    if (region) region.textContent = message;
+  };
+
+  const rotatePrompt = () => {
+    promptIndex = (promptIndex + 1) % prompts.length;
+    document.querySelectorAll("[data-ai-prompt]").forEach((item) => {
+      item.textContent = prompts[promptIndex];
+    });
+  };
+
+  const startRotation = () => {
+    if (reducedMotion.matches || promptTimer) return;
+    promptTimer = window.setInterval(rotatePrompt, 3600);
+  };
+
+  const stopRotation = () => {
+    if (promptTimer) window.clearInterval(promptTimer);
+    promptTimer = null;
+  };
+
+  reducedMotion.addEventListener?.("change", () => {
+    if (reducedMotion.matches) stopRotation();
+    else startRotation();
+  });
+  startRotation();
+
+  const setAccount = (open) => {
+    if (!account || !accountToggle) return;
+    account.hidden = !open;
+    accountToggle.setAttribute("aria-expanded", String(open));
+    if (open) account.querySelector("button")?.focus();
+  };
+
+  accountToggle?.addEventListener("click", () => setAccount(account?.hidden ?? true));
+  account?.querySelector("[data-account-close]")?.addEventListener("click", () => {
+    setAccount(false);
+    accountToggle?.focus();
+  });
+
+  if (!dialog) return;
+  const thread = dialog.querySelector("[data-ai-thread]");
+  const empty = dialog.querySelector("[data-ai-empty]");
+  const form = dialog.querySelector("[data-ai-form]");
+  const input = form?.querySelector("textarea");
+  const status = dialog.querySelector("[data-ai-status]");
+  const submit = form?.querySelector('button[type="submit"]');
+  const conversationActions = [...dialog.querySelectorAll("[data-ai-conversation-action]")];
+  const pageLayer = document.querySelector("[data-page-layer]");
+  const header = document.querySelector("[data-site-header]");
+
+  const setStatus = (message, error = false) => {
+    if (!status) return;
+    status.textContent = message;
+    status.hidden = !message;
+    status.classList.toggle("ai-error", error);
+  };
+
+  const setBackgroundInert = (inert) => {
+    document.body.classList.toggle("ai-open", inert);
+    if (pageLayer) pageLayer.inert = inert;
+    if (header) header.inert = inert;
+  };
+
+  const setConversationBusy = (busy) => {
+    if (submit) submit.disabled = busy;
+    conversationActions.forEach((button) => { button.disabled = busy; });
+    form?.setAttribute("aria-busy", String(busy));
+  };
+
+  const openDialog = (seed = "") => {
+    lastLauncher = document.activeElement;
+    setAccount(false);
+    stopRotation();
+    if (!dialog.open) dialog.showModal();
+    setBackgroundInert(true);
+    if (seed && input && !input.value) input.value = seed;
+    window.requestAnimationFrame(() => input?.focus());
+  };
+
+  const closeDialog = () => {
+    if (dialog.open) dialog.close();
+  };
+
+  dialog.addEventListener("close", () => {
+    setBackgroundInert(false);
+    startRotation();
+    if (lastLauncher instanceof HTMLElement) lastLauncher.focus();
+  });
+  dialog.addEventListener("click", (event) => {
+    if (event.target === dialog) closeDialog();
+  });
+
+  launchers.forEach((launcher) => {
+    launcher.addEventListener("focus", stopRotation);
+    launcher.addEventListener("click", () => openDialog(launcher.dataset.aiSeed || ""));
+  });
+  dialog.querySelector("[data-ai-close]")?.addEventListener("click", closeDialog);
+
+  dialog.querySelector("[data-ai-expand]")?.addEventListener("click", (event) => {
+    const expanded = dialog.classList.toggle("is-expanded");
+    event.currentTarget.setAttribute("aria-pressed", String(expanded));
+    event.currentTarget.setAttribute("aria-label", expanded ? "Reducir conversación" : "Expandir conversación");
+  });
+
+  const clearThread = () => {
+    thread?.querySelectorAll(".ai-message").forEach((message) => message.remove());
+    if (empty) empty.hidden = false;
+    if (input) input.value = "";
+    setStatus("");
+  };
+
+  const closeConversation = async (deleteContent) => {
+    setConversationBusy(true);
+    setStatus(deleteContent ? "Borrando conversación…" : "Iniciando una conversación nueva…");
+    try {
+      const response = await fetch(`/maia/conversacion?borrar_contenido=${deleteContent}`, {
+        method: "DELETE",
+        headers: { "Accept": "application/json" }
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || "No pudimos terminar la conversación.");
+      clearThread();
+      announce(payload.detail || "La conversación terminó.");
+      input?.focus();
+    } finally {
+      setConversationBusy(false);
+    }
+  };
+
+  dialog.querySelector("[data-ai-new]")?.addEventListener("click", async () => {
+    try { await closeConversation(false); }
+    catch (error) { setStatus(error.message, true); }
+  });
+  dialog.querySelector("[data-ai-delete]")?.addEventListener("click", async () => {
+    if (!window.confirm("¿Borrar el contenido visible de esta conversación?")) return;
+    try { await closeConversation(true); }
+    catch (error) { setStatus(error.message, true); }
+  });
+
+  const messageNode = (role, body) => {
+    const item = document.createElement("li");
+    item.className = `ai-message ai-message-${role}`;
+    const paragraph = document.createElement("p");
+    paragraph.textContent = String(body).replaceAll("**", "");
+    item.append(paragraph);
+    thread?.append(item);
+    item.scrollIntoView({ block: "nearest" });
+    return item;
+  };
+
+  const money = (offer) => {
+    if (offer?.price_amount == null) return offer?.consultation_copy || "Precio previa consulta";
+    const amount = Number(offer.price_amount);
+    const formatted = Number.isFinite(amount)
+      ? new Intl.NumberFormat("es-MX", { style: "currency", currency: offer.price_currency || "MXN", maximumFractionDigits: 0 }).format(amount)
+      : String(offer.price_amount);
+    return offer.operation === "Rental" ? `${formatted} / mes` : formatted;
+  };
+
+  const renderResults = (container, result) => {
+    const matches = Array.isArray(result.matches) ? result.matches.slice(0, 3) : [];
+    if (matches.length) {
+      const list = document.createElement("div");
+      list.className = "ai-result-list";
+      matches.forEach((match) => {
+        const card = document.createElement("a");
+        card.className = "ai-result-card";
+        card.href = `/propiedades/${encodeURIComponent(match.slug)}`;
+        if (match.cover_url) {
+          const image = document.createElement("img");
+          image.src = `${match.cover_url}?w=480`;
+          image.alt = "";
+          image.loading = "lazy";
+          card.append(image);
+        } else {
+          const placeholder = document.createElement("span");
+          placeholder.className = "image-placeholder";
+          placeholder.setAttribute("aria-hidden", "true");
+          card.append(placeholder);
+        }
+        const copy = document.createElement("span");
+        const title = document.createElement("strong");
+        title.textContent = match.title || "Propiedad";
+        const location = document.createElement("span");
+        location.textContent = match.public_location || "";
+        const price = document.createElement("span");
+        price.textContent = money((match.offers || [])[0]);
+        copy.append(title, location, price);
+        card.append(copy);
+        list.append(card);
+      });
+      container.append(list);
+    }
+    if (result.public_url && String(result.public_url).startsWith("/propiedades")) {
+      const link = document.createElement("a");
+      link.className = "ai-results-link";
+      link.href = result.public_url;
+      link.textContent = `Ver las ${result.total || 0} propiedades`;
+      container.append(link);
+    }
+    container.scrollIntoView({ block: "end" });
+  };
+
+  const poll = async (turnId) => {
+    for (let attempt = 0; attempt < 150; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 800));
+      const response = await fetch(`/maia/turnos/${encodeURIComponent(turnId)}`, { headers: { "Accept": "application/json" } });
+      const progress = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(progress.detail || "No pudimos consultar la respuesta.");
+      if (progress.status === "Complete") return progress.result || {};
+      if (progress.status === "Failed") throw new Error(progress.error_message || "No pudimos completar la respuesta.");
+    }
+    throw new Error("La respuesta está tardando más de lo esperado.");
+  };
+
+  const send = async (text) => {
+    lastMessage = text;
+    if (empty) empty.hidden = true;
+    messageNode("person", text);
+    setStatus("Maia está revisando las propiedades…");
+    setConversationBusy(true);
+    try {
+      const accepted = await fetch("/maia/turnos", {
+        method: "POST",
+        headers: { "Accept": "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ message: text, command_key: `modal-${crypto.randomUUID()}`, listing_ids: [] })
+      });
+      const payload = await accepted.json().catch(() => ({}));
+      if (!accepted.ok) throw new Error(payload.detail || "No pudimos enviar el mensaje.");
+      const result = await poll(payload.turn_id);
+      const responseNode = messageNode("maia", result.reply || "Encontré estas opciones autorizadas.");
+      renderResults(responseNode, result);
+      setStatus("");
+    } catch (error) {
+      setStatus(error.message, true);
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "ai-retry";
+      retry.textContent = "Reintentar";
+      retry.addEventListener("click", () => {
+        retry.remove();
+        send(lastMessage);
+      }, { once: true });
+      status?.append(retry);
+    } finally {
+      setConversationBusy(false);
+      input?.focus();
+    }
+  };
+
+  form?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const text = input?.value.trim() || "";
+    if (!text || submit?.disabled) return;
+    input.value = "";
+    send(text);
+  });
+  input?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      form?.requestSubmit();
+    }
+  });
+  dialog.querySelectorAll("[data-ai-suggestion]").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (input) input.value = button.dataset.aiSuggestion || button.textContent.trim();
+      input?.focus();
+    });
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && account && !account.hidden) {
+      setAccount(false);
+      accountToggle?.focus();
+    }
+  });
 })();

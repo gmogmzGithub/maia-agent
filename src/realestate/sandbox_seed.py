@@ -281,6 +281,10 @@ PROPERTY_SEEDS = (
     ),
 )
 
+# Deliberately exercises every public recency state without changing the first
+# publication of a listing that already existed before a seed rerun.
+SANDBOX_PUBLICATION_AGES_HOURS = (1, 50, 75, 99, 123, 147, 171, 200)
+
 EXTERIOR_IMAGES = (
     "abby-rurenko-uOYak90r4L0-unsplash.jpg",
     "brian-babb-XbwHrt87mQ0-unsplash.jpg",
@@ -701,6 +705,11 @@ async def _seed_inventory(
                     state=ListingPublicationState.PUBLISHED,
                     command_key=f"sandbox-publish:{seed.key}:{listing.id}:v2",
                 ),
+            )
+            listing.first_published_at = datetime.now(tz=UTC) - timedelta(
+                hours=SANDBOX_PUBLICATION_AGES_HOURS[
+                    index % len(SANDBOX_PUBLICATION_AGES_HOURS)
+                ]
             )
             await session.commit()
             published += 1

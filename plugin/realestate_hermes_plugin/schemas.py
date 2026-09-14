@@ -528,6 +528,54 @@ SEARCH_INVENTORY = {
 }
 
 
+SEARCH_PUBLIC_PROPERTIES = {
+    "name": "search_public_properties",
+    "description": (
+        "Search only the publicly shareable Listings for an anonymous website "
+        "conversation. Use this tool for every website request to find, filter, "
+        "count, compare, or sort properties. Never use list_properties, "
+        "search_inventory, or get_property_information in a website session. "
+        "Keep every criterion the visitor gave; do not silently broaden it. "
+        "Copy the exact turn_key supplied in Product context. The result contains "
+        "canonical criteria, a public URL, a total, and at most three safe matches."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "turn_key": {"type": "string", "minLength": 8, "maxLength": 200},
+            "operation": {
+                "type": "string",
+                "enum": ["Sale", "Rental", "Presale"],
+            },
+            "zone": {
+                "type": "string",
+                "enum": ["Guadalajara", "Zapopan", "Tlaquepaque"],
+            },
+            "property_type": {
+                "type": "string",
+                "enum": ["House", "Apartment", "Land", "Development"],
+                "description": (
+                    "Canonical type: House for casa, Apartment for departamento, "
+                    "Land for terreno, or Development for desarrollo."
+                ),
+            },
+            "minimum_price": {"type": "number", "minimum": 0},
+            "maximum_price": {"type": "number", "minimum": 0},
+            "minimum_bedrooms": {"type": "integer", "minimum": 0},
+            "minimum_bathrooms": {"type": "number", "minimum": 0},
+            "minimum_parking_spaces": {"type": "integer", "minimum": 0},
+            "minimum_construction_m2": {"type": "number", "minimum": 0},
+            "sort": {
+                "type": "string",
+                "enum": ["relevance", "recent", "price_asc", "price_desc"],
+            },
+        },
+        "required": ["turn_key"],
+        "additionalProperties": False,
+    },
+}
+
+
 REVALIDATE_EXTERNAL_LISTING = {
     "name": "revalidate_external_listing",
     "description": (
