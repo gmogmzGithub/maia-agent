@@ -108,7 +108,7 @@ class AnalyticsWorker:
         self._last_run = moment
         report = await self.run(now=moment)
         if report.changed:
-            logger.info(
+            logger.debug(
                 "Analytics pass: emitted=%d projected=%d late=%d examined=%d "
                 "days_counted=%d paused=%d quotes_expired=%d",
                 report.emitted,

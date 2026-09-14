@@ -109,7 +109,7 @@ class PlatformWorker:
             usage_organizations=organizations,
         )
         if report.changed:
-            logger.info(
+            logger.debug(
                 "Platform pass: support grants expired=%d, usage cells=%d "
                 "across %d organization(s)",
                 report.grants_expired,

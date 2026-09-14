@@ -315,7 +315,7 @@ class Settings(BaseSettings):
     # --- Background loop (ADR-0007) -----------------------------------------
     worker_poll_seconds: float = Field(default=1.0, alias="WORKER_POLL_SECONDS")
     worker_enabled: bool = Field(default=True, alias="WORKER_ENABLED")
-    log_level: str = Field(default="DEBUG", alias="LOG_LEVEL")
+    log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
     # --- Operational telemetry (ADR-0064) ----------------------------------
     # A dedicated HMAC key derives customer trace handles. It is intentionally

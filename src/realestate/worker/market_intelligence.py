@@ -36,7 +36,7 @@ class MarketIntelligenceWorker:
             report = await MarketProjector(session).drain()
             await session.commit()
         if report.projected or report.failed:
-            logger.info(
+            logger.debug(
                 "Market projection pass: projected=%d failed=%d",
                 report.projected,
                 report.failed,
