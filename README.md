@@ -203,8 +203,8 @@ Not claimed yet:
 
 ## Run Maia
 
-The complete local system runs in five long-lived Docker containers plus an
-idempotent bucket initializer:
+The complete local system runs in five long-lived Docker containers. Garage
+initializes its private buckets and Product key when it starts:
 
 ```mermaid
 flowchart LR
@@ -229,7 +229,7 @@ and proxies approved public paths to Site. Site calls Product through a dedicate
 authenticated loopback contract and has no database access. PostgreSQL is reached
 as `db` on the private Compose network. Listing Media bytes are reached through
 the private S3-compatible service; PostgreSQL still owns authority and metadata.
-The object-storage API and console bind only to host loopback for local operation.
+Garage's S3 API binds only to host loopback for local operation.
 
 Prerequisite: Docker with Docker Compose.
 
@@ -252,8 +252,9 @@ In `.env`, fill the shared local secrets with different values from
 HERMES_DASHBOARD_SESSION_TOKEN=
 PLUGIN_API_TOKEN=
 SITE_PRODUCT_API_TOKEN=
-OBJECT_STORAGE_ROOT_USER=
-OBJECT_STORAGE_ROOT_PASSWORD=
+GARAGE_RPC_SECRET=
+GARAGE_ADMIN_TOKEN=
+GARAGE_METRICS_TOKEN=
 OBJECT_STORAGE_ACCESS_KEY_ID=
 OBJECT_STORAGE_SECRET_ACCESS_KEY=
 DEVELOPER_BASIC_CREDENTIALS_JSON={"developer":"replace-with-a-secret"}
@@ -264,6 +265,12 @@ and Google Calendar credentials are optional; their health status is reported
 individually when absent. Google Calendar is the one exception to “one file”:
 Google issues a service-account JSON key, so place it at
 `secrets/google-calendar.json` and set the documented container path in `.env`.
+
+For `OBJECT_STORAGE_ACCESS_KEY_ID`, use Garage's `GK` plus 24 hexadecimal
+characters format. The old MinIO volume can be copied into Garage through the
+explicit `storage-migration` profile documented in
+[Run Everything Locally](docs/run/everything-locally.md); the source volume is
+retained after the copy.
 
 Build the images and start everything the first time, or after dependencies or
 Dockerfiles change:

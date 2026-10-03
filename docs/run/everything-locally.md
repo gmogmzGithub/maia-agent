@@ -20,10 +20,11 @@ Fill these first:
 HERMES_DASHBOARD_SESSION_TOKEN=<openssl rand -hex 32>
 PLUGIN_API_TOKEN=<openssl rand -hex 32>
 SITE_PRODUCT_API_TOKEN=<openssl rand -hex 32>
-OBJECT_STORAGE_ROOT_USER=<openssl rand -hex 16>
-OBJECT_STORAGE_ROOT_PASSWORD=<openssl rand -hex 24>
-OBJECT_STORAGE_ACCESS_KEY_ID=<openssl rand -hex 16>
-OBJECT_STORAGE_SECRET_ACCESS_KEY=<openssl rand -hex 24>
+GARAGE_RPC_SECRET=<openssl rand -hex 32>
+GARAGE_ADMIN_TOKEN=<openssl rand -hex 32>
+GARAGE_METRICS_TOKEN=<openssl rand -hex 32>
+OBJECT_STORAGE_ACCESS_KEY_ID=GK<24 hex characters from openssl rand -hex 12>
+OBJECT_STORAGE_SECRET_ACCESS_KEY=<openssl rand -hex 32>
 DEVELOPER_BASIC_CREDENTIALS_JSON={"<operator-login>":"<local-password>"}
 ORGANIZATION_ADMIN_LOGINS=<operator-login>
 ORGANIZATION_ADVISOR_LOGINS=<operator-login>
@@ -142,8 +143,7 @@ What starts:
 | Service | Runs |
 | --- | --- |
 | `db` | PostgreSQL 16 |
-| `object-storage` | Private persistent S3-compatible Listing Media storage |
-| `object-storage-init` | Creates the private buckets and exits successfully |
+| `object-storage` | Private persistent Garage S3-compatible Listing Media storage; initializes its private buckets and Product key |
 | `product` | FastAPI Product, migrations, all background workers |
 | `hermes` | Hermes runtime and Maia plugin |
 | `site` | Public SSR site, private to Product |
@@ -154,15 +154,41 @@ The only customer/application entry point exposed to the host is:
 http://localhost:8080
 ```
 
-For local object-storage administration only, MinIO binds its S3 API to
-`127.0.0.1:9000` and console to `127.0.0.1:9001`. Site receives neither endpoint
-credentials nor direct bucket access.
+For local object-storage administration only, Garage's S3 API binds to
+`127.0.0.1:9000`. Its administration API stays inside the Compose network.
+Site receives neither endpoint credentials nor direct bucket access.
+
+### Migrate an existing MinIO volume once
+
+An existing checkout may have the old `maia_object-storage-data` Docker volume.
+Keep its old MinIO root credentials in `MINIO_MIGRATION_ROOT_USER` and
+`MINIO_MIGRATION_ROOT_PASSWORD` in `.env`. Make a separate snapshot first and
+point the migration profile at that copy:
+
+```bash
+docker volume create maia-object-storage-migration-copy
+docker run --rm \
+  -v maia_object-storage-data:/source:ro \
+  -v maia-object-storage-migration-copy:/target \
+  alpine:3.22 sh -c 'cp -a /source/. /target/'
+printf '\nMINIO_LEGACY_VOLUME_NAME=maia-object-storage-migration-copy\n' >> .env
+docker compose --profile storage-migration up -d object-storage legacy-object-storage
+docker compose --profile storage-migration run --rm object-storage-migrate
+docker compose --profile storage-migration stop legacy-object-storage
+```
+
+The migration image builds the exact MinIO server release previously pinned by
+Compose, copies both Listing Media buckets into Garage, and verifies each
+object's SHA-256 and length. It does not modify or delete the original volume.
+
+Run this before starting Product against Garage. A new checkout with no old
+MinIO volume can skip this migration.
 
 When upgrading an existing checkout that still has the retired `listing-media`
 volume, migrate only PostgreSQL-referenced objects before restarting Product:
 
 ```bash
-docker compose up -d db object-storage object-storage-init
+docker compose up -d db object-storage
 docker compose --profile migration run --rm --build media-migrate
 docker compose up -d --build
 ```

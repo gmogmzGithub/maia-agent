@@ -20,54 +20,69 @@ services:
       retries: 30
 
   object-storage:
-    image: quay.io/minio/minio:RELEASE.2025-06-13T11-33-47Z
+    build:
+      context: .
+      dockerfile: docker/garage.Dockerfile
     restart: unless-stopped
-    command: server /data --console-address :9001
     environment:
-      MINIO_ROOT_USER: ${OBJECT_STORAGE_ROOT_USER:?Set OBJECT_STORAGE_ROOT_USER in .env}
-      MINIO_ROOT_PASSWORD: ${OBJECT_STORAGE_ROOT_PASSWORD:?Set OBJECT_STORAGE_ROOT_PASSWORD in .env}
+      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET:-${OBJECT_STORAGE_ROOT_PASSWORD:?Set GARAGE_RPC_SECRET in .env}}
+      GARAGE_ADMIN_TOKEN: ${GARAGE_ADMIN_TOKEN:-${OBJECT_STORAGE_ROOT_USER:?Set GARAGE_ADMIN_TOKEN in .env}}
+      GARAGE_METRICS_TOKEN: ${GARAGE_METRICS_TOKEN:-${OBJECT_STORAGE_ROOT_PASSWORD:?Set GARAGE_METRICS_TOKEN in .env}}
+      PRODUCT_ACCESS_KEY: ${OBJECT_STORAGE_ACCESS_KEY_ID:?Set OBJECT_STORAGE_ACCESS_KEY_ID in .env}
+      PRODUCT_SECRET_KEY: ${OBJECT_STORAGE_SECRET_ACCESS_KEY:?Set OBJECT_STORAGE_SECRET_ACCESS_KEY in .env}
     volumes:
-      - object-storage-data:/data
+      - garage-data:/var/lib/garage
     ports:
-      - "127.0.0.1:9000:9000"
-      - "127.0.0.1:9001:9001"
+      - "127.0.0.1:9000:3900"
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/minio/health/live"]
-      interval: 2s
+      test: ["CMD", "/garage", "status"]
+      interval: 3s
       timeout: 3s
       retries: 30
+      start_period: 10s
     logging:
       options:
         max-size: 10m
         max-file: "3"
 
-  object-storage-init:
-    image: quay.io/minio/mc:RELEASE.2025-05-21T01-59-54Z
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        set -eu
-        mc alias set sandbox http://object-storage:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
-        mc mb --ignore-existing "sandbox/$$ORIGINALS_BUCKET"
-        mc mb --ignore-existing "sandbox/$$CACHE_BUCKET"
-        mc anonymous set none "sandbox/$$ORIGINALS_BUCKET"
-        mc anonymous set none "sandbox/$$CACHE_BUCKET"
-        mc admin user add sandbox "$$PRODUCT_ACCESS_KEY" "$$PRODUCT_SECRET_KEY"
-        mc admin policy create sandbox maia-listing-media /config/media-policy.json
-        mc admin policy attach sandbox maia-listing-media --user "$$PRODUCT_ACCESS_KEY"
+  legacy-object-storage:
+    profiles: ["storage-migration"]
+    build:
+      context: .
+      dockerfile: docker/minio-migration.Dockerfile
+    restart: "no"
     environment:
-      MINIO_ROOT_USER: ${OBJECT_STORAGE_ROOT_USER:?Set OBJECT_STORAGE_ROOT_USER in .env}
-      MINIO_ROOT_PASSWORD: ${OBJECT_STORAGE_ROOT_PASSWORD:?Set OBJECT_STORAGE_ROOT_PASSWORD in .env}
-      PRODUCT_ACCESS_KEY: ${OBJECT_STORAGE_ACCESS_KEY_ID:?Set OBJECT_STORAGE_ACCESS_KEY_ID in .env}
-      PRODUCT_SECRET_KEY: ${OBJECT_STORAGE_SECRET_ACCESS_KEY:?Set OBJECT_STORAGE_SECRET_ACCESS_KEY in .env}
-      ORIGINALS_BUCKET: maia-listing-media
-      CACHE_BUCKET: maia-listing-renditions
+      MINIO_ROOT_USER: ${MINIO_MIGRATION_ROOT_USER:-${OBJECT_STORAGE_ROOT_USER:-}}
+      MINIO_ROOT_PASSWORD: ${MINIO_MIGRATION_ROOT_PASSWORD:-${OBJECT_STORAGE_ROOT_PASSWORD:-}}
     volumes:
-      - ./docker/minio-media-policy.json:/config/media-policy.json:ro
+      - legacy-minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+    command: ["server", "/data", "--console-address", ":9001"]
+
+  object-storage-migrate:
+    profiles: ["storage-migration"]
+    build:
+      context: .
+      dockerfile: docker/product.Dockerfile
+    restart: "no"
+    environment:
+      SOURCE_S3_ENDPOINT_URL: http://legacy-object-storage:9000
+      SOURCE_S3_ACCESS_KEY_ID: ${MINIO_MIGRATION_ROOT_USER:-${OBJECT_STORAGE_ROOT_USER:-}}
+      SOURCE_S3_SECRET_ACCESS_KEY: ${MINIO_MIGRATION_ROOT_PASSWORD:-${OBJECT_STORAGE_ROOT_PASSWORD:-}}
+      DESTINATION_S3_ENDPOINT_URL: http://object-storage:3900
+      DESTINATION_S3_ACCESS_KEY_ID: ${OBJECT_STORAGE_ACCESS_KEY_ID:?Set OBJECT_STORAGE_ACCESS_KEY_ID in .env}
+      DESTINATION_S3_SECRET_ACCESS_KEY: ${OBJECT_STORAGE_SECRET_ACCESS_KEY:?Set OBJECT_STORAGE_SECRET_ACCESS_KEY in .env}
     depends_on:
+      legacy-object-storage:
+        condition: service_healthy
       object-storage:
         condition: service_healthy
-    restart: "no"
+    command: ["python", "/app/docker/migrate_minio_to_garage.py"]
 
   product:
     build:
@@ -85,7 +100,7 @@ services:
       PLUGIN_API_TOKEN: ${PLUGIN_API_TOKEN:?Set PLUGIN_API_TOKEN in .env}
       ARTIFACT_ROOT: /app/var/property-documents
       PROPERTY_CATALOG_ROOT: /app/src/properties
-      OBJECT_STORAGE_ENDPOINT_URL: http://object-storage:9000
+      OBJECT_STORAGE_ENDPOINT_URL: http://object-storage:3900
       OBJECT_STORAGE_REGION: us-east-1
       OBJECT_STORAGE_ORIGINALS_BUCKET: maia-listing-media
       OBJECT_STORAGE_CACHE_BUCKET: maia-listing-renditions
@@ -98,8 +113,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
-      object-storage-init:
-        condition: service_completed_successfully
+      object-storage:
+        condition: service_healthy
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
@@ -128,7 +143,7 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql+psycopg://realestate:realestate@db:5432/realestate
-      OBJECT_STORAGE_ENDPOINT_URL: http://object-storage:9000
+      OBJECT_STORAGE_ENDPOINT_URL: http://object-storage:3900
       OBJECT_STORAGE_REGION: us-east-1
       OBJECT_STORAGE_ORIGINALS_BUCKET: maia-listing-media
       OBJECT_STORAGE_CACHE_BUCKET: maia-listing-renditions
@@ -144,8 +159,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
-      object-storage-init:
-        condition: service_completed_successfully
+      object-storage:
+        condition: service_healthy
     volumes:
       - listing-media:/app/var/legacy-listing-media:ro
 
@@ -216,5 +231,8 @@ volumes:
   property-documents:
   # Retained read-only for the explicit migration profile; Product never mounts it.
   listing-media:
-  object-storage-data:
+  garage-data:
+  legacy-minio-data:
+    external: true
+    name: ${MINIO_LEGACY_VOLUME_NAME:-maia_object-storage-data}
   organization-exports:

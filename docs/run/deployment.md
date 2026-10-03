@@ -43,7 +43,7 @@ rather than resolving it to a default.
 | Model key | its own Anthropic key | its own Anthropic key | its own Anthropic key |
 | Calendars | test calendars | the Advisors' real calendars | real |
 | PostgreSQL | container on the Mac mini | container on the EC2 host | RDS with PITR |
-| Listing Media bytes | private MinIO volume | private AWS S3 bucket | private AWS S3 bucket + CloudFront |
+| Listing Media bytes | private Garage volume | private AWS S3 bucket | private AWS S3 bucket + CloudFront |
 | Discovery | withheld | withheld | published |
 | Operator surfaces | Cloudflare Access + credential | Cloudflare Access + credential | to be decided |
 
@@ -90,9 +90,9 @@ cannot complete a webhook handshake through Access, and each webhook
 authenticates the raw body with its configured app-secret signature.
 
 Listing Media already uses the cloud-shaped storage boundary: Product writes
-checksummed objects to two private MinIO buckets through the AWS S3 client, while
+checksummed objects to two private Garage buckets through the AWS S3 client, while
 PostgreSQL owns authority and provenance. The Site has no storage credential.
-MinIO's named Docker volume is operational storage; `bootstrap/sandbox/` is only
+Garage's named Docker volume is operational storage; `bootstrap/sandbox/` is only
 the explicit source for a fresh synthetic import and is never served directly.
 
 Because the Mac mini is expected to stay up unattended:
