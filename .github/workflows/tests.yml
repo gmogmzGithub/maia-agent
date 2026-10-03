@@ -37,8 +37,9 @@ jobs:
           WORKER_ENABLED=false
           HERMES_DASHBOARD_SESSION_TOKEN=ci-hermes-token
           PLUGIN_API_TOKEN=ci-plugin-token
-          OBJECT_STORAGE_ROOT_USER=ci-minio-root
-          OBJECT_STORAGE_ROOT_PASSWORD=ci-minio-root-secret
+          GARAGE_RPC_SECRET=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          GARAGE_ADMIN_TOKEN=ci-garage-admin-token
+          GARAGE_METRICS_TOKEN=ci-garage-metrics-token
           OBJECT_STORAGE_ACCESS_KEY_ID=ci-object-access
           OBJECT_STORAGE_SECRET_ACCESS_KEY=ci-object-secret
           DEVELOPER_BASIC_PASSWORD=ci-developer-password
@@ -55,7 +56,14 @@ jobs:
           ENV
 
       - name: Validate Compose configuration
-        run: docker compose config --quiet
+        run: |
+          docker compose config --quiet
+          docker compose config --format json | python3 -c '
+          import json, re, sys
+          secret = json.load(sys.stdin)["services"]["object-storage"]["environment"]["GARAGE_RPC_SECRET"]
+          if re.fullmatch(r"[0-9a-fA-F]{64}", secret) is None:
+              raise SystemExit("GARAGE_RPC_SECRET must be exactly 64 hexadecimal characters")
+          '
 
       - name: Build the complete runtime
         run: docker compose build product hermes
@@ -141,8 +149,9 @@ jobs:
           WORKER_ENABLED=false
           HERMES_DASHBOARD_SESSION_TOKEN=ci-hermes-token
           PLUGIN_API_TOKEN=ci-plugin-token
-          OBJECT_STORAGE_ROOT_USER=ci-minio-root
-          OBJECT_STORAGE_ROOT_PASSWORD=ci-minio-root-secret
+          GARAGE_RPC_SECRET=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          GARAGE_ADMIN_TOKEN=ci-garage-admin-token
+          GARAGE_METRICS_TOKEN=ci-garage-metrics-token
           OBJECT_STORAGE_ACCESS_KEY_ID=ci-object-access
           OBJECT_STORAGE_SECRET_ACCESS_KEY=ci-object-secret
           DEVELOPER_BASIC_PASSWORD=ci-developer-password
@@ -159,7 +168,14 @@ jobs:
           ENV
 
       - name: Validate Compose configuration
-        run: docker compose config --quiet
+        run: |
+          docker compose config --quiet
+          docker compose config --format json | python3 -c '
+          import json, re, sys
+          secret = json.load(sys.stdin)["services"]["object-storage"]["environment"]["GARAGE_RPC_SECRET"]
+          if re.fullmatch(r"[0-9a-fA-F]{64}", secret) is None:
+              raise SystemExit("GARAGE_RPC_SECRET must be exactly 64 hexadecimal characters")
+          '
 
       - name: Build the complete runtime
         run: docker compose build product hermes
