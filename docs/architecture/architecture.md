@@ -141,9 +141,10 @@ revocation — while a private object store owns only bytes. The domain depends 
 the `MediaStorage` Interface; the runtime Implementation is an S3-compatible
 Adapter and tests use an in-memory Adapter. This keeps provider retries,
 checksums, endpoints and credentials local to one Module.
-The Sandbox initializer holds the MinIO root identity long enough to create the
-private buckets and policy; Product receives a different identity scoped to only
-those buckets, and Site receives neither one.
+The Sandbox Garage process initializes two private buckets and imports a
+Product key scoped to read/write access on those buckets; Garage's admin token
+and the Product key remain separate, and Site receives neither one. Pilot and
+Public use AWS S3 with the same Product adapter and a bucket-scoped IAM policy.
 
 ```mermaid
 flowchart LR
@@ -154,11 +155,13 @@ flowchart LR
     Product -->|"only after eligibility"| Site
 ```
 
-Sandbox runs persistent MinIO in Compose as the S3-compatible emulator. The
-same Adapter can target AWS S3 later without changing media commands or public
-eligibility. Source-controlled Sandbox photographs are bootstrap import inputs,
-not runtime assets: only the seed command reads them, and it writes them through
-`MediaAdministration` into object storage.
+Sandbox runs persistent Garage in Compose as the S3-compatible object store.
+The same Adapter targets AWS S3 in Pilot and Public without changing media
+commands or public eligibility. Source-controlled Sandbox photographs are
+bootstrap import inputs, not runtime assets: only the seed command reads them,
+and it writes them through `MediaAdministration` into object storage. A
+profile-gated, checksummed migration copies objects from the retired MinIO
+volume and keeps that source volume intact.
 
 Stage 7 engagement is a Product workflow, not a Hermes campaign agent. Matching
 is a pure, versioned comparison of authorized Listing facts against confirmed
@@ -439,21 +442,20 @@ send a message (ADR-0031).
 
 ## Current Local Topology
 
-Docker Compose runs five long-lived containers plus one idempotent bucket
-initializer:
+Docker Compose runs five long-lived containers. Garage initializes its private
+buckets and Product key at startup:
 
 - `db`: PostgreSQL and the durable Product state;
 - `product`: FastAPI and the in-process background workers;
 - `site`: the public server-rendered experience with no database or provider credential;
 - `hermes`: the pinned Hermes runtime with the standalone Maia plugin.
-- `object-storage`: private, persistent S3-compatible Listing Media bytes;
-- `object-storage-init`: creates the two private buckets and then exits.
+- `object-storage`: private, persistent Garage S3-compatible Listing Media bytes.
 
 Product, Site, and Hermes share a private network namespace so their authenticated
 JSON-RPC WebSocket remains loopback-only. They are still separate processes and
 containers. Product reaches PostgreSQL and object storage through the private
 Compose network. Product port 8080 is the only customer/application entry point;
-the object-storage API and console bind to host loopback for local administration.
+the Garage S3 API binds to host loopback for local administration.
 
 Runtime configuration lives in one ignored `.env`. Docker volumes retain
 PostgreSQL data, Hermes profile state, accepted Property Documents, private

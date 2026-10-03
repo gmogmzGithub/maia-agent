@@ -24,6 +24,7 @@ RUN python -m pip install --no-cache-dir ".[dev]"
 COPY plugin ./plugin
 COPY roles ./roles
 COPY docker/hermes-entrypoint.sh ./docker/hermes-entrypoint.sh
+COPY docker/migrate_minio_to_garage.py ./docker/migrate_minio_to_garage.py
 COPY docker/minio-media-policy.json ./docker/minio-media-policy.json
 COPY tests ./tests
 

@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0065
 ---
 
 # Store Listing Media behind private S3-compatible object storage
