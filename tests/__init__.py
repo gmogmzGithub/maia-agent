@@ -1,1 +1,0 @@
-"""Maia test package."""
