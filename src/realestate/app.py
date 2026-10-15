@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 import httpx
 
 from realestate.api import health as health_api
+from realestate.api import valuation as valuation_api
 from realestate.api import admin as admin_api
 from realestate.api import analytics as analytics_api
 from realestate.api import crm as crm_api
@@ -540,6 +541,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health_api.router)
     app.include_router(admin_api.router)
     app.include_router(crm_api.router)
+    app.include_router(valuation_api.router)
     app.include_router(catalog_api.router)
     app.include_router(external_inventory_api.router)
     app.include_router(engagement_api.router)

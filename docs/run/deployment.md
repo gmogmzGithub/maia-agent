@@ -1,17 +1,15 @@
 # Deployment
 
-Maia runs in exactly three Deployment Environments: **Sandbox**, **Pilot**,
-**Public** (CONTEXT.md, and ADR-0060 for why). This document is the operational
-half of that decision.
+This is the existing deployment plan retained for operational reference during
+the architecture review, not a newly accepted architecture decision. The plan
+describes three environments: **Sandbox**, **Pilot**, and **Public**.
 
-It is a plan, not a verified runbook. `PROJECT_MEMORY.md` withheld deployment
-documentation until a live target existed; this is written as that target is being
+It is a plan, not a verified runbook. This is written as a live target is being
 stood up, so every section is expected to be corrected from what actually
 happened. Correct it in place rather than adding a second account of the truth.
 
 For the local runtime itself — starting it, proving it is up, the required test
-gate — see `docs/run/everything-locally.md`. For the runtime split this deploys,
-see `docs/architecture/architecture.md`.
+gate — see `docs/run/everything-locally.md`.
 
 ## What each environment is for
 
@@ -185,7 +183,7 @@ background workers are in-process, Property Documents and export artifacts are
 on local volumes, and
 `alembic upgrade head` runs at container start. Two instances would race the
 migration and duplicate paced work — broker digests, reminders, upkeep passes —
-and `PROJECT_MEMORY.md` already notes an internal alert can double-deliver. The
+and internal alerts may double-deliver. The
 cost is a deploy interruption of under a minute, absorbed by Meta's webhook
 retries. Splitting web from worker and moving the remaining artifacts to S3 is
 Public-phase work, not a fix for an accident.
@@ -235,5 +233,5 @@ Code, all small and all required by the move to a public origin:
 - The Brokerage Brand's domain, deferred until the project and agent names
   settle. Withheld discovery on Pilot is what makes deferring free.
 - Whether Public's operator surfaces keep HTTP Basic. The platform-wide login
-  namespace is already a recorded open question (`PROJECT_MEMORY.md`).
+  namespace remains an open question.
 - Analytics retention (ADR-0044), unchanged by any of this.

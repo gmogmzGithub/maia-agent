@@ -68,6 +68,12 @@ def test_entrypoint_pins_product_sessions_to_eager_maia_tools(tmp_path: Path) ->
     for role in ("sales", "admin", "website"):
         assert read(home / "profiles" / role / "SOUL.md") == read(ROLES / role / "SOUL.md")
 
+    valuation_config = yaml.safe_load(read(home / "profiles/valuation/config.yaml"))
+    assert valuation_config["platform_toolsets"] == {
+        "product": ["realestate"], "cli": ["realestate"],
+    }
+    assert read(home / "profiles/valuation/SOUL.md") == read(ROLES / "valuation/SOUL.md")
+
     website_soul = " ".join(read(ROLES / "website" / "SOUL.md").lower().split())
     assert "el sitio mostrará las tarjetas" in website_soul
     assert "no enumeres ni repitas sus detalles" in website_soul

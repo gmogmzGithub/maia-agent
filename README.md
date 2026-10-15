@@ -83,8 +83,10 @@ authorization, persistence, delivery, retries, and business authority.
 - Recovery-oriented tests around persistence, sessions, tools, workers,
   webhooks, and channel clients.
 
-For the source, test, documentation, migration, asset, and generated-artifact
-layout, see `docs/architecture/repository-layout.md`.
+The previous ADRs, architecture documents, glossary, and project history have
+been removed for a fresh architecture review. The implementation remains the
+baseline for current behavior. New decisions and terms will be recorded as
+they are agreed; the description below documents the existing implementation.
 
 ## Architecture
 
@@ -300,10 +302,4 @@ docker compose exec product pytest  # run the token-free test suite in Docker
 The required CI gate runs without Meta, Anthropic, Google, or Telegram
 credentials. See [Run Everything Locally](docs/run/everything-locally.md) for
 the exact local setup, test commands, acceptance path, and provider-credential
-boundaries. The current architectural map lives in
-[Maia Architecture](docs/architecture/architecture.md), and the managed-platform
-boundary is captured in the ADR series, especially
-[ADR-0033](docs/adr/0033-build-a-managed-real-estate-platform-not-a-general-crm.md)
-through [ADR-0055](docs/adr/0055-onboard-and-offboard-organizations-as-resumable-reversible-runs.md).
-Open business questions for Santiago live in
-[Santiago Review](docs/open-questions/SANTIAGO_REAL_ESTATE_REVIEW.md).
+boundaries.

@@ -158,6 +158,25 @@ For local object-storage administration only, Garage's S3 API binds to
 `127.0.0.1:9000`. Its administration API stays inside the Compose network.
 Site receives neither endpoint credentials nor direct bucket access.
 
+### Start the Sandbox Cloudflare Tunnel
+
+Start the local services first with `docker compose up -d`. In a second
+terminal, run the named tunnel:
+
+```bash
+cloudflared tunnel run maia-sandbox
+```
+
+The local `~/.cloudflared/config.yml` routes
+`https://sandbox.elmenlabs.com` to `http://127.0.0.1:8080`. Validate that route
+before connecting, if needed:
+
+```bash
+cloudflared tunnel --config ~/.cloudflared/config.yml ingress validate
+```
+
+Keep the tunnel command running in that terminal while the Sandbox is public.
+
 ### Migrate an existing MinIO volume once
 
 An existing checkout may have the old `maia_object-storage-data` Docker volume.

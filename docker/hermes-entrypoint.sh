@@ -12,7 +12,8 @@ readonly MAIA_ROLES_ROOT="${MAIA_ROLES_ROOT:-/opt/maia/roles}"
 mkdir -p \
   "$HERMES_HOME/profiles/sales" \
   "$HERMES_HOME/profiles/admin" \
-  "$HERMES_HOME/profiles/website"
+  "$HERMES_HOME/profiles/website" \
+  "$HERMES_HOME/profiles/valuation"
 
 # Every config Maia writes — root and per-profile — has the same shape, so the
 # shape is spelled once here. Only the model differs.
@@ -48,5 +49,9 @@ write_config "$HERMES_HOME/config.yaml" "$ADMIN_MODEL"
 write_profile sales "$SALES_MODEL"
 write_profile admin "$ADMIN_MODEL"
 write_profile website "$SALES_MODEL"
+write_profile valuation "$ADMIN_MODEL"
+# The pinned gateway resolves CLI toolsets even for Product sessions. Pin its
+# fallback too: never expose shell/file tools to property descriptions.
+printf '  cli:\n    - realestate\n' >> "$HERMES_HOME/profiles/valuation/config.yaml"
 
 exec hermes serve --host 127.0.0.1 --port 9119

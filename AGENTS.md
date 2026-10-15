@@ -24,9 +24,17 @@ Do not commit:
 - private planning notes that are not meant for hiring managers;
 - generated databases, lock files, caches, or local artifacts.
 
-Use `PROJECT_MEMORY.md` for curated project decisions that are safe to publish.
+Keep new architectural decisions and glossary entries public-safe.
 Put private notes outside this repository or on a private branch that is never
 merged into `main`.
+
+## Architecture Review
+
+The previous ADRs, architecture documents, glossary, and project history were
+removed for a fresh review. The boundaries below describe the current
+implementation and are subjects for review, not newly accepted design decisions.
+Preserve working behavior, organization isolation, and credential safeguards
+until replacement decisions are explicitly agreed.
 
 ## Architecture Boundary
 
@@ -88,9 +96,8 @@ In practice, when you touch this codebase:
   customer's records means a temporary, explained, expiring support grant;
 - a configuration document never contains a credential. Store a reference.
 
-See `docs/architecture/architecture.md` and ADR-0033 through ADR-0055 for the
-reasoning and the operating limits, and `docs/run/deployment.md` for the three
-Deployment Environments and which provider identity belongs to which.
+See `docs/run/deployment.md` for the existing deployment plan and provider
+identities; that plan remains subject to the architecture review.
 
 ## Implementation Style
 
@@ -133,7 +140,7 @@ Before committing, check:
 ```bash
 git status --short
 git diff --stat
-git diff -- . ':!PROJECT_MEMORY.md'
+git diff
 ```
 
 Never add ignored runtime state with force unless the user explicitly asks and
