@@ -42,3 +42,6 @@ Al iniciar, main conservaba el commit de reinicio y la aplicación actual estaba
 ## Entrega mediante pull request
 
 GitHub rechazó el push directo a main porque exige PR y el check `tests`. Guillermo autorizó publicar una rama y abrir el PR, conservando las protecciones. `.github/workflows/tests.yml` reemplaza el recorrido histórico product/hermes por PostgreSQL 17, Python 3.13 y Node 22 para la estructura actual de Maia. El job se mantiene como `tests` y ejecuta Ruff, comprobación de migraciones, suite backend, pruebas frontend, tipos y compilación con dependencias bloqueadas. No necesita configuración privada ni credenciales de proveedores.
+
+
+El primer intento de CI detectó que `uv.lock` conservaba referencias de un registro privado y no podía descargar paquetes (HTTP 403). Se regeneraron las fuentes contra PyPI público sin cambiar ninguna versión. `backend/scripts/check_dependency_sources.py` reproduce el problema mediante la inspección del lock y ahora se ejecuta antes de instalar dependencias para impedir su reintroducción.
