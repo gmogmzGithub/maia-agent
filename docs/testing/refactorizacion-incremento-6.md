@@ -37,3 +37,8 @@ La revisión del contenido a publicar excluyó rutas privadas, datos locales y c
 ## Publicación del repositorio
 
 Al iniciar, main conservaba el commit de reinicio y la aplicación actual estaba sin seguimiento. El commit incluye la base actual necesaria y la consolidación. Se excluyen credenciales/configuración privada, archivos locales, dependencias, compilados y ejemplos PDF generados. No se publican secretos ni se cambia de rama.
+
+
+## Entrega mediante pull request
+
+GitHub rechazó el push directo a main porque exige PR y el check `tests`. Guillermo autorizó publicar una rama y abrir el PR, conservando las protecciones. `.github/workflows/tests.yml` reemplaza el recorrido histórico product/hermes por PostgreSQL 17, Python 3.13 y Node 22 para la estructura actual de Maia. El job se mantiene como `tests` y ejecuta Ruff, comprobación de migraciones, suite backend, pruebas frontend, tipos y compilación con dependencias bloqueadas. No necesita configuración privada ni credenciales de proveedores.
