@@ -1,0 +1,169 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Maia · Captación y almacenamiento",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1390,
+      700
+    ]
+  },
+  "components": [
+    {
+      "id": "owner-web",
+      "type": "frontend",
+      "label": "Propietario",
+      "sublabel": "Cuenta y formulario",
+      "pos": [
+        60,
+        150
+      ],
+      "size": [
+        220,
+        80
+      ]
+    },
+    {
+      "id": "staff-crm",
+      "type": "frontend",
+      "label": "Equipo en CRM",
+      "sublabel": "Revisión y publicación",
+      "pos": [
+        60,
+        430
+      ],
+      "size": [
+        220,
+        80
+      ]
+    },
+    {
+      "id": "capture-backend",
+      "type": "backend",
+      "label": "Backend Django",
+      "sublabel": "Sesión · reglas · WebP",
+      "pos": [
+        420,
+        290
+      ],
+      "size": [
+        240,
+        90
+      ]
+    },
+    {
+      "id": "capture-database",
+      "type": "database",
+      "label": "PostgreSQL",
+      "sublabel": "Datos, acuerdos y cola",
+      "pos": [
+        800,
+        150
+      ],
+      "size": [
+        220,
+        80
+      ]
+    },
+    {
+      "id": "private-files",
+      "type": "database",
+      "label": "Volumen de archivos",
+      "sublabel": "WebP y planos privados",
+      "pos": [
+        800,
+        430
+      ],
+      "size": [
+        220,
+        80
+      ]
+    },
+    {
+      "id": "capture-worker",
+      "type": "backend",
+      "label": "Worker",
+      "sublabel": "Avisos y vencimientos",
+      "pos": [
+        1150,
+        150
+      ],
+      "size": [
+        200,
+        80
+      ]
+    },
+    {
+      "id": "delivery-destinations",
+      "type": "external",
+      "label": "Entregas",
+      "sublabel": "Telegram · correo local",
+      "pos": [
+        1150,
+        430
+      ],
+      "size": [
+        200,
+        80
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "from": "owner-web",
+      "to": "capture-backend",
+      "label": "Solicitud privada"
+    },
+    {
+      "from": "staff-crm",
+      "to": "capture-backend",
+      "label": "Acceso del equipo"
+    },
+    {
+      "from": "capture-backend",
+      "to": "capture-database",
+      "label": "Transacciones cortas"
+    },
+    {
+      "from": "capture-backend",
+      "to": "private-files",
+      "label": "Archivos autorizados",
+      "variant": "security"
+    },
+    {
+      "from": "capture-database",
+      "to": "capture-worker",
+      "label": "Cola persistente",
+      "variant": "dashed"
+    },
+    {
+      "from": "capture-worker",
+      "to": "delivery-destinations",
+      "label": "Resultado registrado",
+      "variant": "dashed",
+      "labelAt": [
+        1250,
+        330
+      ]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Datos y archivos separados",
+      "items": [
+        "La base guarda metadatos y referencias; las imágenes viven en un volumen",
+        "La API autoriza cada lectura; un UUID por sí solo no concede acceso"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Límite del piloto",
+      "items": [
+        "Persistir en un volumen no equivale a tener respaldo",
+        "Pendientes: copia externa y restauración coordinada de base y archivos"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="es">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Maia · Entender el rediseño del harness</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f4f7fb;color:#172b35;font:15px system-ui,sans-serif}header{padding:18px 24px;background:white;border-bottom:1px solid #dce4ec;display:flex;align-items:center;justify-content:space-between;gap:16px}h1{font-size:20px;margin:0}header p{font-size:12px;color:#586d7c;margin:5px 0 0}.badge{font-size:11px;font-weight:700;padding:7px 10px;border-radius:20px;background:#fff1d6;color:#775119;white-space:nowrap}nav{padding:12px 24px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}button{font:inherit;border:1px solid #cbd8e4;background:white;color:#345466;padding:10px 16px;border-radius:9px;cursor:pointer}button[aria-selected=true]{background:#164d4b;color:white;border-color:#164d4b}nav a{margin-left:auto;color:#345466;font-size:13px}main{display:grid;grid-template-columns:minmax(0,1fr) 290px;gap:14px;padding:0 18px 18px}iframe{width:100%;height:calc(100vh - 145px);min-height:680px;border:1px solid #dce4ec;border-radius:12px;background:white}aside{border:1px solid #dce4ec;background:white;border-radius:12px;padding:20px;align-self:start}h2{font-size:16px;margin:0 0 12px}h3{font-size:13px;margin:22px 0 8px}aside p,li{font-size:13px;line-height:1.65}ul{padding-left:18px;margin:8px 0}small{display:block;color:#647888;font-size:11px;line-height:1.6;margin-top:20px}.quiet{color:#617785}.step{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:50%;background:#e6f2ef;color:#164d4b;margin-right:6px;font-weight:700}.note{padding:10px;border-radius:8px;background:#f1f6fb}details{margin-top:18px}summary{cursor:pointer;font-size:13px;font-weight:600}table{border-collapse:collapse;width:100%;font-size:12px;line-height:1.5}td{vertical-align:top;padding:8px 0;border-bottom:1px solid #e6edf2}td+td{padding-left:10px;color:#516977}@media(max-width:1000px){main{grid-template-columns:1fr}iframe{height:85vh;min-height:650px}aside{max-width:none}header{align-items:flex-start}nav a{margin-left:0}}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto}}
+</style>
+<style>
+main{display:block}iframe{height:calc(100vh - 160px);min-height:680px}aside{margin-top:12px;padding:14px 20px}aside>details{margin-top:0}aside>details>summary{font-size:14px}aside>details>h2{margin-top:18px}
+</style>
+<header><div><h1>Maia · El rediseño del harness</h1><p>Instantáneas del diseño para entender responsabilidades, memoria y control.</p></div><span class="badge">MAPAS DEL DISEÑO · VER ESTADO EN EL PLAN TÉCNICO</span></header>
+<nav aria-label="Mapas de arquitectura">
+<button data-view="actual" aria-selected="false">1. Antes del rediseño</button>
+<button data-view="propuesta" aria-selected="true">2. Lo que cambia</button>
+<button data-view="memoria" aria-selected="false">3. Cómo recuerda Maia</button>
+<a href="code-map.md">Bloques y archivos actuales ↗</a>
+<a id="standalone" href="propuesta.html" target="_blank" rel="noopener">Abrir mapa completo ↗</a>
+</nav>
+<main><iframe id="diagram" title="Mapa del harness propuesto" src="propuesta.html"></iframe>
+<aside>
+<details><summary>Guía de lectura y comparación con el dibujo original</summary>
+<h2 id="heading">La respuesta se decide completa</h2>
+<p id="description">Maia propone texto, fichas, controles y continuidad. El harness valida y publica ese conjunto.</p>
+<h3>Cómo leer el recorrido</h3>
+<p><span class="step">1</span>Entrada por la izquierda.</p>
+<p><span class="step">2</span>Contexto y agente en la fila superior.</p>
+<p><span class="step">3</span>La respuesta vuelve por la fila inferior.</p>
+<p class="note">Los bloques son responsabilidades del código. No representan servicios, procesos o bases de datos nuevos.</p>
+<h3>Se conserva</h3><ul><li>Un agente, PostgreSQL y el worker.</li><li>Herramientas y operaciones de negocio.</li><li>Permisos, confirmaciones, pausas e idempotencia.</li></ul>
+<h3>Se rediseña</h3><ul><li>Contexto con propósito y pendiente.</li><li>Una propuesta completa y validada.</li><li>Controles pertinentes al turno.</li><li>Continuidad vinculada al mensaje.</li></ul>
+<details><summary>Correspondencia con tu dibujo original</summary><table>
+<tr><td>Working memory</td><td>Contexto ensamblado para cada llamada.</td></tr>
+<tr><td>Procedural memory</td><td>Instrucciones y skills aprobadas.</td></tr>
+<tr><td>SQLite + FTS5</td><td>No se incorpora. Historial y continuidad en PostgreSQL.</td></tr>
+<tr><td>Vector DB + RAG</td><td>Pospuestos; requieren necesidad demostrada.</td></tr>
+<tr><td>Reply</td><td>Propuesta → validación → publicación.</td></tr>
+<tr><td>LLM Ops</td><td>Eventos del turno y evaluación fuera de la atención en vivo.</td></tr>
+</table></details>
+<details><summary>Qué queda fuera de estos mapas</summary><p>Seguimiento, avisos por Telegram y sincronización con Google Calendar conservan sus módulos. Las herramientas de visitas usan las operaciones existentes. La cola está resumida dentro de «Recepción y worker».</p><p>El nuevo contrato se centra en conversación entrante de website y WhatsApp. No cambia automáticamente el flujo de plantillas de seguimiento.</p><p>Las flechas resumen dependencias lógicas. Las llamadas de herramientas devuelven resultados al agente; el detalle de transacciones y transporte no es un diagrama de despliegue.</p></details>
+<small>Contenido en español. Los controles fijos del visor usan inglés. Puedes ampliar, enfocar bloques y exportar desde el mapa completo.</small>
+</details>
+</aside></main>
+<script>
+const copy={actual:['La respuesta se modifica por capas','El clic adelanta horarios; el backend añade el nombre y la presentación decide controles por estado global. Esto explica la conversación mecánica.'],propuesta:['La respuesta se decide completa','Maia propone texto, fichas, controles y continuidad. El harness valida y publica ese conjunto.'],memoria:['Recordar no exige otra base','PostgreSQL conserva datos. El harness construye contexto autorizado. El pendiente orienta la conversación y las herramientas verifican hechos vigentes.']};
+for(const button of document.querySelectorAll('[data-view]'))button.addEventListener('click',()=>{const view=button.dataset.view;for(const other of document.querySelectorAll('[data-view]'))other.setAttribute('aria-selected',String(other===button));document.getElementById('diagram').src=view+'.html';document.getElementById('diagram').title=copy[view][0];document.getElementById('standalone').href=view+'.html';document.getElementById('heading').textContent=copy[view][0];document.getElementById('description').textContent=copy[view][1];});
+</script>
+</html>

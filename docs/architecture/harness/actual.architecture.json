@@ -1,0 +1,291 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Maia: arquitectura actual",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1360,
+      590
+    ],
+    "views": [
+      {
+        "id": "actual",
+        "label": "Flujo implementado",
+        "focus": [
+          "entrada",
+          "contexto",
+          "llm",
+          "propuesta",
+          "validacion",
+          "salida"
+        ],
+        "note": "Código inspeccionado. Las decisiones de presentación están repartidas entre varias capas."
+      },
+      {
+        "id": "problema",
+        "label": "Dónde se fuerza el flujo",
+        "focus": [
+          "contexto",
+          "propuesta",
+          "validacion",
+          "salida"
+        ],
+        "note": "El clic adelanta horarios; el backend añade el nombre; el canal coloca controles por estado global."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "canales",
+      "type": "frontend",
+      "label": "Website y WhatsApp",
+      "sublabel": "Mensajes y clics de interés",
+      "pos": [
+        40,
+        170
+      ],
+      "size": [
+        230,
+        85
+      ]
+    },
+    {
+      "id": "entrada",
+      "type": "backend",
+      "label": "Recepción y worker",
+      "sublabel": "Guardar, agrupar y autorizar",
+      "pos": [
+        370,
+        170
+      ],
+      "size": [
+        230,
+        85
+      ]
+    },
+    {
+      "id": "contexto",
+      "type": "backend",
+      "label": "Carga y preparación",
+      "sublabel": "Historial + estado; horarios por clic",
+      "pos": [
+        700,
+        170
+      ],
+      "size": [
+        230,
+        85
+      ],
+      "tag": "SECUENCIA IMPUESTA"
+    },
+    {
+      "id": "llm",
+      "type": "external",
+      "label": "Agente · Haiku",
+      "sublabel": "Interpreta y elige cómo seguir",
+      "pos": [
+        1040,
+        170
+      ],
+      "size": [
+        230,
+        85
+      ]
+    },
+    {
+      "id": "skills",
+      "type": "backend",
+      "label": "Instrucciones y skills",
+      "sublabel": "Voz, política y procedimientos",
+      "pos": [
+        700,
+        20
+      ],
+      "size": [
+        230,
+        85
+      ]
+    },
+    {
+      "id": "herramientas",
+      "type": "backend",
+      "label": "Herramientas autorizadas",
+      "sublabel": "Inventario, contacto y visitas",
+      "pos": [
+        1040,
+        20
+      ],
+      "size": [
+        270,
+        85
+      ]
+    },
+    {
+      "id": "propuesta",
+      "type": "backend",
+      "label": "Texto del modelo",
+      "sublabel": "Texto libre y fichas acumuladas",
+      "pos": [
+        1040,
+        320
+      ],
+      "size": [
+        290,
+        85
+      ]
+    },
+    {
+      "id": "validacion",
+      "type": "security",
+      "label": "Finalización del turno",
+      "sublabel": "Revisión + pregunta añadida",
+      "pos": [
+        700,
+        320
+      ],
+      "size": [
+        260,
+        85
+      ],
+      "tag": "NOMBRE AUTOMÁTICO"
+    },
+    {
+      "id": "salida",
+      "type": "frontend",
+      "label": "Presentación por canal",
+      "sublabel": "Regex + controles por estado",
+      "pos": [
+        370,
+        320
+      ],
+      "size": [
+        270,
+        85
+      ],
+      "tag": "RESPUESTA RECOMPUESTA"
+    },
+    {
+      "id": "postgres",
+      "type": "database",
+      "label": "PostgreSQL",
+      "sublabel": "Mensajes, criterios y operaciones",
+      "pos": [
+        370,
+        470
+      ],
+      "size": [
+        300,
+        85
+      ]
+    },
+    {
+      "id": "trazas",
+      "type": "backend",
+      "label": "LLM Ops",
+      "sublabel": "Ejecución, errores y evaluación",
+      "pos": [
+        820,
+        470
+      ],
+      "size": [
+        260,
+        85
+      ]
+    },
+    {
+      "id": "crm",
+      "type": "frontend",
+      "label": "CRM y asesores",
+      "sublabel": "Inventario y avance comercial",
+      "pos": [
+        40,
+        470
+      ],
+      "size": [
+        230,
+        85
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "from": "canales",
+      "to": "entrada",
+      "label": "mensaje / acción"
+    },
+    {
+      "from": "entrada",
+      "to": "contexto",
+      "label": "turno autorizado"
+    },
+    {
+      "from": "skills",
+      "to": "contexto",
+      "label": "instrucciones",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        815,
+        140
+      ]
+    },
+    {
+      "from": "contexto",
+      "to": "llm",
+      "label": "contexto"
+    },
+    {
+      "from": "llm",
+      "to": "herramientas",
+      "label": "solicitud + resultado",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "from": "llm",
+      "to": "propuesta",
+      "label": "texto final",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "from": "propuesta",
+      "to": "validacion",
+      "label": "propuesta",
+      "fromSide": "left",
+      "toSide": "right"
+    },
+    {
+      "from": "validacion",
+      "to": "salida",
+      "label": "respuesta guardada",
+      "fromSide": "left",
+      "toSide": "right",
+      "labelAt": [
+        670,
+        295
+      ]
+    },
+    {
+      "from": "salida",
+      "to": "postgres",
+      "label": "mensaje + estado actual",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "from": "crm",
+      "to": "postgres",
+      "label": "operaciones CRM"
+    },
+    {
+      "from": "validacion",
+      "to": "trazas",
+      "label": "resultado del turno",
+      "fromSide": "bottom",
+      "toSide": "top"
+    }
+  ],
+  "cards": []
+}

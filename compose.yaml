@@ -1,0 +1,65 @@
+name: maia-incremento1
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-maia}
+      POSTGRES_USER: ${POSTGRES_USER:-maia}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-maia_local}
+    ports:
+      - "127.0.0.1:15432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  backend:
+    build: ./backend
+    env_file: .env
+    environment:
+      PUBLIC_BASE_URL: https://sandbox.elmenlabs.com
+      CSRF_TRUSTED_ORIGINS: http://localhost:3000,http://127.0.0.1:3000,https://sandbox.elmenlabs.com
+      DATABASE_URL: postgresql://${POSTGRES_USER:-maia}:${POSTGRES_PASSWORD:-maia_local}@db:5432/${POSTGRES_DB:-maia}
+    volumes:
+      - capture_media:/app/media
+      - private_mail:/app/private-mail
+    command: sh -c "python manage.py migrate --noinput && python manage.py runserver 0.0.0.0:8000 --noreload"
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=2)"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+  worker:
+    build: ./backend
+    env_file: .env
+    environment:
+      PUBLIC_BASE_URL: https://sandbox.elmenlabs.com
+      CSRF_TRUSTED_ORIGINS: http://localhost:3000,http://127.0.0.1:3000,https://sandbox.elmenlabs.com
+      DATABASE_URL: postgresql://${POSTGRES_USER:-maia}:${POSTGRES_PASSWORD:-maia_local}@db:5432/${POSTGRES_DB:-maia}
+    volumes:
+      - capture_media:/app/media
+      - private_mail:/app/private-mail
+    command: python manage.py procrastinate worker --concurrency=4
+    depends_on:
+      backend:
+        condition: service_healthy
+  web:
+    build: ./frontend
+    environment:
+      BACKEND_URL: http://backend:8000
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - backend
+volumes:
+  postgres_data:
+
+  capture_media:
+  private_mail:

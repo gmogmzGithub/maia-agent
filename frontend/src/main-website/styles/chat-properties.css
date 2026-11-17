@@ -1,0 +1,103 @@
+/* Width follows the conversation, including narrow tablet split views. */
+.landing-chat {
+  container-type: inline-size;
+}
+.landing-chat .chat-properties {
+  display: grid;
+  grid-auto-flow: column;
+  grid-template-columns: none;
+  grid-auto-columns: min(86%, 300px);
+  gap: 12px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x proximity;
+  scrollbar-width: thin;
+  padding: 4px 3px 10px;
+  align-items: start;
+}
+.chat-properties:focus-visible {
+  outline: 2px solid #6e8b45;
+  outline-offset: -2px;
+}
+.chat-properties .property-card-compact {
+  min-width: 0;
+  scroll-snap-align: start;
+  overflow-wrap: anywhere;
+}
+.chat-properties .property-card-compact .property-photo {
+  height: 80px;
+}
+.chat-properties .property-card-compact .photo-placeholder svg {
+  width: 42px;
+  height: 38px;
+}
+.chat-properties .property-card-compact .photo-placeholder {
+  gap: 4px;
+}
+.chat-properties .property-card-compact .photo-placeholder span {
+  font-size: 9px;
+  letter-spacing: 0;
+}
+.chat-properties .property-card-compact .photo-badge {
+  top: 8px;
+  left: 8px;
+  padding: 2px 8px;
+}
+.chat-properties .property-card-compact .property-body {
+  padding: 10px;
+}
+.chat-properties .property-card-compact .eyebrow {
+  font-size: 9px;
+  letter-spacing: .5px;
+  line-height: 1.5;
+  margin-bottom: 4px;
+}
+.chat-properties .property-card-compact h3 {
+  font-size: 13px;
+  line-height: 1.35;
+  margin-bottom: 4px;
+}
+.chat-properties .property-card-compact .property-zone {
+  font-size: 12px;
+  line-height: 1.5;
+  margin-bottom: 6px;
+}
+.chat-properties .property-card-compact .property-price {
+  font-size: 21px;
+  white-space: normal;
+}
+.chat-properties .property-card-compact .property-price > span {
+  display: inline-block;
+}
+.chat-properties .property-card-compact .property-specs {
+  flex-wrap: wrap;
+  gap: 3px 10px;
+  font-size: 11px;
+  padding-bottom: 6px;
+  margin: 8px 0;
+}
+.chat-properties .property-card-compact .unconfirmed {
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 6px 0;
+}
+.chat-properties .property-card-compact .text-link,
+.chat-properties .property-card-compact .property-interest {
+  min-height: 44px;
+  font-size: 12px;
+}
+.chat-properties .property-card-compact .property-interest {
+  width: 100%;
+  margin-top: 4px;
+  padding: 9px 12px;
+}
+@container (min-width: 560px) {
+  .landing-chat .chat-properties {
+    grid-auto-columns: min(300px, calc((100% - 12px) / 2));
+  }
+}
+@container (min-width: 900px) {
+  .landing-chat .chat-properties {
+    grid-auto-columns: min(300px, calc((100% - 24px) / 3));
+  }
+}

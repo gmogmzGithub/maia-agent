@@ -1,0 +1,8 @@
+# Opt-in: scripts/setup-google-maps-beta.sh writes the private file.
+services:
+  backend:
+    env_file:
+      - .local/google-maps.env
+  worker:
+    env_file:
+      - .local/google-maps.env

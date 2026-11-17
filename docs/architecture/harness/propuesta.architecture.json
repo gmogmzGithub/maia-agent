@@ -1,0 +1,307 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Maia: harness propuesto",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1360,
+      590
+    ],
+    "views": [
+      {
+        "id": "turno",
+        "label": "Recorrido del turno",
+        "focus": [
+          "entrada",
+          "contexto",
+          "llm",
+          "propuesta",
+          "validacion",
+          "salida"
+        ],
+        "note": "Diseño acordado, todavía no implementado. El modelo propone; el software valida y publica."
+      },
+      {
+        "id": "memoria",
+        "label": "Memoria y persistencia",
+        "focus": [
+          "skills",
+          "contexto",
+          "postgres",
+          "crm"
+        ],
+        "note": "El contexto se construye desde instrucciones, historial, hechos y continuidad autorizados."
+      },
+      {
+        "id": "control",
+        "label": "Herramientas y control",
+        "focus": [
+          "llm",
+          "herramientas",
+          "propuesta",
+          "validacion",
+          "salida",
+          "trazas"
+        ],
+        "note": "Proponer no reserva. Las operaciones conservan permisos, confirmaciones e idempotencia."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "canales",
+      "type": "frontend",
+      "label": "Website y WhatsApp",
+      "sublabel": "Mensajes y clics de interés",
+      "pos": [
+        40,
+        170
+      ],
+      "size": [
+        230,
+        85
+      ]
+    },
+    {
+      "id": "entrada",
+      "type": "backend",
+      "label": "Recepción y worker",
+      "sublabel": "Guardar, agrupar y autorizar",
+      "tag": "SE CONSERVA",
+      "pos": [
+        370,
+        170
+      ],
+      "size": [
+        230,
+        85
+      ]
+    },
+    {
+      "id": "contexto",
+      "type": "backend",
+      "label": "Contexto de trabajo",
+      "sublabel": "Hechos, historial y pendiente",
+      "tag": "SE REDISEÑA",
+      "pos": [
+        700,
+        170
+      ],
+      "size": [
+        230,
+        85
+      ]
+    },
+    {
+      "id": "llm",
+      "type": "external",
+      "label": "Agente · Haiku",
+      "sublabel": "Interpreta y elige cómo seguir",
+      "pos": [
+        1040,
+        170
+      ],
+      "size": [
+        230,
+        85
+      ]
+    },
+    {
+      "id": "skills",
+      "type": "backend",
+      "label": "Instrucciones y skills",
+      "sublabel": "Voz, política y procedimientos",
+      "pos": [
+        700,
+        20
+      ],
+      "size": [
+        230,
+        85
+      ]
+    },
+    {
+      "id": "herramientas",
+      "type": "backend",
+      "label": "Herramientas autorizadas",
+      "sublabel": "Inventario, contacto y visitas",
+      "pos": [
+        1040,
+        20
+      ],
+      "size": [
+        270,
+        85
+      ]
+    },
+    {
+      "id": "propuesta",
+      "type": "backend",
+      "label": "Propuesta completa",
+      "sublabel": "Texto, fichas, controles, continuidad",
+      "tag": "NUEVO CONTRATO",
+      "pos": [
+        1040,
+        320
+      ],
+      "size": [
+        290,
+        85
+      ]
+    },
+    {
+      "id": "validacion",
+      "type": "security",
+      "label": "Validación del harness",
+      "sublabel": "Referencias, revisión y resultados",
+      "tag": "SE AMPLÍA",
+      "pos": [
+        700,
+        320
+      ],
+      "size": [
+        260,
+        85
+      ]
+    },
+    {
+      "id": "salida",
+      "type": "frontend",
+      "label": "Publicación por canal",
+      "sublabel": "Presentación sin preguntas añadidas",
+      "tag": "SE REDISEÑA",
+      "pos": [
+        370,
+        320
+      ],
+      "size": [
+        270,
+        85
+      ]
+    },
+    {
+      "id": "postgres",
+      "type": "database",
+      "label": "PostgreSQL",
+      "sublabel": "Historial, hechos y operaciones",
+      "tag": "+ PRESENTACIÓN Y CONTINUIDAD",
+      "pos": [
+        370,
+        470
+      ],
+      "size": [
+        300,
+        85
+      ]
+    },
+    {
+      "id": "trazas",
+      "type": "backend",
+      "label": "LLM Ops",
+      "sublabel": "Ejecución, errores y evaluación",
+      "pos": [
+        820,
+        470
+      ],
+      "size": [
+        260,
+        85
+      ]
+    },
+    {
+      "id": "crm",
+      "type": "frontend",
+      "label": "CRM y asesores",
+      "sublabel": "Inventario y avance comercial",
+      "pos": [
+        40,
+        470
+      ],
+      "size": [
+        230,
+        85
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "from": "canales",
+      "to": "entrada",
+      "label": "mensaje / acción"
+    },
+    {
+      "from": "entrada",
+      "to": "contexto",
+      "label": "turno autorizado"
+    },
+    {
+      "from": "skills",
+      "to": "contexto",
+      "label": "instrucciones",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        815,
+        140
+      ]
+    },
+    {
+      "from": "contexto",
+      "to": "llm",
+      "label": "contexto"
+    },
+    {
+      "from": "llm",
+      "to": "herramientas",
+      "label": "solicitud + resultado",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "from": "llm",
+      "to": "propuesta",
+      "label": "propose_reply",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "from": "propuesta",
+      "to": "validacion",
+      "label": "propuesta",
+      "fromSide": "left",
+      "toSide": "right"
+    },
+    {
+      "from": "validacion",
+      "to": "salida",
+      "label": "salida aceptada",
+      "fromSide": "left",
+      "toSide": "right",
+      "labelAt": [
+        670,
+        295
+      ]
+    },
+    {
+      "from": "salida",
+      "to": "postgres",
+      "label": "mensaje + continuidad",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "from": "crm",
+      "to": "postgres",
+      "label": "operaciones CRM"
+    },
+    {
+      "from": "validacion",
+      "to": "trazas",
+      "label": "resultado del turno",
+      "fromSide": "bottom",
+      "toSide": "top"
+    }
+  ],
+  "cards": []
+}

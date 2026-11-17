@@ -1,0 +1,9 @@
+# Opt-in only: prepare the private file with scripts/setup-resend-beta.sh first.
+# This file is deliberately NOT named compose.override.yaml.
+services:
+  backend:
+    env_file:
+      - .local/resend.env
+  worker:
+    env_file:
+      - .local/resend.env

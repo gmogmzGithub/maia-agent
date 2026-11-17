@@ -1,0 +1,103 @@
+.home-page [hidden] {
+  display: none !important;
+}
+.conversation-active {
+  position: fixed;
+  top: var(--conversation-top, 0px);
+  left: 0;
+  right: 0;
+  height: var(--conversation-height, 100dvh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.home-page.conversation-active .site-header {
+  width: 100%;
+  margin: 0;
+  flex-shrink: 0;
+  padding: 10px 24px;
+}
+.conversation-active .site-header .brand {
+  font-size: 28px;
+}
+.conversation-active .site-header nav a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+}
+.conversation-active > main {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.conversation-active .conversation-landing {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 12px 24px max(12px, env(safe-area-inset-bottom));
+  overflow: hidden;
+}
+.conversation-active .landing-chat.chat-shell {
+  width: min(100%, 1100px);
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+}
+.conversation-active .landing-intro {
+  display: none;
+}
+.conversation-active .chat-heading {
+  flex-shrink: 0;
+  min-height: 44px;
+  padding-bottom: 8px;
+}
+.conversation-active .chat-heading button {
+  min-height: 44px;
+}
+.conversation-active .landing-chat .chat-messages {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  margin: 0;
+  padding: 12px 12px 24px;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+}
+.conversation-active .chat-form,
+.conversation-active .chat-footnote {
+  flex-shrink: 0;
+}
+.conversation-active .chat-form textarea {
+  font-size: 16px;
+}
+.conversation-active .chat-form .send-button {
+  width: 44px;
+  height: 44px;
+}
+.conversation-active .chat-footnote {
+  margin-top: 6px;
+  margin-bottom: 0;
+}
+.inventory-return {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 12px 24px;
+  background: #fafbfe;
+  border-bottom: 1px solid #c5d7eb;
+}
+@media (max-width: 740px) {
+  .home-page.conversation-active .site-header {
+    padding: 6px 16px;
+  }
+  .conversation-active .conversation-landing {
+    padding: 4px 12px max(8px, env(safe-area-inset-bottom));
+  }
+  .conversation-active .landing-chat .chat-messages {
+    padding: 8px 2px 16px;
+  }
+  .conversation-active .chat-footnote {
+    font-size: 9px;
+    line-height: 1.4;
+  }
+}

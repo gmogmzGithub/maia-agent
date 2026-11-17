@@ -1,0 +1,401 @@
+.home-page {
+  background: #fafbfe;
+}
+
+.home-page .site-header {
+  max-width: none;
+  padding: 26px 48px;
+  border-bottom: 0;
+  background: #fafbfe;
+}
+
+.conversation-landing {
+  position: relative;
+  isolation: isolate;
+  min-height: calc(100svh - 88px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 64px 24px 110px;
+  background:
+    radial-gradient(
+      ellipse 43% 46% at 52% 48%,
+      #bcdcff9c 0%,
+      #d4e8ff80 42%,
+      transparent 100%
+    ),
+    radial-gradient(ellipse 34% 40% at 28% 52%, #e9ddff70 0%, transparent 100%),
+    radial-gradient(ellipse 30% 40% at 75% 62%, #c8eeed66 0%, transparent 100%),
+    #fafbfe;
+}
+
+.landing-chat.chat-shell {
+  width: min(100%, 760px);
+  align-self: auto;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+.landing-intro {
+  text-align: center;
+  margin-bottom: 35px;
+}
+
+.landing-intro h1 {
+  font-family: var(--sans);
+  font-size: clamp(30px, 4vw, 46px);
+  font-weight: 450;
+  line-height: 1.2;
+  letter-spacing: -1.8px;
+  color: #253443;
+  margin-bottom: 14px;
+}
+
+.landing-intro > p:last-child {
+  font-size: 15px;
+  color: #66798e;
+  margin-bottom: 0;
+}
+
+.landing-chat .chat-form {
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px 12px 23px;
+  margin: 0;
+  border: 1px solid #ffffffd9;
+  border-radius: 32px;
+  background: #fff;
+  box-shadow:
+    0 3px 7px #385b7e0a,
+    0 12px 40px #5e81b00d;
+  transition:
+    box-shadow 0.2s,
+    border-color 0.2s;
+}
+
+.landing-chat .chat-form:focus-within {
+  border-color: #8eafdc;
+  box-shadow:
+    0 0 0 4px #b7d7fc42,
+    0 12px 40px #5e81b012;
+}
+
+.composer-home {
+  display: flex;
+  flex-shrink: 0;
+  color: #7194d1;
+  line-height: 1;
+}
+
+.landing-chat .chat-form textarea {
+  min-height: 28px;
+  max-height: 160px;
+  padding: 4px 0;
+  font-size: 15px;
+  line-height: 24px;
+  color: #273749;
+  border-radius: 0;
+}
+
+.landing-chat textarea::placeholder {
+  color: #788391;
+  opacity: 1;
+}
+
+.landing-chat .send-button {
+  width: 38px;
+  height: 38px;
+  margin: 0;
+  border-radius: 50%;
+  background: #315e91;
+  font-size: 24px;
+}
+
+.landing-chat .send-button:disabled {
+  background: #eef2f7;
+  color: #8494a9;
+  opacity: 1;
+}
+
+.landing-suggestions.suggestions {
+  margin: 24px 18px 0;
+  gap: 2px;
+}
+
+.landing-suggestions.suggestions button {
+  justify-content: flex-start;
+  gap: 14px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 12px;
+  font-size: 13px;
+  color: #405269;
+  background: transparent;
+}
+
+.landing-suggestions.suggestions button:hover {
+  background: #ffffff91;
+}
+
+.suggestion-icon {
+  width: 18px;
+  text-align: center;
+  font-size: 18px;
+}
+.suggestion-arrow {
+  margin-left: 6px;
+  color: #6a8bb3;
+  opacity: 0;
+}
+.landing-suggestions button:hover .suggestion-arrow,
+.landing-suggestions button:focus-visible .suggestion-arrow {
+  opacity: 1;
+}
+
+.explore-inventory {
+  position: absolute;
+  bottom: 28px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  font-size: 16px;
+  font-weight: 550;
+  color: #365572;
+  padding: 14px 22px;
+  border: 1px solid #c5d7eb;
+  border-radius: 18px;
+  background: #ffffffc9;
+  box-shadow: 0 5px 20px #385b7e0a;
+}
+
+.explore-inventory:hover {
+  background: #fff;
+  border-color: #8eafdc;
+}
+.explore-label {
+  text-align: left;
+}
+.explore-label small {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 400;
+  color: #66798e;
+}
+.explore-arrow {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: #e8f1fc;
+  font-size: 25px;
+}
+.home-page .inventory-section {
+  background: var(--paper);
+  max-width: none;
+  padding: 64px max(24px, calc((100% - 1224px) / 2));
+}
+.home-page footer {
+  padding-left: 24px;
+  padding-right: 24px;
+}
+
+.landing-chat.has-messages {
+  margin-top: -20px;
+}
+.landing-chat.has-messages .landing-intro {
+  margin-bottom: 24px;
+}
+.landing-chat.has-messages .landing-intro h1 {
+  font-size: 30px;
+}
+.landing-chat.has-messages .landing-intro > p:last-child {
+  font-size: 13px;
+}
+.landing-chat .chat-heading {
+  padding: 0 8px 12px;
+  border-bottom: 1px solid #c5d7eb99;
+}
+.conversation-label {
+  font-size: 12px;
+  color: #586e85;
+}
+.landing-chat .new-chat {
+  color: #47698f;
+}
+.landing-chat .chat-messages {
+  min-height: 160px;
+  max-height: min(46svh, 460px);
+  padding: 8px 12px 24px;
+  margin-bottom: 18px;
+  scrollbar-width: thin;
+}
+.landing-chat .chat-message.user {
+  background: #ffffffb3;
+}
+.landing-chat .chat-message.assistant {
+  padding-right: 0;
+}
+.landing-chat .chat-message > p {
+  color: #31475c;
+  line-height: 1.8;
+}
+.landing-chat .message-author {
+  color: #6882a0;
+}
+.landing-chat .chat-footnote {
+  color: #7c8c9e;
+  margin-bottom: 0;
+}
+.landing-chat .notice {
+  margin: 0 0 16px;
+}
+
+.contact-card {
+  padding: 20px;
+  margin: 0 0 18px;
+  border: 1px solid #c3d6ed;
+  border-radius: 16px;
+  background: #ffffffd9;
+}
+.contact-card > strong {
+  font-size: 14px;
+  color: #31475c;
+}
+.contact-card p {
+  font-size: 12px;
+  margin: 6px 0 15px;
+  color: #66798e;
+}
+.contact-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+.contact-fields label {
+  font-size: 11px;
+}
+.contact-fields label small {
+  font-size: 10px;
+}
+.contact-fields input {
+  padding: 9px 12px;
+  font-size: 14px;
+}
+.contact-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-top: 18px;
+}
+.contact-actions .link-button {
+  font-size: 11px;
+}
+.contact-invite {
+  align-self: center;
+  margin: 8px 0 22px;
+  font-size: 12px;
+}
+.contact-card .contact-error {
+  color: #8f503a;
+  margin-top: 12px;
+}
+.contact-registered {
+  color: #527063;
+  font-size: 11px;
+  margin: 0 0 12px;
+  text-align: center;
+}
+
+@media (max-width: 740px) {
+  .home-page .site-header {
+    padding: 22px 20px;
+  }
+  .home-page .site-header nav {
+    gap: 16px;
+    font-size: 10px;
+  }
+  .conversation-landing {
+    min-height: calc(100svh - 76px);
+    padding: 48px 20px 100px;
+    background-size: 180% 100%;
+    background-position: center;
+  }
+  .landing-intro {
+    margin-bottom: 28px;
+  }
+  .landing-intro h1 {
+    letter-spacing: -1.2px;
+  }
+  .landing-intro > p:last-child {
+    font-size: 13px;
+    max-width: 270px;
+    margin: 0 auto;
+  }
+  .landing-chat .chat-form {
+    gap: 10px;
+    padding: 10px 10px 10px 16px;
+    border-radius: 28px;
+  }
+  .landing-chat .chat-form textarea {
+    font-size: 14px;
+  }
+  .composer-home svg {
+    width: 24px;
+    height: 24px;
+  }
+  .explore-inventory {
+    font-size: 14px;
+    gap: 14px;
+    padding: 12px 16px;
+  }
+  .landing-chat .send-button {
+    width: 34px;
+    height: 34px;
+  }
+  .landing-suggestions.suggestions {
+    margin: 20px 0 0;
+  }
+  .landing-suggestions.suggestions button {
+    padding: 10px 8px;
+    font-size: 12px;
+    gap: 10px;
+  }
+  .suggestion-arrow {
+    display: none;
+  }
+  .landing-chat.has-messages .landing-intro h1 {
+    font-size: 27px;
+  }
+  .landing-chat .chat-messages {
+    padding-left: 0;
+    padding-right: 4px;
+    max-height: 44svh;
+  }
+  .home-page .inventory-section {
+    padding: 40px 20px;
+  }
+  .contact-fields {
+    grid-template-columns: 1fr;
+  }
+  .contact-actions {
+    flex-direction: column-reverse;
+  }
+  .contact-actions .button {
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
