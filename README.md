@@ -1,309 +1,225 @@
 # Maia
 
-Maia is a Hermes-backed real estate lead agent that handles WhatsApp, Facebook
-Messenger, and Instagram inquiries,
-answers from approved property documents, schedules visits through Google
-Calendar, and runs deterministic follow-up workflows from an auditable product
-backend.
+Pre-Alpha para una inmobiliaria: inventario en CRM, búsqueda conversacional y fichas públicas. Consulta [`docs/architecture/code-structure.md`](docs/architecture/code-structure.md) para conocer los módulos.
 
-This repository is intentionally public. It is written to show the engineering
-work behind an agentic product, not just a chatbot demo: the language model
-handles conversation and tool choice, while the backend owns identity,
-authorization, persistence, delivery, retries, and business authority.
+## Estado de las pruebas
 
-## What This Demonstrates
+El plan manual está en Obsidian: `Testing Fase 1.md` y `Testing Fase 2.md`, dentro de `Projects/maia-real-estate`. Guillermo validó inventario y búsqueda, prospectos y citas. Confirmó que las pruebas del cuarto incremento funcionan. Quedan pendientes la aprobación de plantillas por Meta y la validación del seguimiento real con ellas. Mientras tanto, priorizó el [incremento 6, captación de propiedades](docs/design/sexto-incremento-captacion.md). El incremento 5, acompañamiento posintención, queda pospuesto.
 
-- A real product boundary around an LLM agent instead of a scripted intent
-  classifier.
-- WhatsApp, Facebook Messenger, and Instagram webhook ingestion with signature
-  validation, a shared durable Inbox/Outbox, channel-scoped identity, delivery
-  retries, and ambiguity handling.
-- Grounded property Q&A from accepted, versioned property documents.
-- Appointment scheduling against Google Calendar availability.
-- Telegram-based administrative workflows for exceptional cases.
-- One eligibility gate above the Outbox, so no outbound message can exist
-  without a recorded decision authorising it.
-- A commercial system of record — Contacts, needs, Opportunities, assignment and
-  next actions — behind small module interfaces, with the races that matter
-  guarded by database constraints rather than service-layer checks.
-- An explicit handling authority over each conversation, so an advisor and the
-  agent can never answer the same customer at once, and a request for a human
-  cannot quietly go unanswered.
-- Appointments that belong to a named advisor and their own authoritative
-  calendar, with rescheduling that secures the new time before releasing the old.
-- Server-rendered Mexican Spanish operator surfaces for the team, absences,
-  property specialists, the visit calendar and the conversation inbox, showing
-  refused outbound decisions and communication restrictions with their reasons.
-- A separate server-rendered public site for authorized inventory, explicit
-  search, responsive galleries, saved collections, anonymous Maia conversations,
-  and opaque continuity into the official WhatsApp channel.
-- A read-only external-inventory port with an EasyBroker adapter, strict local
-  service-area filtering, provenance-bearing candidates, and use-time
-  revalidation that never replaces the authoritative Product catalog.
-- Explainable, Administrator-reviewed reactivation and Development-campaign
-  planning with explicit audiences, provider-observed templates, delivery-time
-  consent and stop checks, and real dispatch disabled by default.
-- A versioned domain-event taxonomy behind a durable analytics Outbox, projected
-  into a separate pseudonymous PostgreSQL schema by a pass that is safe to replay
-  and rebuilds a period rather than incrementing a counter, so a late event is
-  correct instead of lost.
-- Business intelligence that treats not knowing as reportable: `Sin registrar` is
-  never a zero and never a loss, a ratio with no denominator says so, and invalid
-  traffic is stored, classified and reported as excluded volume.
-- A manually administered `Patrocinada` offer where payment buys a labelled
-  position and provably not relevance — the module that orders public results
-  imports nothing from the modules that handle money — with caps, deficit-based
-  rotation, capacity that cannot be oversold, and paused days that are preserved
-  rather than spent.
-- A price catalog that refuses to publish a first price without a written
-  reference to measured pilot traffic, seven-day quotes that preserve their
-  catalog version, and discounts that require a recorded reason.
-- Buyer reporting delivered by expiring, revocable, read-only link and an
-  exportable PDF, carrying aggregate delivery, disclosed comparables and explicitly
-  non-causal language — and no contact identity, phone number or conversation.
-- Organizational isolation carried by the schema rather than by discipline: every
-  table holding a Brokerage Organization's data names it with a composite foreign
-  key that makes the column and its parent agree, every business key that was
-  globally unique is unique per Organization, a written scoping table classifies
-  all 91 tables, and a test refuses one nobody classified.
-- A managed platform where a second Brokerage Organization is provisioned by a
-  resumable, reversible run and cannot answer a customer until the last step
-  finishes — with versioned configuration documents that refuse to hold a
-  credential, per-Organization secret *references* that store a name and a
-  fingerprint rather than a value, and an inbound number, bot or hostname that is
-  refused when unbound instead of defaulting to the founding brokerage.
-- Temporary, explained, expiring and counted internal support access in place of a
-  superadmin — an ordinary read-only member row inside one Organization, listed on
-  that customer's own page — plus per-Organization export that names every column
-  it withholds and deletion that refuses a live retention hold outright.
-- A standalone Hermes plugin that exposes typed product operations without
-  giving the agent direct database or Calendar credentials — and deliberately no
-  new tool for the platform: provisioning, entitlements, credentials, support
-  access and deletion are not things a conversation should be able to reach.
-- Recovery-oriented tests around persistence, sessions, tools, workers,
-  webhooks, and channel clients.
+Consulta las [mejoras y regresiones por fase](docs/testing/mejoras-transversales.md), la [validación del cuarto incremento](docs/testing/cuarto-incremento.md) y los [criterios de fases](docs/design/acuerdos-q215-q240.md#5-criterios-de-fases). Portada, nombre y filtros del CRM conservan pendientes de aceptación manual.
 
-For the source, test, documentation, migration, asset, and generated-artifact
-layout, see `docs/architecture/repository-layout.md`.
+Captación: [retomar pruebas desde la #5](docs/testing/sexto-incremento-recorrido-manual.md). Para activar sugerencias y mapa Google, usar la [guía de Google Maps/Places](docs/testing/google-ubicacion-beta.md); sus claves se preparan con `scripts/setup-google-maps-beta.sh`, sin modificar la configuración principal.
 
-## Architecture
+## Opción recomendada: ejecutar todo con Docker
 
-Maia has three deliberately separated runtime responsibilities:
+Requisito: Docker Desktop en ejecución. Ejecuta los comandos desde cualquier subdirectorio del repositorio. La primera línea te lleva a su raíz, así no importa si la terminal ya está dentro de `backend` o `frontend`.
 
-- **Hermes runtime:** owns natural-language reasoning, conversation continuity,
-  fragmented-message interpretation, tool selection, and response composition.
-- **Maia backend:** owns trusted identity, PostgreSQL state, authorization,
-  policy, idempotency, audit events, Calendar/Meta effects, and deterministic
-  safety outcomes.
-- **Public site:** owns server-rendered presentation and browser interaction; it
-  consumes authenticated Product contracts and owns no catalog truth or identity.
+1. Desde la raíz del repositorio, crea `.env` solo si aún no existe y configura tu clave de Anthropic. Sin esa clave, el CRM funciona, pero el chat no puede responder.
 
-```mermaid
-flowchart LR
-    Lead["Contact on WhatsApp / Messenger / Instagram"]
-    Visitor["Public visitor"]
-    Meta["Meta customer messaging APIs"]
-    Backend["Maia FastAPI backend"]
-    Site["Public SSR site"]
-    Inbox[("PostgreSQL Inbox / Outbox / Audit")]
-    Hermes["Hermes runtime"]
-    Plugin["Maia Hermes plugin"]
-    Calendar["Google Calendar"]
-    Broker["Broker / Admin channel"]
+   ```sh
+   cd "$(git rev-parse --show-toplevel)"
+   test -f .env || cp .env.example .env
+   ```
 
-    Lead <--> Meta
-    Visitor --> Backend
-    Backend <--> Site
-    Meta --> Backend
-    Backend <--> Inbox
-    Backend --> Hermes
-    Hermes --> Plugin
-    Plugin --> Backend
-    Backend --> Calendar
-    Backend --> Meta
-    Backend --> Broker
+   Si `.env` ya existe, conserva ese archivo y edítalo para configurar `ANTHROPIC_API_KEY`; no vuelvas a copiar la plantilla encima.
+
+2. Construye e inicia PostgreSQL, backend, worker y website:
+
+   ```sh
+   docker compose up --build -d
+   docker compose ps
+   ```
+
+   Espera a que `db` y `backend` aparezcan como saludables y los servicios `worker` y `web` como activos.
+
+3. Crea tu acceso del CRM. No hay una cuenta ni contraseña predeterminadas. El comando te pide correo y contraseña; usa esos mismos datos al entrar al CRM.
+
+   ```sh
+   docker compose exec backend python manage.py createsuperuser
+   ```
+
+4. Abre:
+
+   - Website: <http://localhost:3000>
+   - CRM: <http://localhost:3000/crm>
+   - Panel de ejecuciones: <http://localhost:8000/admin/core/execution/>
+
+   Inicia sesión en el CRM con el correo y la contraseña que acabas de crear.
+
+Para ver los registros de backend y worker mientras pruebas:
+
+```sh
+cd "$(git rev-parse --show-toplevel)"
+docker compose logs -f backend worker
 ```
 
-The model is never trusted as the system of record. It can request operations
-through tools; the backend decides what is allowed, records what happened, and
-classifies uncertain outcomes for review.
+## Alternativa: ejecutar backend y website fuera de Docker
 
-## Current Status
+Requisitos: Docker, Python 3.13 con `uv`, Node.js 22 y `pnpm` 11. No inicies esta opción si ya estás usando todos los servicios con Docker, porque ocuparían los mismos puertos.
 
-Maia is a local product prototype. The core product paths are implemented and
-test-covered locally:
+1. Desde cualquier subdirectorio, vuelve a la raíz del repositorio. Si aún no existe `.env`, copia la plantilla; configura `ANTHROPIC_API_KEY` en ese archivo.
 
-- property document ingestion and replacement;
-- grounded sales conversations through Hermes;
-- WhatsApp, Facebook Messenger, and Instagram webhook and outbound delivery
-  workflows, gated on one recorded eligibility decision per message;
-- appointment availability, booking, cancellation, and broker notifications;
-- Telegram administration;
-- an operational CRM: one brokerage organization, administrator and advisor
-  roles, contacts, needs with confirmed and pending criteria, opportunities with
-  explicit stages and evidence-bearing outcomes, deterministic assignment, and
-  next actions;
-- conversation-content expiry kept separate from commercial history;
-- a Mexican Spanish public experience with indexable authorized listings,
-  shareable search URLs, gallery and technical-sheet views, server-backed saved
-  collections, anonymous Maia conversation, and single-use channel handoffs;
-- fixture-backed EasyBroker candidate indexing and Product/Hermes search within
-  Guadalajara, Zapopan, and Tlaquepaque, with Admin evidence controls and
-  fail-closed recommendation/share/appointment revalidation;
-- a Mexican-Spanish reactivation surface with explainable inventory matches,
-  PII-safe campaign previews, bounded execution and auditable outcomes, while
-  real Marketing dispatch remains `Denied` pending accepted external gates;
-- versioned, idempotent analytics events, a durable analytics Outbox, a
-  replayable projection into a separate pseudonymous schema, and an internal
-  Mexican-Spanish BI dashboard reporting Follow-up Coverage, response time,
-  qualification, attendance, outcome completeness, harm signals and invalid
-  traffic — with `Sin registrar` kept distinct from zero;
-- a manually administered sponsorship lifecycle with a versioned price catalog,
-  seven-day quotes, capacity that cannot be oversold, labelled placements that
-  never influence organic ordering, and expiring read-only buyer reports with an
-  exportable PDF;
-- complete organizational isolation: every table holding a Brokerage
-  Organization's data names it, every business key is unique per Organization,
-  and every inbound identifier — WhatsApp number, Facebook Page, Instagram
-  professional account, Telegram bot, public hostname — resolves through an
-  explicit channel binding whose absence is a refusal rather than a default to
-  the founding brokerage;
-- a managed platform for a second Brokerage Organization: resumable and
-  reversible provisioning, versioned configuration documents, per-Organization
-  secret *references* that never store a credential, append-only entitlements
-  with a base package and Advisor-seat tiers, measured monthly usage, dry-run
-  initial import with per-record findings and rollback, and per-Organization
-  export and deletion bounded by recorded retention holds;
-- temporary, explained, expiring and counted internal support access instead of
-  a superadmin, visible to the customer's own Administrator;
-- Docker Compose packaging for a single-host local topology.
+   ```sh
+   cd "$(git rev-parse --show-toplevel)"
+   test -f .env || cp .env.example .env
+   ```
 
-Not claimed yet:
+   Si `.env` ya existe, no lo sobrescribas.
 
-- production deployment;
-- live Facebook Messenger or Instagram account validation; those adapters are
-  provider-shaped and locally exercised, but no accounts are connected yet;
-- a real external brokerage onboarded; the platform is implemented and its entry
-  condition — knowing a candidate inmobiliaria's real needs — is not met;
-- any price, invoice or charging for the packaging structure that exists;
-- measured capacity for any number of Organizations;
-- paid lead acquisition;
-- a first sponsorship price, which stays unset until the pilot supplies the
-  traffic data that would justify it;
-- a data warehouse, ad auctions, pay-per-click billing, invoicing, or any
-  movement of money;
-- an agreed analytics retention period, which remains an explicit privacy and
-  legal decision;
-- proactive follow-up delivery, which stays refused until real consent capture
-  and approved WhatsApp templates exist;
-- legal/privacy readiness for real customer data;
-- a real EasyBroker account, API MLS entitlement, collaborator authority, or
-  provider-approved cache/redistribution rights;
-- horizontal scaling or managed cloud operations.
+2. Inicia PostgreSQL:
 
-## Run Maia
+   ```sh
+   docker compose up -d db
+   ```
 
-The complete local system runs in five long-lived Docker containers. Garage
-initializes its private buckets and Product key when it starts:
+3. En la primera terminal, desde la raíz, instala dependencias, prepara la base, crea tu acceso y arranca el backend:
 
-```mermaid
-flowchart LR
-    Host["Your computer<br/>localhost:8080"]
-    subgraph Compose["Docker Compose"]
-        Product["product<br/>Maia API + workers"]
-        Site["site<br/>public SSR experience"]
-        Hermes["hermes<br/>conversation runtime"]
-        DB[("db<br/>PostgreSQL")]
-        Objects[("object-storage<br/>private S3-compatible media")]
-        Product <-->|"private loopback link"| Hermes
-        Product <-->|"authenticated loopback contracts"| Site
-        Product <--> DB
-        Product <--> Objects
-    end
-    Host --> Product
+   ```sh
+   cd "$(git rev-parse --show-toplevel)"
+   uv sync --project backend --frozen
+   uv run --project backend --directory backend python manage.py migrate
+   uv run --project backend --directory backend python manage.py createsuperuser
+   uv run --project backend --directory backend python manage.py runserver 127.0.0.1:8000 --noreload
+   ```
+
+   Mantén esta terminal abierta. Si un comando falla, detente y resuelve ese error antes de ejecutar el siguiente.
+
+4. En una segunda terminal, inicia el worker:
+
+   ```sh
+   cd "$(git rev-parse --show-toplevel)"
+   uv run --project backend --directory backend python manage.py procrastinate worker --concurrency=4
+   ```
+
+5. En una tercera terminal, instala dependencias del website y arráncalo:
+
+   ```sh
+   cd "$(git rev-parse --show-toplevel)"
+   pnpm --dir frontend install --frozen-lockfile
+   pnpm --dir frontend dev
+   ```
+
+Abre las mismas direcciones de la opción Docker. Para entrar al CRM usa el correo y contraseña creados en el paso 3.
+
+## Prueba manual del primer incremento
+
+Usa datos ficticios claramente identificados con `PRUEBA`. En el CRM crea propiedades con estos grupos:
+
+- **Resultados esperados:** al menos cuatro propiedades publicadas que coincidan con la misma operación, municipio, presupuesto y características. Esto permite validar “más opciones” sin resultados repetidos.
+- **Exclusiones:** una propiedad sin publicar y una publicada cuyo precio quede fuera del presupuesto de la búsqueda.
+- **Dato desconocido:** una propiedad con una característica relevante sin confirmar. Deja esa característica vacía si el formulario lo permite.
+- **Privacidad:** agrega a una propiedad una nota interna identificable, por ejemplo `PRUEBA: no mostrar en respuestas públicas`.
+
+Recorre los checks del primer incremento en este orden:
+
+1. Crea una propiedad identificada como `PRUEBA`, guarda el formulario y vuelve a abrirla. Comprueba que conservó los campos.
+2. Edita un dato, guarda y haz una nueva consulta en el chat. Comprueba que aparece el dato actualizado.
+3. Publícala. Confirma que aparece en el inventario público y abre su ficha.
+4. En el chat, busca usando operación, municipio, presupuesto y características. Comprueba que cada opción cumple los filtros.
+5. Inicia otra conversación con una petición general. Maia debe preguntar los requisitos que faltan.
+6. Cambia solo un requisito. Comprueba que la búsqueda lo aplica y conserva los demás.
+7. Pide más opciones. Comprueba que muestra la siguiente página sin repetir propiedades ni cambiar los requisitos.
+8. Busca una combinación sin resultados. Maia debe decirlo sin inventar propiedades ni relajar los filtros.
+9. Pregunta por una característica desconocida. Maia debe marcarla como pendiente de confirmar.
+10. Recarga el mismo navegador. Comprueba que conserva conversación y criterios.
+11. Revisa respuestas y fichas. Confirma que no exponen la nota interna ni afirman datos que no estén en el inventario.
+12. Despublica la propiedad. Confirma que desaparece de búsquedas nuevas y que su ficha pública queda inaccesible; los mensajes anteriores deben conservar lo que mostraron.
+13. Revisa el panel `/admin/core/execution/` o los registros de backend y worker. Deben mostrar estado, herramientas, duración, tokens y errores cuando ocurran.
+
+El comando opcional siguiente crea cuatro propiedades `PRUEBA`, todas publicadas. Tres son de renta y una de venta. No crea un borrador, por lo que tendrás que crear manualmente un borrador y suficientes propiedades coincidentes para tu filtro. No reemplaza los datos que ya existan.
+
+```sh
+cd "$(git rev-parse --show-toplevel)"
+docker compose exec backend python manage.py seed_demo
 ```
 
-Hermes, Product, and the public Site are separate containers that share a private
-network namespace. Product is the only customer/application entry point: it serves its API
-and proxies approved public paths to Site. Site calls Product through a dedicated
-authenticated loopback contract and has no database access. PostgreSQL is reached
-as `db` on the private Compose network. Listing Media bytes are reached through
-the private S3-compatible service; PostgreSQL still owns authority and metadata.
-Garage's S3 API binds only to host loopback for local operation.
+En la opción local, usa en su lugar:
 
-Prerequisite: Docker with Docker Compose.
-
-There are intentionally no bootstrap or startup wrapper scripts. Compose now
-owns the service topology, dependency installation, startup order, health
-checks, migrations, persistent volumes, and shutdown. A wrapper such as
-`scripts/up.sh` would only hide the Compose command and create a second runtime
-path that could drift from this file.
-
-Create the one local environment file:
-
-```bash
-cp .env.example .env
+```sh
+cd "$(git rev-parse --show-toplevel)"
+uv run --project backend --directory backend python manage.py seed_demo
 ```
 
-In `.env`, fill the shared local secrets with different values from
-`openssl rand -hex 32`, then configure at least one local Basic-auth account:
+## Segundo incremento: prospectos y Telegram
 
-```text
-HERMES_DASHBOARD_SESSION_TOKEN=
-PLUGIN_API_TOKEN=
-SITE_PRODUCT_API_TOKEN=
-GARAGE_RPC_SECRET=
-GARAGE_ADMIN_TOKEN=
-GARAGE_METRICS_TOKEN=
-OBJECT_STORAGE_ACCESS_KEY_ID=
-OBJECT_STORAGE_SECRET_ACCESS_KEY=
-DEVELOPER_BASIC_CREDENTIALS_JSON={"developer":"replace-with-a-secret"}
+El [diseño aceptado](docs/design/segundo-incremento-prospectos.md) define el alcance. En CRM → Asesores, configura el equipo, selecciona un asesor predeterminado y asigna responsables desde los editores de propiedades.
+
+Para Telegram:
+
+1. Crea un bot con `@BotFather` y guarda el token en `TELEGRAM_BOT_TOKEN` dentro de `.env`.
+2. Configura `PUBLIC_BASE_URL` con una dirección del website que pueda abrir el asesor. `http://localhost:3000` solo funciona en la misma computadora.
+3. Recarga el entorno de backend y worker:
+
+   ```sh
+   docker compose up -d --force-recreate backend worker
+   ```
+
+4. Cada asesor abre el bot en su conversación privada y pulsa **Iniciar**. Consulta los IDs sin imprimir token ni mensajes:
+
+   ```sh
+   docker compose exec backend python manage.py telegram_private_chats
+   ```
+
+5. Guarda el ID del chat privado en CRM → Asesores.
+
+Los avisos se conservan aunque falte configuración. Desde su conversación en el CRM puedes reintentar avisos bloqueados o rechazados después de corregir la causa. Los avisos entregados o de resultado incierto no se reenvían. La [API de Telegram](https://core.telegram.org/bots/api#making-requests) distingue respuestas de éxito y error; un timeout de red no demuestra que no se entregó el mensaje.
+
+El celular es declarado, sin SMS ni verificación de identidad. Cada visitante conserva acceso únicamente a su conversación. El CRM conserva una ficha por número normalizado. Los requisitos del primer contacto se actualizan desde su conversación hasta que el equipo los edita en el CRM; las conversaciones nuevas con el mismo número no los sobrescriben ni reciben el contexto de otras sesiones.
+
+Pausar a Maia conserva mensajes e invalida respuestas en proceso. Reactivarla permite responder al siguiente mensaje; no envía automáticamente respuestas atrasadas. El asesor controla el estado comercial y el siguiente paso.
+
+Una solicitud humana pendiente genera un solo aviso. Cuando el asesor cambia el estado a En atención, se da por atendida esa solicitud; una petición posterior puede generar otro aviso.
+
+## Tercer incremento: citas
+
+CRM → Citas permite configurar reglas globales, ventanas y duración por propiedad, crear citas y revisar cambios externos. CRM → Asesores conecta el calendario principal mediante OAuth y confirmación de cuenta.
+
+Configura [Google Calendar](docs/testing/google-calendar-setup.md) antes de probar reservas reales. Backend y worker necesitan `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI` y `CALENDAR_ENCRYPTION_KEY`. El [diseño aceptado](docs/design/tercer-incremento-citas.md) y la [validación manual](docs/testing/tercer-incremento.md) describen el alcance. Tercer incremento cerrado: Guillermo reportó las pruebas manuales exitosas y confirmó la corrección que ofrece horarios disponibles sin pedir primero una fecha.
+
+## Cuarto incremento: WhatsApp y seguimiento
+
+Pruebas realizadas aprobadas por Guillermo el 7 de noviembre de 2026. Pendientes: aprobación y sincronización de plantillas, activación y validación del seguimiento real mediante entrega controlada. El [diseño aceptado](docs/design/cuarto-incremento-seguimiento.md), la [configuración de WhatsApp](docs/testing/whatsapp-setup.md) y la [lista de pruebas](docs/testing/cuarto-incremento.md) describen el alcance y los pasos externos.
+
+CRM → Prospectos → WhatsApp y reglas de seguimiento configura la hora, sincroniza plantillas aprobadas y muestra entregas que requieren revisión. La ficha de cada prospecto conserva ciclo, permisos y resultados. El website pide permiso para seguimiento; WhatsApp admite texto y botones de confirmación de citas. La transcripción queda para una incorporación posterior.
+
+El código controla los días 1, 5, 7, 14, 18, 22, 26 y 28. Haiku selecciona la plantilla contextual con historial y requisitos; el transporte conserva el mensaje y sus resultados. Una respuesta reciente, cita, pausa, baja o vencimiento impide el envío. No se reenvían automáticamente resultados inciertos.
+
+## Sexto incremento: captación de propiedades
+
+Implementado en código y pendiente de aceptación manual. El propietario usa `/propietarios` para registrar Venta, Renta o Preventa; el equipo revisa desde CRM → Captación. La cuenta requiere email, teléfono y contraseña, y email verificado antes del envío. Cinco fotos mínimas con optimización automática, planos y enlaces opcionales. La publicación exige revisión y aceptación del contrato dummy de exclusividad por seis meses.
+
+La aprobación y la preparación de renovación generan un correo con el contrato dummy PDF y una liga directa a la solicitud. Si hace falta iniciar sesión, el destino se conserva y después se enfoca el acuerdo. Recibir el PDF o abrir la liga no acepta el contrato. El [diseño de captación](docs/architecture/captacion/README.md) documenta la copia versionada y el control de entregas.
+
+Consulta la [puesta en servicio y validación](docs/testing/sexto-incremento.md): requiere actualizar los tres procesos, aplicar las migraciones nuevas y configurar correo para verificación y recuperación reales. Por defecto, los correos se guardan como archivos privados de desarrollo. El inventario preexistente conserva su flujo.
+
+Resend está preparado por HTTPS para los correos de cuenta y captación. La [guía de activación BETA](docs/testing/resend-beta.md) incluye un asistente para dominio, remitente, claves y webhook. No se activa automáticamente. El CRM distingue correo local, aceptado, entregado al servidor del destinatario, demorado y rebotado, y permite enviar el aviso local una vez configurado el proveedor.
+
+Guillermo confirmó que pudo continuar con la verificación local. Quedan ajustes visuales y de la solicitud de cuenta, registrados en [mejoras transversales](docs/testing/mejoras-transversales.md#m22-diseño-de-captación). El [flujo completo de cuentas y verificación real de email y celular](docs/design/cuentas-y-verificacion.md) queda para otra etapa. La validación funcional de captación continúa.
+
+## Checks todavía planeados
+
+El incremento 5, acompañamiento posintención, permanece pospuesto y sin implementar. El cuarto conserva los pendientes de Meta y seguimiento real. El sexto necesita aceptación manual tras su puesta en servicio.
+
+## Desarrollo y verificaciones automatizadas
+
+Desde la raíz del repositorio:
+
+```sh
+uv run --project backend --directory backend pytest -q
+uv run --project backend --directory backend ruff check .
+uv run --project backend --directory backend python manage.py check
+uv run --project backend --directory backend python manage.py makemigrations --check --dry-run
+uv run --project backend --directory backend python manage.py export_openapi > frontend/openapi.json
+pnpm --dir frontend api:generate
+pnpm --dir frontend typecheck
+pnpm --dir frontend build
 ```
 
-Add `ANTHROPIC_API_KEY` when you want real model conversations. Meta, Telegram,
-and Google Calendar credentials are optional; their health status is reported
-individually when absent. Google Calendar is the one exception to “one file”:
-Google issues a service-account JSON key, so place it at
-`secrets/google-calendar.json` and set the documented container path in `.env`.
+Con el backend local y el website en ejecución, comprueba el proxy:
 
-For `OBJECT_STORAGE_ACCESS_KEY_ID`, use Garage's `GK` plus 24 hexadecimal
-characters format. The old MinIO volume can be copied into Garage through the
-explicit `storage-migration` profile documented in
-[Run Everything Locally](docs/run/everything-locally.md); the source volume is
-retained after the copy.
-
-Build the images and start everything the first time, or after dependencies or
-Dockerfiles change:
-
-```bash
-docker compose up --build
+```sh
+cd "$(git rev-parse --show-toplevel)"
+uv run --project backend --directory backend python scripts/check_web_routes.py
 ```
 
-For normal day-to-day startup, this is the only command:
-
-```bash
-docker compose up
-```
-
-The public experience is available at [http://localhost:8080/](http://localhost:8080/)
-and Product health at [http://localhost:8080/health](http://localhost:8080/health).
-Database migrations run automatically before Product starts.
-
-Common operations:
-
-```bash
-docker compose down                 # stop; preserve data
-docker compose logs -f              # follow every service
-docker compose exec product pytest  # run the token-free test suite in Docker
-```
-
-The required CI gate runs without Meta, Anthropic, Google, or Telegram
-credentials. See [Run Everything Locally](docs/run/everything-locally.md) for
-the exact local setup, test commands, acceptance path, and provider-credential
-boundaries. The current architectural map lives in
-[Maia Architecture](docs/architecture/architecture.md), and the managed-platform
-boundary is captured in the ADR series, especially
-[ADR-0033](docs/adr/0033-build-a-managed-real-estate-platform-not-a-general-crm.md)
-through [ADR-0055](docs/adr/0055-onboard-and-offboard-organizations-as-resumable-reversible-runs.md).
-Open business questions for Santiago live in
-[Santiago Review](docs/open-questions/SANTIAGO_REAL_ESTATE_REVIEW.md).
+La comprobación crea una conversación vacía y valida URL, cookies y protección CSRF; no llama al modelo. La búsqueda filtra por precio, municipio, colonia y características. La colonia se compara como texto, sin radios geográficos; las fotos se guardan como URLs.

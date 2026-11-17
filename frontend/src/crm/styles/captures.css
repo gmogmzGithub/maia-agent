@@ -1,0 +1,293 @@
+/* Selection and commercial status use different visual signals. */
+.capture-dashboard-heading h2 {
+  margin: 0;
+}
+.capture-summary {
+  margin: 4px 0 0;
+  color: #52665c;
+  font-size: 14px;
+}
+.capture-status-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 18px 0 24px;
+}
+.capture-status-tabs button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid #cbd7cf;
+  border-radius: 10px;
+  background: white;
+  color: #29473a;
+  padding: 12px;
+  min-height: 46px;
+  font-size: 14px;
+}
+.capture-status-tabs button[aria-selected="true"] {
+  background: #193e31;
+  border-color: #193e31;
+  color: white;
+  font-weight: 700;
+}
+.capture-tab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  min-height: 24px;
+  border-radius: 16px;
+  padding: 0 6px;
+  background: #edf1ed;
+  color: #193e31;
+  font-size: 12px;
+}
+.capture-status-tabs button[aria-selected="true"] .capture-tab-count {
+  background: white;
+}
+.capture-crm .capture-list-item {
+  margin: 0 0 12px;
+  padding: 16px;
+  gap: 10px;
+  border: 1px solid #d0dbd3;
+  overflow-wrap: anywhere;
+}
+.capture-crm .capture-list-item:hover {
+  background: #f5f6f5;
+  border-color: #536259;
+}
+.capture-crm .capture-list-item.selected {
+  background: white;
+  border-color: #193e31;
+  box-shadow: inset 4px 0 #193e31;
+}
+.capture-list-item strong {
+  font-size: 15px;
+  line-height: 1.45;
+}
+.capture-status {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 6px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 5px 10px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+.capture-status[data-tone="review"] {
+  color: #754409;
+  background: #fff3d6;
+  border-color: #eed19b;
+}
+.capture-status[data-tone="waiting"] {
+  color: #1e518b;
+  background: #eaf2ff;
+  border-color: #bfd4ef;
+}
+.capture-status[data-tone="ready"] {
+  color: #65338c;
+  background: #f2eaff;
+  border-color: #d9c2ef;
+}
+.capture-status[data-tone="published"] {
+  color: #22583b;
+  background: #e8f4eb;
+  border-color: #b4d8bf;
+}
+.capture-status[data-tone="closed"] {
+  color: #4e5a55;
+  background: #eff1ef;
+  border-color: #d6dcd8;
+}
+.capture-status .capture-status-icon {
+  color: inherit;
+  font-size: 16px;
+  line-height: 1;
+}
+.capture-list-item .capture-card-next {
+  font-size: 13px;
+  color: #364f42;
+  line-height: 1.5;
+}
+.capture-list-item small {
+  overflow-wrap: anywhere;
+}
+.capture-empty {
+  border: 1px dashed #bdcbbf;
+  border-radius: 12px;
+  padding: 24px 18px;
+  color: #52665c;
+  background: #fafbf9;
+}
+.capture-detail-heading h2 {
+  overflow-wrap: anywhere;
+  margin-bottom: 12px;
+}
+.capture-detail-next {
+  margin: 10px 0 18px;
+  font-size: 14px;
+  color: #364f42;
+}
+.capture-reference {
+  margin: 12px 0 20px;
+  color: #607168;
+  font-size: 12px;
+}
+.capture-reference code {
+  display: block;
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+}
+.capture-back {
+  display: none;
+}
+.capture-crm-layout > * {
+  min-width: 0;
+}
+.capture-select-hint {
+  color: #607168;
+  padding: 20px;
+}
+.site-header .crm-mobile-site {
+  display: none;
+}
+.crm-main-captures .crm-heading {
+  margin-bottom: 20px;
+}
+@media (max-width: 760px) {
+  .crm-site-header {
+    padding: 12px 18px;
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+  }
+  .crm-site-header .brand {
+    font-size: 28px;
+  }
+  .crm-site-header .brand svg {
+    width: 23px;
+  }
+  .crm-site-header nav {
+    margin-inline-start: auto;
+  }
+  .crm-site-header nav a:not(.crm-mobile-site) {
+    display: none;
+  }
+  .crm-site-header nav .crm-mobile-site {
+    display: inline;
+    font-size: 13px;
+  }
+  .crm-main {
+    margin: 18px 16px 32px;
+  }
+  .crm-main .crm-heading {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 0 0 16px;
+  }
+  .crm-main .crm-heading .eyebrow {
+    display: none;
+  }
+  .crm-main .crm-heading h1 {
+    font-size: 29px;
+    line-height: 1.2;
+  }
+  .crm-main .crm-actions {
+    margin-top: 0;
+  }
+  .crm-main .crm-actions .button {
+    padding: 8px 12px;
+    min-height: 44px;
+  }
+  .crm-main .crm-tabs {
+    gap: 0;
+    margin-bottom: 18px;
+  }
+  .crm-main .crm-tabs button {
+    padding: 12px 6px;
+    min-height: 44px;
+    font-size: 12px;
+  }
+  .capture-dashboard-heading {
+    gap: 12px;
+    margin-top: 0;
+  }
+  .capture-dashboard-heading h2 {
+    font-size: 19px;
+  }
+  .capture-dashboard-heading .button {
+    min-height: 44px;
+    padding: 8px 12px;
+  }
+  .capture-status-tabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin: 16px 0;
+  }
+  .capture-status-tabs button {
+    justify-content: space-between;
+    padding: 10px 12px;
+  }
+  .capture-crm-layout {
+    display: block;
+  }
+  .capture-crm .capture-crm-layout > aside {
+    max-height: none;
+    overflow: visible;
+  }
+  .capture-crm.has-detail .capture-crm-layout > aside,
+  .capture-crm:not(.has-detail) .capture-review,
+  .capture-crm.has-detail > .capture-status-tabs,
+  .capture-crm.has-detail > .capture-dashboard-heading,
+  .capture-select-hint {
+    display: none;
+  }
+  .capture-crm .capture-list-item {
+    padding: 16px;
+  }
+  .capture-list-item strong {
+    font-size: 16px;
+  }
+  .capture-crm-layout .capture-review {
+    padding: 0 16px 18px;
+  }
+  .capture-detail-heading {
+    position: sticky;
+    top: 0;
+    z-index: 12;
+    margin: 0 -16px 16px;
+    padding: 12px 16px 10px;
+    border-radius: 14px 14px 0 0;
+    border-bottom: 1px solid #dce5dd;
+    background: white;
+    box-shadow: 0 3px 8px #193e310a;
+  }
+  .capture-back {
+    display: inline-flex;
+    align-items: center;
+    padding: 6px 0;
+    min-height: 44px;
+    margin-bottom: 4px;
+    border: 0;
+  }
+  .capture-detail-heading h2 {
+    font-size: 20px;
+    line-height: 1.3;
+    margin: 0 0 8px;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+  }
+  .capture-detail-heading .capture-detail-next {
+    margin: 7px 0 0;
+    font-size: 13px;
+  }
+}

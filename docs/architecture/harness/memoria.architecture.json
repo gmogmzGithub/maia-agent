@@ -1,0 +1,175 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Maia: memoria del turno",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1320,
+      570
+    ]
+  },
+  "components": [
+    {
+      "id": "instructions",
+      "type": "backend",
+      "label": "Memoria procedural",
+      "sublabel": "Instrucciones y skills aprobadas",
+      "pos": [
+        40,
+        30
+      ],
+      "size": [
+        270,
+        85
+      ]
+    },
+    {
+      "id": "database",
+      "type": "database",
+      "label": "PostgreSQL",
+      "sublabel": "Única base de datos de Maia",
+      "pos": [
+        40,
+        240
+      ],
+      "size": [
+        270,
+        85
+      ]
+    },
+    {
+      "id": "context",
+      "type": "backend",
+      "label": "Constructor de contexto",
+      "sublabel": "Selecciona por alcance y revisión",
+      "tag": "SE REDISEÑA",
+      "pos": [
+        490,
+        30
+      ],
+      "size": [
+        280,
+        85
+      ]
+    },
+    {
+      "id": "snapshot",
+      "type": "backend",
+      "label": "Working memory",
+      "sublabel": "Contexto temporal de esta llamada",
+      "pos": [
+        950,
+        30
+      ],
+      "size": [
+        310,
+        85
+      ]
+    },
+    {
+      "id": "continuity",
+      "type": "backend",
+      "label": "Continuidad + presentación",
+      "sublabel": "Propósito, pendiente y mensaje origen",
+      "tag": "ACORDADO; NO IMPLEMENTADO",
+      "pos": [
+        490,
+        240
+      ],
+      "size": [
+        310,
+        85
+      ]
+    },
+    {
+      "id": "agent",
+      "type": "external",
+      "label": "Agente + herramientas",
+      "sublabel": "Interpreta; consulta datos vigentes",
+      "pos": [
+        950,
+        240
+      ],
+      "size": [
+        310,
+        85
+      ]
+    },
+    {
+      "id": "verified",
+      "type": "security",
+      "label": "Respuesta validada",
+      "sublabel": "Texto, fichas y controles pertinentes",
+      "pos": [
+        950,
+        440
+      ],
+      "size": [
+        310,
+        85
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "from": "instructions",
+      "to": "context",
+      "label": "procedimientos"
+    },
+    {
+      "from": "database",
+      "to": "context",
+      "label": "historial + hechos",
+      "fromSide": "top",
+      "toSide": "left"
+    },
+    {
+      "from": "database",
+      "to": "continuity",
+      "label": "snapshot del mensaje"
+    },
+    {
+      "from": "continuity",
+      "to": "context",
+      "label": "pendiente previo",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "from": "context",
+      "to": "snapshot",
+      "label": "contexto autorizado"
+    },
+    {
+      "from": "snapshot",
+      "to": "agent",
+      "label": "entrada del LLM",
+      "labelAt": [
+        1105,
+        210
+      ],
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "from": "agent",
+      "to": "verified",
+      "label": "propuesta final",
+      "labelAt": [
+        1105,
+        400
+      ],
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "from": "verified",
+      "to": "continuity",
+      "label": "siguiente continuidad",
+      "fromSide": "left",
+      "toSide": "bottom"
+    }
+  ],
+  "cards": []
+}

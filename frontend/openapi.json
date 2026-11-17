@@ -1,0 +1,4087 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Maia",
+    "version": "0.1.0",
+    "description": "Inventario y búsqueda conversacional de una inmobiliaria"
+  },
+  "paths": {
+    "/api/health": {
+      "get": {
+        "operationId": "core_api_health",
+        "summary": "Health",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/properties": {
+      "get": {
+        "operationId": "core_api_properties",
+        "summary": "Properties",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "operation",
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "rent",
+                    "sale"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Operation"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "apartment",
+                    "warehouse",
+                    "house",
+                    "condominium",
+                    "mixed_house",
+                    "duplex",
+                    "building",
+                    "orchard",
+                    "urban_income",
+                    "retail",
+                    "mall_retail",
+                    "industrial",
+                    "office",
+                    "country_house",
+                    "ranch",
+                    "land",
+                    "commercial_land",
+                    "industrial_land",
+                    "villa"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "municipality",
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Municipality"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "state",
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 80,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "currency",
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "MXN",
+                    "USD"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Currency"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "is_presale",
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Is Presale"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "neighborhood",
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 100,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Neighborhood"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "min_price",
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Min Price"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "max_price",
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Max Price"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "min_bedrooms",
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 100,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Min Bedrooms"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "min_bathrooms",
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 100.0,
+                  "minimum": 0.0,
+                  "type": "number"
+                },
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Min Bathrooms"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "min_parking",
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 100,
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Min Parking"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "furnished",
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Furnished"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "accepts_pets",
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Accepts Pets"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "near_schools",
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Near Schools"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "verified_only",
+            "schema": {
+              "default": false,
+              "title": "Verified Only",
+              "type": "boolean"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "schema": {
+              "default": 0,
+              "title": "Offset",
+              "type": "integer"
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/properties/{property_id}": {
+      "get": {
+        "operationId": "core_api_property_detail",
+        "summary": "Property Detail",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "property_id",
+            "schema": {
+              "title": "Property Id",
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicProperty"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/crm/properties": {
+      "get": {
+        "operationId": "core_api_crm_properties",
+        "summary": "Crm Properties",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ManagedProperty"
+                  },
+                  "title": "Response",
+                  "type": "array"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "core_api_create_property",
+        "summary": "Create Property",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagedProperty"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PropertyInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      }
+    },
+    "/api/crm/properties/{property_id}": {
+      "put": {
+        "operationId": "core_api_update_property",
+        "summary": "Update Property",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "property_id",
+            "schema": {
+              "title": "Property Id",
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagedProperty"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PropertyInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      }
+    },
+    "/api/crm/properties/{property_id}/publication": {
+      "patch": {
+        "operationId": "crm_property_publication",
+        "summary": "Change Publication",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "property_id",
+            "schema": {
+              "title": "Property Id",
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManagedProperty"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublicationInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      }
+    },
+    "/api/conversations": {
+      "post": {
+        "operationId": "core_api_create_conversation",
+        "summary": "Create Conversation",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationOutput"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BrowserAuth": []
+          }
+        ]
+      }
+    },
+    "/api/conversations/{conversation_id}": {
+      "get": {
+        "operationId": "core_api_get_conversation",
+        "summary": "Get Conversation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationOutput"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BrowserAuth": []
+          }
+        ]
+      }
+    },
+    "/api/conversations/{conversation_id}/messages": {
+      "post": {
+        "operationId": "core_api_post_message",
+        "summary": "Post Message",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationOutput"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MessageInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "security": [
+          {
+            "BrowserAuth": []
+          }
+        ]
+      }
+    },
+    "/api/conversations/{conversation_id}/contact/prepare": {
+      "post": {
+        "operationId": "api_prospects_prepare_website_contact",
+        "summary": "Prepare Website Contact",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationOutput"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContactInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "security": [
+          {
+            "BrowserAuth": []
+          }
+        ]
+      }
+    },
+    "/api/conversations/{conversation_id}/contact/confirm": {
+      "post": {
+        "operationId": "api_prospects_confirm_website_contact",
+        "summary": "Confirm Website Contact",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationOutput"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmContactInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "security": [
+          {
+            "BrowserAuth": []
+          }
+        ]
+      }
+    },
+    "/api/crm/advisors": {
+      "get": {
+        "operationId": "api_prospects_advisors",
+        "summary": "Advisors",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AdvisorOutput"
+                  },
+                  "title": "Response",
+                  "type": "array"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "api_prospects_create_advisor",
+        "summary": "Create Advisor",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdvisorOutput"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdvisorInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      }
+    },
+    "/api/crm/advisors/{advisor_id}": {
+      "put": {
+        "operationId": "api_prospects_edit_advisor",
+        "summary": "Edit Advisor",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "advisor_id",
+            "schema": {
+              "title": "Advisor Id",
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdvisorOutput"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdvisorInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      }
+    },
+    "/api/crm/configuration": {
+      "get": {
+        "operationId": "api_prospects_configuration",
+        "summary": "Configuration",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      }
+    },
+    "/api/crm/prospects": {
+      "get": {
+        "operationId": "api_prospects_prospects",
+        "summary": "Prospects",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ProspectOutput"
+                  },
+                  "title": "Response",
+                  "type": "array"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      }
+    },
+    "/api/crm/prospects/{prospect_id}": {
+      "get": {
+        "operationId": "api_prospects_prospect_detail",
+        "summary": "Prospect Detail",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "prospect_id",
+            "schema": {
+              "title": "Prospect Id",
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProspectDetail"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      },
+      "put": {
+        "operationId": "api_prospects_edit_prospect",
+        "summary": "Edit Prospect",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "prospect_id",
+            "schema": {
+              "title": "Prospect Id",
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProspectDetail"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProspectUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      }
+    },
+    "/api/crm/requests": {
+      "get": {
+        "operationId": "api_prospects_human_requests",
+        "summary": "Human Requests",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CRMConversation"
+                  },
+                  "title": "Response",
+                  "type": "array"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      }
+    },
+    "/api/crm/conversations/{conversation_id}": {
+      "get": {
+        "operationId": "api_prospects_staff_conversation",
+        "summary": "Staff Conversation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CRMConversation"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      }
+    },
+    "/api/crm/conversations/{conversation_id}/pause": {
+      "put": {
+        "operationId": "api_prospects_pause_anonymous_conversation",
+        "summary": "Pause Anonymous Conversation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CRMConversation"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PauseInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      }
+    },
+    "/api/crm/notifications/{notification_id}/retry": {
+      "post": {
+        "operationId": "api_prospects_retry_notification",
+        "summary": "Retry Notification",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "notification_id",
+            "schema": {
+              "title": "Notification Id",
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationOutput"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      }
+    },
+    "/api/crm/booking-policy": {
+      "get": {
+        "operationId": "api_appointments_policy",
+        "summary": "Policy",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      },
+      "put": {
+        "operationId": "api_appointments_update_policy",
+        "summary": "Update Policy",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PolicyInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      }
+    },
+    "/api/crm/properties/{property_id}/visits": {
+      "get": {
+        "operationId": "api_appointments_property_visits",
+        "summary": "Property Visits",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "property_id",
+            "schema": {
+              "title": "Property Id",
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      },
+      "put": {
+        "operationId": "api_appointments_update_property_visits",
+        "summary": "Update Property Visits",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "property_id",
+            "schema": {
+              "title": "Property Id",
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RulesInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      }
+    },
+    "/api/crm/appointments": {
+      "get": {
+        "operationId": "api_appointments_appointments",
+        "summary": "Appointments",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response",
+                  "type": "array"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "api_appointments_create_appointment",
+        "summary": "Create Appointment",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BookingInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      }
+    },
+    "/api/crm/appointments/options": {
+      "get": {
+        "operationId": "api_appointments_staff_options",
+        "summary": "Staff Options",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "conversation_id",
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            },
+            "required": true
+          },
+          {
+            "in": "query",
+            "name": "property_id",
+            "schema": {
+              "title": "Property Id",
+              "type": "integer"
+            },
+            "required": true
+          },
+          {
+            "in": "query",
+            "name": "day",
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Day"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "schema": {
+              "default": 0,
+              "title": "Offset",
+              "type": "integer"
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      }
+    },
+    "/api/crm/appointments/{appointment_id}/change": {
+      "post": {
+        "operationId": "api_appointments_change_appointment",
+        "summary": "Change Appointment",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "appointment_id",
+            "schema": {
+              "format": "uuid",
+              "title": "Appointment Id",
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangeInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      }
+    },
+    "/api/conversations/{conversation_id}/visits/options": {
+      "get": {
+        "operationId": "api_appointments_public_options",
+        "summary": "Public Options",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            },
+            "required": true
+          },
+          {
+            "in": "query",
+            "name": "property_id",
+            "schema": {
+              "title": "Property Id",
+              "type": "integer"
+            },
+            "required": true
+          },
+          {
+            "in": "query",
+            "name": "day",
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Day"
+            },
+            "required": false
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "schema": {
+              "default": 0,
+              "title": "Offset",
+              "type": "integer"
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "BrowserAuth": []
+          }
+        ]
+      }
+    },
+    "/api/conversations/{conversation_id}/visits/confirm": {
+      "post": {
+        "operationId": "api_appointments_confirm_visit",
+        "summary": "Confirm Visit",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "schema": {
+              "format": "uuid",
+              "title": "Conversation Id",
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmProposal"
+              }
+            }
+          },
+          "required": true
+        },
+        "security": [
+          {
+            "BrowserAuth": []
+          }
+        ]
+      }
+    },
+    "/api/crm/advisors/{advisor_id}/calendar": {
+      "get": {
+        "operationId": "api_calendar_auth_calendar_connection",
+        "summary": "Calendar Connection",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "advisor_id",
+            "schema": {
+              "title": "Advisor Id",
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      }
+    },
+    "/api/crm/advisors/{advisor_id}/calendar/connect": {
+      "post": {
+        "operationId": "api_calendar_auth_begin_connection",
+        "summary": "Begin Connection",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "advisor_id",
+            "schema": {
+              "title": "Advisor Id",
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      }
+    },
+    "/api/crm/advisors/{advisor_id}/calendar/confirm": {
+      "post": {
+        "operationId": "api_calendar_auth_confirm_connection",
+        "summary": "Confirm Connection",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "advisor_id",
+            "schema": {
+              "title": "Advisor Id",
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuthorizationConfirm"
+              }
+            }
+          },
+          "required": true
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      }
+    },
+    "/api/crm/advisors/{advisor_id}/calendar/disconnect": {
+      "post": {
+        "operationId": "api_calendar_auth_disconnect",
+        "summary": "Disconnect",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "advisor_id",
+            "schema": {
+              "title": "Advisor Id",
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      }
+    },
+    "/api/conversations/{conversation_id}/followup-permission": {
+      "put": {
+        "operationId": "api_followups_website_permission",
+        "summary": "Website Permission",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PermissionInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "security": [
+          {
+            "BrowserAuth": []
+          }
+        ]
+      }
+    },
+    "/api/crm/followup-policy": {
+      "get": {
+        "operationId": "api_followups_get_policy",
+        "summary": "Get Policy",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      },
+      "put": {
+        "operationId": "api_followups_update_policy",
+        "summary": "Update Policy",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PolicyInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      }
+    },
+    "/api/crm/prospects/{prospect_id}/followup": {
+      "get": {
+        "operationId": "api_followups_get_followup",
+        "summary": "Get Followup",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "prospect_id",
+            "schema": {
+              "title": "Prospect Id",
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "api_followups_cycle_action",
+        "summary": "Cycle Action",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "prospect_id",
+            "schema": {
+              "title": "Prospect Id",
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CycleAction"
+              }
+            }
+          },
+          "required": true
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      }
+    },
+    "/api/crm/whatsapp/templates": {
+      "get": {
+        "operationId": "api_followups_templates",
+        "summary": "Templates",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response",
+                  "type": "array"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      }
+    },
+    "/api/crm/whatsapp/templates/sync": {
+      "post": {
+        "operationId": "api_followups_sync",
+        "summary": "Sync",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      }
+    },
+    "/api/crm/whatsapp/templates/{template_id}": {
+      "put": {
+        "operationId": "api_followups_update_template",
+        "summary": "Update Template",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "template_id",
+            "schema": {
+              "title": "Template Id",
+              "type": "integer"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TemplateInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      }
+    },
+    "/api/crm/whatsapp/review": {
+      "get": {
+        "operationId": "api_followups_channel_review",
+        "summary": "Channel Review",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      }
+    },
+    "/api/crm/whatsapp/deliveries/{delivery_id}/retry": {
+      "post": {
+        "operationId": "api_followups_retry",
+        "summary": "Retry",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "delivery_id",
+            "schema": {
+              "title": "Delivery Id",
+              "type": "string"
+            },
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response",
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionAuthIsStaff": []
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "SearchCriteria": {
+        "additionalProperties": false,
+        "properties": {
+          "operation": {
+            "anyOf": [
+              {
+                "enum": [
+                  "rent",
+                  "sale"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operation"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "apartment",
+                  "warehouse",
+                  "house",
+                  "condominium",
+                  "mixed_house",
+                  "duplex",
+                  "building",
+                  "orchard",
+                  "urban_income",
+                  "retail",
+                  "mall_retail",
+                  "industrial",
+                  "office",
+                  "country_house",
+                  "ranch",
+                  "land",
+                  "commercial_land",
+                  "industrial_land",
+                  "villa"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "municipality": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Municipality"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "enum": [
+                  "MXN",
+                  "USD"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Currency"
+          },
+          "is_presale": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Presale"
+          },
+          "neighborhood": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Neighborhood"
+          },
+          "min_price": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Price"
+          },
+          "max_price": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Price"
+          },
+          "min_bedrooms": {
+            "anyOf": [
+              {
+                "maximum": 100,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Bedrooms"
+          },
+          "min_bathrooms": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Bathrooms"
+          },
+          "min_parking": {
+            "anyOf": [
+              {
+                "maximum": 100,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Parking"
+          },
+          "furnished": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Furnished"
+          },
+          "accepts_pets": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accepts Pets"
+          },
+          "near_schools": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Near Schools"
+          },
+          "verified_only": {
+            "default": false,
+            "title": "Verified Only",
+            "type": "boolean"
+          }
+        },
+        "title": "SearchCriteria",
+        "type": "object"
+      },
+      "PublicProperty": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "reference": {
+            "title": "Reference",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "operation": {
+            "enum": [
+              "rent",
+              "sale"
+            ],
+            "title": "Operation",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "apartment",
+              "warehouse",
+              "house",
+              "condominium",
+              "mixed_house",
+              "duplex",
+              "building",
+              "orchard",
+              "urban_income",
+              "retail",
+              "mall_retail",
+              "industrial",
+              "office",
+              "country_house",
+              "ranch",
+              "land",
+              "commercial_land",
+              "industrial_land",
+              "villa"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "municipality": {
+            "title": "Municipality",
+            "type": "string"
+          },
+          "neighborhood": {
+            "title": "Neighborhood",
+            "type": "string"
+          },
+          "public_address": {
+            "title": "Public Address",
+            "type": "string"
+          },
+          "price": {
+            "title": "Price",
+            "type": "string"
+          },
+          "bedrooms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bedrooms"
+          },
+          "bathrooms": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bathrooms"
+          },
+          "parking": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parking"
+          },
+          "area_m2": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Area M2"
+          },
+          "furnished": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Furnished"
+          },
+          "accepts_pets": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accepts Pets"
+          },
+          "near_schools": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Near Schools"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "photos": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Photos",
+            "type": "array"
+          },
+          "unconfirmed": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Unconfirmed",
+            "type": "array"
+          },
+          "currency": {
+            "default": "MXN",
+            "enum": [
+              "MXN",
+              "USD"
+            ],
+            "title": "Currency",
+            "type": "string"
+          },
+          "state": {
+            "default": "",
+            "title": "State",
+            "type": "string"
+          },
+          "subtype": {
+            "default": "",
+            "title": "Subtype",
+            "type": "string"
+          },
+          "is_presale": {
+            "default": false,
+            "title": "Is Presale",
+            "type": "boolean"
+          },
+          "public_location": {
+            "additionalProperties": true,
+            "title": "Public Location",
+            "type": "object"
+          },
+          "details": {
+            "additionalProperties": true,
+            "title": "Details",
+            "type": "object"
+          }
+        },
+        "required": [
+          "id",
+          "reference",
+          "title",
+          "operation",
+          "kind",
+          "municipality",
+          "neighborhood",
+          "public_address",
+          "price",
+          "bedrooms",
+          "bathrooms",
+          "parking",
+          "area_m2",
+          "furnished",
+          "accepts_pets",
+          "near_schools",
+          "description",
+          "photos"
+        ],
+        "title": "PublicProperty",
+        "type": "object"
+      },
+      "SearchResult": {
+        "properties": {
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/PublicProperty"
+            },
+            "title": "Results",
+            "type": "array"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          },
+          "next_offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Offset"
+          },
+          "criteria": {
+            "$ref": "#/components/schemas/SearchCriteria"
+          }
+        },
+        "required": [
+          "results",
+          "total",
+          "next_offset",
+          "criteria"
+        ],
+        "title": "SearchResult",
+        "type": "object"
+      },
+      "ManagedProperty": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "reference": {
+            "title": "Reference",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "operation": {
+            "enum": [
+              "rent",
+              "sale"
+            ],
+            "title": "Operation",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "apartment",
+              "warehouse",
+              "house",
+              "condominium",
+              "mixed_house",
+              "duplex",
+              "building",
+              "orchard",
+              "urban_income",
+              "retail",
+              "mall_retail",
+              "industrial",
+              "office",
+              "country_house",
+              "ranch",
+              "land",
+              "commercial_land",
+              "industrial_land",
+              "villa"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "municipality": {
+            "title": "Municipality",
+            "type": "string"
+          },
+          "neighborhood": {
+            "title": "Neighborhood",
+            "type": "string"
+          },
+          "public_address": {
+            "title": "Public Address",
+            "type": "string"
+          },
+          "price": {
+            "title": "Price",
+            "type": "string"
+          },
+          "bedrooms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bedrooms"
+          },
+          "bathrooms": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bathrooms"
+          },
+          "parking": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parking"
+          },
+          "area_m2": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Area M2"
+          },
+          "furnished": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Furnished"
+          },
+          "accepts_pets": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accepts Pets"
+          },
+          "near_schools": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Near Schools"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "photos": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Photos",
+            "type": "array"
+          },
+          "unconfirmed": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Unconfirmed",
+            "type": "array"
+          },
+          "currency": {
+            "default": "MXN",
+            "enum": [
+              "MXN",
+              "USD"
+            ],
+            "title": "Currency",
+            "type": "string"
+          },
+          "state": {
+            "default": "",
+            "title": "State",
+            "type": "string"
+          },
+          "subtype": {
+            "default": "",
+            "title": "Subtype",
+            "type": "string"
+          },
+          "is_presale": {
+            "default": false,
+            "title": "Is Presale",
+            "type": "boolean"
+          },
+          "public_location": {
+            "additionalProperties": true,
+            "title": "Public Location",
+            "type": "object"
+          },
+          "details": {
+            "additionalProperties": true,
+            "title": "Details",
+            "type": "object"
+          },
+          "capture_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capture Id"
+          },
+          "internal_notes": {
+            "title": "Internal Notes",
+            "type": "string"
+          },
+          "published": {
+            "title": "Published",
+            "type": "boolean"
+          },
+          "advisor_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Advisor Id"
+          }
+        },
+        "required": [
+          "id",
+          "reference",
+          "title",
+          "operation",
+          "kind",
+          "municipality",
+          "neighborhood",
+          "public_address",
+          "price",
+          "bedrooms",
+          "bathrooms",
+          "parking",
+          "area_m2",
+          "furnished",
+          "accepts_pets",
+          "near_schools",
+          "description",
+          "photos",
+          "internal_notes",
+          "published",
+          "advisor_id"
+        ],
+        "title": "ManagedProperty",
+        "type": "object"
+      },
+      "PropertyInput": {
+        "additionalProperties": false,
+        "properties": {
+          "title": {
+            "maxLength": 180,
+            "minLength": 3,
+            "title": "Title",
+            "type": "string"
+          },
+          "operation": {
+            "enum": [
+              "rent",
+              "sale"
+            ],
+            "title": "Operation",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "apartment",
+              "warehouse",
+              "house",
+              "condominium",
+              "mixed_house",
+              "duplex",
+              "building",
+              "orchard",
+              "urban_income",
+              "retail",
+              "mall_retail",
+              "industrial",
+              "office",
+              "country_house",
+              "ranch",
+              "land",
+              "commercial_land",
+              "industrial_land",
+              "villa"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "subtype": {
+            "default": "",
+            "maxLength": 80,
+            "title": "Subtype",
+            "type": "string"
+          },
+          "state": {
+            "default": "",
+            "maxLength": 80,
+            "title": "State",
+            "type": "string"
+          },
+          "currency": {
+            "default": "MXN",
+            "enum": [
+              "MXN",
+              "USD"
+            ],
+            "title": "Currency",
+            "type": "string"
+          },
+          "is_presale": {
+            "default": false,
+            "title": "Is Presale",
+            "type": "boolean"
+          },
+          "municipality": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Municipality",
+            "type": "string"
+          },
+          "neighborhood": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Neighborhood",
+            "type": "string"
+          },
+          "price": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Price"
+          },
+          "public_address": {
+            "default": "",
+            "maxLength": 240,
+            "title": "Public Address",
+            "type": "string"
+          },
+          "bedrooms": {
+            "anyOf": [
+              {
+                "maximum": 100,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bedrooms"
+          },
+          "bathrooms": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bathrooms"
+          },
+          "parking": {
+            "anyOf": [
+              {
+                "maximum": 100,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parking"
+          },
+          "area_m2": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Area M2"
+          },
+          "furnished": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Furnished"
+          },
+          "accepts_pets": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accepts Pets"
+          },
+          "near_schools": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Near Schools"
+          },
+          "description": {
+            "default": "",
+            "maxLength": 5000,
+            "title": "Description",
+            "type": "string"
+          },
+          "photos": {
+            "items": {
+              "format": "uri",
+              "maxLength": 2083,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 30,
+            "title": "Photos",
+            "type": "array"
+          },
+          "internal_notes": {
+            "default": "",
+            "maxLength": 5000,
+            "title": "Internal Notes",
+            "type": "string"
+          },
+          "published": {
+            "default": false,
+            "title": "Published",
+            "type": "boolean"
+          },
+          "advisor_id": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Advisor Id"
+          }
+        },
+        "required": [
+          "title",
+          "operation",
+          "kind",
+          "municipality",
+          "neighborhood",
+          "price"
+        ],
+        "title": "PropertyInput",
+        "type": "object"
+      },
+      "PublicationInput": {
+        "additionalProperties": false,
+        "properties": {
+          "published": {
+            "title": "Published",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "published"
+        ],
+        "title": "PublicationInput",
+        "type": "object"
+      },
+      "ContactCandidate": {
+        "properties": {
+          "phone": {
+            "title": "Phone",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "phone",
+          "name"
+        ],
+        "title": "ContactCandidate",
+        "type": "object"
+      },
+      "ConversationOutput": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "criteria": {
+            "$ref": "#/components/schemas/SearchCriteria"
+          },
+          "processing": {
+            "title": "Processing",
+            "type": "boolean"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/MessageOutput"
+            },
+            "title": "Messages",
+            "type": "array"
+          },
+          "pending_contact": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ContactCandidate"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "contact_registered": {
+            "default": false,
+            "title": "Contact Registered",
+            "type": "boolean"
+          },
+          "automation_paused": {
+            "default": false,
+            "title": "Automation Paused",
+            "type": "boolean"
+          },
+          "human_requested": {
+            "default": false,
+            "title": "Human Requested",
+            "type": "boolean"
+          },
+          "has_interest": {
+            "default": false,
+            "title": "Has Interest",
+            "type": "boolean"
+          },
+          "visit_proposal": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Visit Proposal"
+          },
+          "appointments": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Appointments",
+            "type": "array"
+          },
+          "visits_processing": {
+            "default": false,
+            "title": "Visits Processing",
+            "type": "boolean"
+          },
+          "followup_permission": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Followup Permission"
+          },
+          "structured_reply": {
+            "default": false,
+            "title": "Structured Reply",
+            "type": "boolean"
+          },
+          "active_control": {
+            "anyOf": [
+              {
+                "enum": [
+                  "contact",
+                  "visit"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Control"
+          },
+          "active_proposal_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Proposal Id"
+          },
+          "active_message_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Message Id"
+          }
+        },
+        "required": [
+          "id",
+          "criteria",
+          "processing",
+          "messages"
+        ],
+        "title": "ConversationOutput",
+        "type": "object"
+      },
+      "MessageOutput": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "properties": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicProperty"
+            },
+            "title": "Properties"
+          },
+          "is_error": {
+            "title": "Is Error",
+            "type": "boolean"
+          },
+          "delivery_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Status"
+          },
+          "presentation": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ReplyPart"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Presentation"
+          }
+        },
+        "required": [
+          "id",
+          "role",
+          "text",
+          "properties",
+          "is_error"
+        ],
+        "title": "MessageOutput",
+        "type": "object"
+      },
+      "ReplyPart": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "enum": [
+              "text",
+              "properties",
+              "contact",
+              "visit"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "text": {
+            "default": "",
+            "maxLength": 3000,
+            "title": "Text",
+            "type": "string"
+          },
+          "property_ids": {
+            "items": {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            "maxItems": 3,
+            "title": "Property Ids",
+            "type": "array"
+          },
+          "proposal_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposal Id"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "ReplyPart",
+        "type": "object"
+      },
+      "MessageInput": {
+        "properties": {
+          "text": {
+            "maxLength": 10000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          },
+          "client_message_id": {
+            "format": "uuid",
+            "title": "Client Message Id",
+            "type": "string"
+          },
+          "property_id": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Property Id"
+          }
+        },
+        "required": [
+          "text",
+          "client_message_id"
+        ],
+        "title": "MessageInput",
+        "type": "object"
+      },
+      "ContactInput": {
+        "additionalProperties": false,
+        "properties": {
+          "phone": {
+            "maxLength": 40,
+            "minLength": 7,
+            "title": "Phone",
+            "type": "string"
+          },
+          "name": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "phone"
+        ],
+        "title": "ContactInput",
+        "type": "object"
+      },
+      "ConfirmContactInput": {
+        "properties": {
+          "phone": {
+            "maxLength": 40,
+            "minLength": 7,
+            "title": "Phone",
+            "type": "string"
+          },
+          "name": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Name",
+            "type": "string"
+          },
+          "confirmed": {
+            "const": true,
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "whatsapp_followup": {
+            "default": false,
+            "title": "Whatsapp Followup",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "phone",
+          "confirmed"
+        ],
+        "title": "ConfirmContactInput",
+        "type": "object"
+      },
+      "AdvisorOutput": {
+        "properties": {
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "whatsapp": {
+            "default": "",
+            "maxLength": 16,
+            "pattern": "^(\\+[1-9][0-9]{7,14})?$",
+            "title": "Whatsapp",
+            "type": "string"
+          },
+          "telegram_chat_id": {
+            "default": "",
+            "maxLength": 32,
+            "pattern": "^([1-9][0-9]{0,19})?$",
+            "title": "Telegram Chat Id",
+            "type": "string"
+          },
+          "is_default": {
+            "default": false,
+            "title": "Is Default",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "id"
+        ],
+        "title": "AdvisorOutput",
+        "type": "object"
+      },
+      "AdvisorInput": {
+        "properties": {
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "whatsapp": {
+            "default": "",
+            "maxLength": 16,
+            "pattern": "^(\\+[1-9][0-9]{7,14})?$",
+            "title": "Whatsapp",
+            "type": "string"
+          },
+          "telegram_chat_id": {
+            "default": "",
+            "maxLength": 32,
+            "pattern": "^([1-9][0-9]{0,19})?$",
+            "title": "Telegram Chat Id",
+            "type": "string"
+          },
+          "is_default": {
+            "default": false,
+            "title": "Is Default",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "AdvisorInput",
+        "type": "object"
+      },
+      "ProspectOutput": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "phone": {
+            "title": "Phone",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "advisor_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Advisor Id"
+          },
+          "status": {
+            "enum": [
+              "new",
+              "attending",
+              "not_interested",
+              "scheduled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "criteria": {
+            "$ref": "#/components/schemas/SearchCriteria"
+          },
+          "next_step": {
+            "title": "Next Step",
+            "type": "string"
+          },
+          "automation_paused": {
+            "title": "Automation Paused",
+            "type": "boolean"
+          },
+          "property_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Property Ids",
+            "type": "array"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "phone",
+          "name",
+          "advisor_id",
+          "status",
+          "criteria",
+          "next_step",
+          "automation_paused",
+          "property_ids",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ProspectOutput",
+        "type": "object"
+      },
+      "CRMConversation": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "prospect_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prospect Id"
+          },
+          "phone": {
+            "title": "Phone",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "human_requested": {
+            "title": "Human Requested",
+            "type": "boolean"
+          },
+          "automation_paused": {
+            "title": "Automation Paused",
+            "type": "boolean"
+          },
+          "conversation_paused": {
+            "title": "Conversation Paused",
+            "type": "boolean"
+          },
+          "advisor_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Advisor Id"
+          },
+          "criteria": {
+            "$ref": "#/components/schemas/SearchCriteria"
+          },
+          "property_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Property Ids",
+            "type": "array"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/MessageOutput"
+            },
+            "title": "Messages",
+            "type": "array"
+          },
+          "notifications": {
+            "items": {
+              "$ref": "#/components/schemas/NotificationOutput"
+            },
+            "title": "Notifications",
+            "type": "array"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "channel": {
+            "default": "website",
+            "title": "Channel",
+            "type": "string"
+          },
+          "deliveries": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Deliveries",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "prospect_id",
+          "phone",
+          "name",
+          "human_requested",
+          "automation_paused",
+          "conversation_paused",
+          "advisor_id",
+          "criteria",
+          "property_ids",
+          "messages",
+          "notifications",
+          "created_at"
+        ],
+        "title": "CRMConversation",
+        "type": "object"
+      },
+      "NotificationOutput": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "error_code": {
+            "title": "Error Code",
+            "type": "string"
+          },
+          "attempts": {
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "reason",
+          "summary",
+          "status",
+          "error_code",
+          "attempts",
+          "created_at"
+        ],
+        "title": "NotificationOutput",
+        "type": "object"
+      },
+      "ProspectDetail": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "phone": {
+            "title": "Phone",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "advisor_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Advisor Id"
+          },
+          "status": {
+            "enum": [
+              "new",
+              "attending",
+              "not_interested",
+              "scheduled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "criteria": {
+            "$ref": "#/components/schemas/SearchCriteria"
+          },
+          "next_step": {
+            "title": "Next Step",
+            "type": "string"
+          },
+          "automation_paused": {
+            "title": "Automation Paused",
+            "type": "boolean"
+          },
+          "property_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Property Ids",
+            "type": "array"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          },
+          "conversations": {
+            "items": {
+              "$ref": "#/components/schemas/CRMConversation"
+            },
+            "title": "Conversations",
+            "type": "array"
+          },
+          "events": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "followup": {
+            "additionalProperties": true,
+            "title": "Followup",
+            "type": "object"
+          }
+        },
+        "required": [
+          "id",
+          "phone",
+          "name",
+          "advisor_id",
+          "status",
+          "criteria",
+          "next_step",
+          "automation_paused",
+          "property_ids",
+          "created_at",
+          "updated_at",
+          "conversations",
+          "events"
+        ],
+        "title": "ProspectDetail",
+        "type": "object"
+      },
+      "ProspectUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Name",
+            "type": "string"
+          },
+          "advisor_id": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Advisor Id"
+          },
+          "status": {
+            "enum": [
+              "new",
+              "attending",
+              "not_interested",
+              "scheduled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "criteria": {
+            "$ref": "#/components/schemas/SearchCriteria"
+          },
+          "next_step": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Next Step",
+            "type": "string"
+          },
+          "automation_paused": {
+            "title": "Automation Paused",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "status",
+          "criteria",
+          "automation_paused"
+        ],
+        "title": "ProspectUpdate",
+        "type": "object"
+      },
+      "PauseInput": {
+        "properties": {
+          "automation_paused": {
+            "title": "Automation Paused",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "automation_paused"
+        ],
+        "title": "PauseInput",
+        "type": "object"
+      },
+      "PolicyInput": {
+        "properties": {
+          "send_time": {
+            "format": "time",
+            "title": "Send Time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "send_time"
+        ],
+        "title": "PolicyInput",
+        "type": "object"
+      },
+      "RulesInput": {
+        "properties": {
+          "duration": {
+            "maximum": 480,
+            "minimum": 15,
+            "title": "Duration",
+            "type": "integer"
+          },
+          "windows": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "maxItems": 28,
+            "title": "Windows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "duration",
+          "windows"
+        ],
+        "title": "RulesInput",
+        "type": "object"
+      },
+      "BookingInput": {
+        "properties": {
+          "conversation_id": {
+            "format": "uuid",
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "property_id": {
+            "exclusiveMinimum": 0,
+            "title": "Property Id",
+            "type": "integer"
+          },
+          "start": {
+            "title": "Start",
+            "type": "string"
+          },
+          "request_id": {
+            "format": "uuid",
+            "title": "Request Id",
+            "type": "string"
+          },
+          "confirmed": {
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "duration": {
+            "anyOf": [
+              {
+                "maximum": 480,
+                "minimum": 15,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration"
+          }
+        },
+        "required": [
+          "conversation_id",
+          "property_id",
+          "start",
+          "request_id",
+          "confirmed"
+        ],
+        "title": "BookingInput",
+        "type": "object"
+      },
+      "ChangeInput": {
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "start": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Start"
+          },
+          "request_id": {
+            "format": "uuid",
+            "title": "Request Id",
+            "type": "string"
+          },
+          "confirmed": {
+            "title": "Confirmed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "action",
+          "request_id",
+          "confirmed"
+        ],
+        "title": "ChangeInput",
+        "type": "object"
+      },
+      "ConfirmProposal": {
+        "properties": {
+          "proposal_id": {
+            "format": "uuid",
+            "title": "Proposal Id",
+            "type": "string"
+          },
+          "confirmed": {
+            "title": "Confirmed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "proposal_id",
+          "confirmed"
+        ],
+        "title": "ConfirmProposal",
+        "type": "object"
+      },
+      "AuthorizationConfirm": {
+        "properties": {
+          "authorization_id": {
+            "title": "Authorization Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "authorization_id"
+        ],
+        "title": "AuthorizationConfirm",
+        "type": "object"
+      },
+      "PermissionInput": {
+        "properties": {
+          "allowed": {
+            "title": "Allowed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "allowed"
+        ],
+        "title": "PermissionInput",
+        "type": "object"
+      },
+      "CycleAction": {
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "CycleAction",
+        "type": "object"
+      },
+      "TemplateInput": {
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "fields": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 10,
+            "title": "Fields",
+            "type": "array"
+          }
+        },
+        "required": [
+          "enabled",
+          "fields"
+        ],
+        "title": "TemplateInput",
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "SessionAuthIsStaff": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "sessionid"
+      },
+      "BrowserAuth": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "sessionid"
+      }
+    }
+  },
+  "servers": []
+}

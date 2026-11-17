@@ -1,0 +1,23 @@
+.inventory-filters {
+  display: grid;
+  grid-template-columns: 2fr repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: white;
+}
+.inventory-filters label { min-width: 0; font-size: 11px; }
+.inventory-filters input, .inventory-filters select { font-size: 12px; min-height: 42px; }
+.inventory-filter-summary { display: flex; justify-content: space-between; gap: 16px; align-items: center; margin: 16px 0; }
+.inventory-filter-summary p, .inventory-action-result { margin: 0; font-size: 12px; }
+.inventory-action-result { margin-bottom: 16px; color: var(--ink); }
+.inventory-row-actions { display: flex; align-items: center; gap: 16px; white-space: nowrap; }
+.inventory-row-actions .button { padding: 8px 14px; }
+@media (max-width: 1000px) {
+  .inventory-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .inventory-query { grid-column: 1 / -1; }
+}
+@media (max-width: 480px) {
+  .inventory-filters { padding: 14px; gap: 10px; }
+}
