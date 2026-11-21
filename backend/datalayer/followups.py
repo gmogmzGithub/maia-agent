@@ -25,6 +25,11 @@ from datalayer.prospects import is_paused
 
 LOCAL = ZoneInfo("America/Mexico_City")
 DAYS = (1, 5, 7, 14, 18, 22, 26, 28)
+PILOT_TEMPLATES = (
+    "maia_retomar_operacion",
+    "maia_retomar_municipio",
+    "maia_retomar_tipo_municipio",
+)
 FIELDS = {
     "operation",
     "kind",
@@ -47,11 +52,39 @@ def policy():
 
 
 def due_date(cycle, day):
+    if cycle.pilot:
+        return cycle.started_at + timedelta(minutes=5 + 30 * DAYS.index(day))
     return datetime.combine(
         cycle.started_at.astimezone(LOCAL).date() + timedelta(days=day),
         policy().send_time,
         tzinfo=LOCAL,
     )
+
+
+def send_window(cycle):
+    return timedelta(minutes=10) if cycle.pilot else timedelta(hours=1)
+
+
+def end_date(cycle):
+    return due_date(cycle, 28) + send_window(cycle)
+
+
+@transaction.atomic
+def finish_cycle(cycle, now, reason="completed"):
+    cycle.closed_at, cycle.reason = now, reason
+    cycle.save(update_fields=["closed_at", "reason"])
+    if cycle.pilot:
+        cycle.permission = False
+        cycle.save(update_fields=["permission"])
+        prospect = Prospect.objects.select_for_update().get(pk=cycle.prospect_id)
+        prospect.contact_opted_out = prospect.contact_opted_out or bool(
+            cycle.pilot.get("restore_opted_out", True)
+        )
+        prospect.save(update_fields=["contact_opted_out", "updated_at"])
+        Conversation.objects.filter(pk=cycle.conversation_id).update(followup_permission=False)
+        ProspectEvent.objects.create(
+            prospect=prospect, description="Prueba horaria terminada; permiso temporal retirado."
+        )
 
 
 def mark_intent(conversation):
@@ -79,27 +112,24 @@ def ensure_cycle(conversation, *, new=False, actor=None):
         conversation.intent_started_at = latest_message.created_at
         conversation.save(update_fields=["intent_started_at", "updated_at"])
     prospect = Prospect.objects.select_for_update().get(pk=conversation.prospect_id)
-    latest = prospect.followup_cycles.order_by("-created_at").first()
+    latest = prospect.followup_cycles.order_by("-created_at", "-pk").first()
     if latest and not new:
         return latest
     now = timezone.now()
     if new:
-        if latest and not latest.closed_at and now <= due_date(latest, 28) + timedelta(hours=1):
+        if latest and not latest.closed_at and now <= end_date(latest):
             raise ValidationError({"followup": "El ciclo anterior todavía no termina."})
-        boundary = (
-            latest.closed_at or due_date(latest, 28) + timedelta(hours=1)
-            if latest
-            else conversation.created_at
-        )
+        boundary = latest.closed_at or end_date(latest) if latest else conversation.created_at
         interaction = conversation.messages.filter(role="user", created_at__gt=boundary).last()
         if not interaction:
             raise ValidationError(
                 {"followup": "Primero debe existir una nueva interacción del prospecto."}
             )
         if latest and not latest.closed_at:
-            latest.closed_at = now
-            latest.reason = "completed"
-            latest.save(update_fields=["closed_at", "reason"])
+            finish_cycle(latest, now)
+            if latest.pilot:
+                prospect.refresh_from_db(fields=["contact_opted_out"])
+                conversation.refresh_from_db(fields=["followup_permission"])
         started = interaction.created_at
     else:
         started = conversation.intent_started_at
@@ -148,19 +178,25 @@ def eligible(cycle, now):
     prospect, conversation = cycle.prospect, cycle.conversation
     if cycle.closed_at:
         return "closed"
-    if prospect.contact_opted_out or prospect.status == "not_interested":
-        cycle.closed_at, cycle.reason = (
-            now,
-            "opted_out" if prospect.contact_opted_out else "not_interested",
-        )
-        cycle.save(update_fields=["closed_at", "reason"])
-        return cycle.reason
-    if (
-        Appointment.objects.filter(
-            prospect=prospect, status__in=["pending", "confirmed", "review"]
-        ).exists()
-        or prospect.status == "scheduled"
+    if cycle.pilot and (
+        cycle.pilot.get("version") != 1 or cycle.pilot.get("recipient") != prospect.phone
     ):
+        return "pilot_recipient_changed"
+    if prospect.contact_opted_out or prospect.status == "not_interested":
+        reason = "opted_out" if prospect.contact_opted_out else "not_interested"
+        if cycle.pilot:
+            finish_cycle(cycle, now, reason)
+        else:
+            cycle.closed_at, cycle.reason = now, reason
+            cycle.save(update_fields=["closed_at", "reason"])
+        return cycle.reason
+    appointments = Appointment.objects.filter(
+        prospect=prospect, status__in=["pending", "confirmed", "review"]
+    )
+    if cycle.pilot:
+        # Preserve historical test visits; any current/new visit still suspends the pilot.
+        appointments = appointments.filter(end__gt=cycle.started_at)
+    if appointments.exists() or (not cycle.pilot and prospect.status == "scheduled"):
         cycle.suspended, cycle.reason = True, "appointment"
         cycle.save(update_fields=["suspended", "reason"])
     if cycle.suspended:
@@ -173,8 +209,9 @@ def eligible(cycle, now):
         status="queued", payload__kind="messages", payload__data__from=prospect.phone.lstrip("+")
     ).exists():
         return "incoming_pending"
+    silence = timedelta(minutes=5) if cycle.pilot else timedelta(hours=24)
     if Message.objects.filter(
-        conversation__prospect=prospect, role="user", created_at__gt=now - timedelta(hours=24)
+        conversation__prospect=prospect, role="user", created_at__gt=now - silence
     ).exists():
         return "recent_activity"
     return ""
@@ -188,6 +225,7 @@ def snapshot(cycle):
         "paused": prospect.automation_paused,
         "opted_out": prospect.contact_opted_out,
         "next_step": prospect.next_step,
+        "pilot": cycle.pilot,
         "conversations": list(
             prospect.conversations.order_by("pk").values_list("pk", "revision", "automation_paused")
         ),
@@ -198,7 +236,7 @@ def snapshot(cycle):
     return hashlib.sha256(json.dumps(state, sort_keys=True, default=str).encode()).hexdigest()
 
 
-def template_options(cycle):
+def template_options(cycle, day=None):
     criteria = cycle.prospect.criteria
     mapping = {
         "rent": "rentar",
@@ -210,7 +248,15 @@ def template_options(cycle):
     options = []
     import re
 
-    for template in WhatsAppTemplate.objects.filter(enabled=True, status="APPROVED"):
+    templates = WhatsAppTemplate.objects.filter(status="APPROVED")
+    if cycle.pilot:
+        names = PILOT_TEMPLATES
+        if day is not None and DAYS.index(day) < 3:
+            names = (PILOT_TEMPLATES[DAYS.index(day)],)
+        templates = templates.filter(name__in=names, language="es_MX")
+    else:
+        templates = templates.filter(enabled=True)
+    for template in templates:
         # Only simple BODY text with numeric placeholders is supported in the pilot.
         slots = re.findall(r"\{\{(.*?)\}\}", template.body)
         if slots != [str(i + 1) for i in range(len(template.fields))] or not template.fields:
@@ -291,7 +337,7 @@ def maintain():
             attempt, created = FollowupAttempt.objects.get_or_create(
                 cycle=cycle,
                 day=day,
-                defaults={"due_at": due, "expires_at": due + timedelta(hours=1)},
+                defaults={"due_at": due, "expires_at": due + send_window(cycle)},
             )
             if created or attempt.status == "queued":
                 reason = "expired" if now >= attempt.expires_at else eligible(cycle, now)
@@ -300,9 +346,8 @@ def maintain():
                     attempt.save(update_fields=["status", "reason", "updated_at"])
                 else:
                     enqueue_followup(attempt.pk)
-        if now >= due_date(cycle, 28) + timedelta(hours=1):
-            cycle.closed_at, cycle.reason = now, "completed"
-            cycle.save(update_fields=["closed_at", "reason"])
+        if now >= end_date(cycle):
+            finish_cycle(cycle, now)
     # Queued work is durable; crashed generation is not automatically redrafted.
     FollowupAttempt.objects.filter(
         status="preparing", updated_at__lt=now - timedelta(minutes=3)
@@ -310,7 +355,7 @@ def maintain():
 
 
 def output(prospect):
-    cycle = prospect.followup_cycles.order_by("-created_at").first()
+    cycle = prospect.followup_cycles.order_by("-created_at", "-pk").first()
     if not cycle:
         return {"cycle": None, "opted_out": prospect.contact_opted_out, "attempts": []}
     now = timezone.now()
@@ -320,7 +365,8 @@ def output(prospect):
             "id": cycle.pk,
             "conversation_id": str(cycle.conversation_id),
             "started_at": cycle.started_at.isoformat(),
-            "ends_at": (due_date(cycle, 28) + timedelta(hours=1)).isoformat(),
+            "ends_at": end_date(cycle).isoformat(),
+            "pilot": bool(cycle.pilot),
             "closed_at": cycle.closed_at.isoformat() if cycle.closed_at else None,
             "suspended": cycle.suspended,
             "permission": cycle.permission,
@@ -332,6 +378,7 @@ def output(prospect):
             {
                 "id": a.pk,
                 "day": a.day,
+                "label": f"Prueba {DAYS.index(a.day) + 1}" if cycle.pilot else f"Día {a.day}",
                 "status": a.status,
                 "reason": a.reason,
                 "due_at": a.due_at.isoformat(),

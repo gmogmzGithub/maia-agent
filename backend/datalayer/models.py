@@ -366,6 +366,8 @@ class FollowupCycle(models.Model):
     suspended = models.BooleanField(default=False)
     reason = models.CharField(max_length=100, blank=True)
     permission = models.BooleanField(default=False)
+    # Empty for normal cycles. Only the explicit pilot command populates this.
+    pilot = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

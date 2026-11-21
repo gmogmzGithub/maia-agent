@@ -113,6 +113,8 @@ Los requisitos siguen la conversación inicial hasta que el asesor los modifica.
 
 ## Cuarto incremento
 
+El piloto horario del 20 de noviembre usa `datalayer/followup_pilot.py` para registrar un permiso temporal y un ciclo acotado mediante `start_followup_pilot`. `FollowupCycle.pilot` es vacío para el calendario normal; únicamente el ciclo autorizado usa ocho intentos cada 30 minutos, silencio de cinco minutos y cobertura inicial de tres plantillas aprobadas. El mismo mantenimiento, worker y transporte ejecutan ambos perfiles. El cierre restaura la baja anterior y retira el permiso temporal. El CRM etiqueta estos intentos como pruebas, sin presentarlos como días transcurridos.
+
 `datalayer/followups.py` concentra calendario, ciclos, permisos, contexto autorizado, elegibilidad e intentos únicos por ciclo y día. `harness/followups.py` realiza una sola selección contextual entre plantillas aprobadas; no ejecuta herramientas comerciales. `worker/followups.py` coordina generación, validación y entrega. Todos los seguimientos comparten un bloqueo de Procrastinate, con menor prioridad que mensajes entrantes.
 
 `api/whatsapp.py` verifica firma y cuenta del webhook y guarda eventos antes de encolar. `datalayer/whatsapp.py` identifica remitentes del canal, deduplica eventos, aplica confirmaciones de entrega y prepara mensajes y botones. `worker/whatsapp.py` ejecuta HTTP fuera de transacciones, sincroniza plantillas y conserva resultados inciertos sin reenvío automático.

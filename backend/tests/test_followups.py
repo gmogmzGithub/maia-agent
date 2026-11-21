@@ -82,17 +82,19 @@ def setup(settings, monkeypatch):
 
 
 class Model:
-    def __init__(self, template, callback=None):
+    def __init__(self, template, callback=None, *, check_history=True):
         self.calls = 0
         self.template = template
         self.callback = callback
+        self.check_history = check_history
         self.messages = self
 
     def create(self, **kwargs):
         assert not connection.in_atomic_block
         assert "Comunicación con el cliente" in kwargs["system"]
         assert "Comunicación humana" in kwargs["system"]
-        assert "Quiero rentar una casa en Zapopan" in kwargs["messages"][0]["content"]
+        if self.check_history:
+            assert "Quiero rentar una casa en Zapopan" in kwargs["messages"][0]["content"]
         self.calls += 1
         if self.callback:
             self.callback()
@@ -630,3 +632,223 @@ def test_real_haiku_selects_a_grounded_template_without_sending(setup, settings)
     assert not WhatsAppDelivery.objects.exists()
     execution.refresh_from_db()
     assert execution.status == "completed" and execution.input_tokens > 0
+
+
+@pytest.fixture
+def pilot(setup):
+    from datalayer.followup_pilot import start_pilot
+    from datalayer.followups import PILOT_TEMPLATES
+
+    conv, old, template, now = setup
+    old.closed_at, old.reason, old.permission = now, "opted_out", False
+    old.save()
+    conv.channel, conv.whatsapp_sender = "whatsapp", "523312345678"
+    conv.save()
+    prospect = conv.prospect
+    prospect.contact_opted_out = True
+    prospect.save()
+    bodies = (
+        ("Sobre tu búsqueda para {{1}}, ¿quieres revisar opciones?", ["operation"]),
+        ("¿Seguimos buscando en {{1}}?", ["municipality"]),
+        ("Retomo tu búsqueda de {{1}} en {{2}}. ¿Revisamos opciones?", ["kind", "municipality"]),
+    )
+    templates = []
+    for name, (body, fields) in zip(PILOT_TEMPLATES, bodies):
+        templates.append(
+            WhatsAppTemplate.objects.create(
+                name=name,
+                language="es_MX",
+                body=body,
+                fields=fields,
+                status="APPROVED",
+                enabled=False,
+                synced_at=now,
+            )
+        )
+    cycle, created = start_pilot(prospect.phone)
+    assert created
+    return conv, cycle, templates, now
+
+
+def test_pilot_is_scoped_idempotent_and_has_eight_bounded_attempts(pilot):
+    from datalayer.followup_pilot import start_pilot
+    from datalayer.followups import end_date, send_window
+
+    conv, cycle, templates, now = pilot
+    repeat, created = start_pilot(conv.prospect.phone)
+    assert not created and repeat.pk == cycle.pk
+    assert [due_date(cycle, d) - now for d in DAYS] == [
+        timedelta(minutes=5 + index * 30) for index in range(8)
+    ]
+    assert send_window(cycle) == timedelta(minutes=10)
+    assert end_date(cycle) == now + timedelta(minutes=225)
+    normal = FollowupCycle(started_at=now)
+    assert due_date(normal, 5).date() == (now + timedelta(days=5)).date()
+    assert send_window(normal) == timedelta(hours=1)
+    assert not any(t.enabled for t in templates)
+    conv.prospect.refresh_from_db()
+    assert not conv.prospect.contact_opted_out
+
+
+def test_pilot_first_three_cover_each_template_without_enabling_globally(pilot):
+    conv, cycle, templates, now = pilot
+    for day, template in zip(DAYS[:3], templates):
+        assert [o["id"] for o in template_options(cycle, day)] == [template.pk]
+    assert len(template_options(cycle, DAYS[3])) == 3
+    normal = FollowupCycle(prospect=conv.prospect)
+    assert all(o["id"] not in {t.pk for t in templates} for o in template_options(normal))
+
+
+def test_pilot_actual_worker_sends_each_first_template_once(pilot, monkeypatch):
+    conv, cycle, templates, now = pilot
+    sent = []
+
+    def capture(request):
+        sent.append(json.loads(request.content)["template"]["name"])
+        return httpx.Response(200, json={"messages": [{"id": f"wamid.pilot.{len(sent)}"}]})
+
+    for day, template in zip(DAYS[:3], templates):
+        monkeypatch.setattr(timezone, "now", lambda day=day: due_date(cycle, day))
+        maintain()
+        a = cycle.attempts.get(day=day)
+        model = Model(template, check_history=False)
+        process(a.pk, model=model, transport=transport(capture))
+        process(a.pk, model=model, transport=transport(capture))
+        a.refresh_from_db()
+        assert a.status == "sent" and model.calls == 1
+    assert sent == [t.name for t in templates]
+    assert WhatsAppDelivery.objects.count() == 3
+
+
+def test_pilot_recent_reply_pauses_for_five_minutes_and_optout_stops(pilot, monkeypatch):
+    from datalayer.followups import eligible
+
+    conv, cycle, templates, now = pilot
+    Message.objects.create(conversation=conv, role="user", text="Sigamos buscando")
+    cycle.prospect.refresh_from_db()
+    assert eligible(cycle, now + timedelta(minutes=4)) == "recent_activity"
+    assert eligible(cycle, now + timedelta(minutes=6)) == ""
+    set_permission(conv, False)
+    cycle.refresh_from_db()
+    assert cycle.closed_at and not cycle.permission
+    process(attempt(cycle).pk, model=Model(templates[0]), transport=transport())
+    assert not WhatsAppDelivery.objects.exists()
+
+
+def test_pilot_completion_restores_optout_and_does_not_restart(pilot, monkeypatch):
+    from datalayer.followups import end_date
+
+    conv, cycle, templates, now = pilot
+    monkeypatch.setattr(timezone, "now", lambda: end_date(cycle))
+    maintain()
+    maintain()
+    cycle.refresh_from_db()
+    conv.refresh_from_db()
+    conv.prospect.refresh_from_db()
+    assert cycle.closed_at and not cycle.permission
+    assert conv.prospect.contact_opted_out and conv.followup_permission is False
+    assert cycle.attempts.count() == 8
+    assert not WhatsAppDelivery.objects.exists()
+    assert ensure_cycle(conv).pk == cycle.pk
+
+
+def test_pilot_recipient_change_fails_closed(pilot):
+    from datalayer.followups import eligible
+
+    conv, cycle, templates, now = pilot
+    cycle.prospect.phone = "+523387654321"
+    assert eligible(cycle, now) == "pilot_recipient_changed"
+
+
+def test_pilot_preserves_past_visit_and_suspends_on_current_visit(pilot):
+    from datalayer.followups import eligible
+    from datalayer.models import Advisor, Appointment, CalendarConnection, Property
+
+    conv, cycle, templates, now = pilot
+    advisor = Advisor.objects.create(name="PRUEBA piloto")
+    prop = Property.objects.create(
+        title="PRUEBA piloto",
+        kind="house",
+        operation="rent",
+        price=100,
+        municipality="Zapopan",
+        neighborhood="Centro",
+        advisor=advisor,
+    )
+    calendar = CalendarConnection.objects.create(
+        advisor=advisor,
+        subject="pilot",
+        email="pilot@example.test",
+        credentials="unused",
+    )
+    visit = Appointment.objects.create(
+        conversation=conv,
+        prospect=cycle.prospect,
+        property=prop,
+        advisor=advisor,
+        connection=calendar,
+        connection_generation=calendar.generation,
+        start=now - timedelta(days=2),
+        end=now - timedelta(days=2, hours=-1),
+        status="confirmed",
+    )
+    cycle.prospect.status = "scheduled"
+    assert eligible(cycle, now) == ""
+    visit.refresh_from_db()
+    assert visit.status == "confirmed"
+    visit.start, visit.end = now + timedelta(days=1), now + timedelta(days=1, hours=1)
+    visit.save()
+    assert eligible(cycle, now) == "appointment"
+    cycle.refresh_from_db()
+    assert cycle.suspended
+
+
+def test_pilot_unapproved_template_during_generation_never_sends(pilot, monkeypatch):
+    conv, cycle, templates, now = pilot
+    monkeypatch.setattr(timezone, "now", lambda: due_date(cycle, 1))
+    maintain()
+    a = cycle.attempts.get(day=1)
+
+    def withdraw():
+        WhatsAppTemplate.objects.filter(pk=templates[0].pk).update(status="REJECTED")
+
+    process(a.pk, model=Model(templates[0], withdraw, check_history=False), transport=transport())
+    a.refresh_from_db()
+    assert a.status == "review" and a.reason == "template_changed"
+    assert not WhatsAppDelivery.objects.exists()
+
+
+def test_pilot_expired_new_intention_cannot_inherit_temporary_permission(pilot, monkeypatch):
+    from datalayer.followups import end_date
+
+    conv, cycle, templates, now = pilot
+    monkeypatch.setattr(timezone, "now", lambda: end_date(cycle) + timedelta(minutes=1))
+    Message.objects.create(conversation=conv, role="user", text="Otra búsqueda")
+    replacement = ensure_cycle(conv, new=True)
+    conv.prospect.refresh_from_db()
+    assert not replacement.pilot and not replacement.permission
+    assert conv.prospect.contact_opted_out
+
+
+def test_pilot_not_interested_closes_and_restores_previous_optout(pilot):
+    from datalayer.followups import eligible
+
+    conv, cycle, templates, now = pilot
+    cycle.prospect.status = "not_interested"
+    assert eligible(cycle, now) == "not_interested"
+    cycle.refresh_from_db()
+    cycle.prospect.refresh_from_db()
+    assert cycle.closed_at and not cycle.permission and cycle.prospect.contact_opted_out
+
+
+def test_pilot_context_keeps_new_intention_separate_from_old_visit_request(pilot):
+    from datalayer.followups import context
+
+    conv, cycle, templates, now = pilot
+    old = Message.objects.create(conversation=conv, role="user", text="Busquemos horarios")
+    Message.objects.filter(pk=old.pk).update(created_at=now - timedelta(minutes=1))
+    current = Message.objects.create(conversation=conv, role="user", text="Ahora prefiero otra zona")
+    data = context(cycle)
+    assert data["history"] == [{"role": "user", "text": current.text}]
+    assert data["criteria"]["operation"] == "rent"
+    assert Message.objects.filter(pk=old.pk, text="Busquemos horarios").exists()

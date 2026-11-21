@@ -41,7 +41,7 @@ def process(attempt_id, *, model=None, transport=None):
             if reason:
                 skip(attempt, reason)
                 return
-            options = template_options(attempt.cycle)
+            options = template_options(attempt.cycle, attempt.day)
             if not options:
                 skip(attempt, "no_approved_contextual_template", "review")
                 return
@@ -78,7 +78,7 @@ def process(attempt_id, *, model=None, transport=None):
         if reason or snapshot(attempt.cycle) != attempt.snapshot:
             skip(attempt, reason or "context_changed")
             return
-        if selected not in template_options(attempt.cycle):
+        if selected not in template_options(attempt.cycle, attempt.day):
             skip(attempt, "template_changed", "review")
             return
         msg = Message.objects.create(

@@ -7,6 +7,7 @@ import { api, type ProspectDetail } from "@/shared/lib/api";
 type Attempt = {
   id: number;
   day: number;
+  label?: string;
   status: string;
   reason: string;
   due_at: string;
@@ -22,6 +23,7 @@ type Cycle = {
   permission: boolean;
   reason: string;
   next_at: string | null;
+  pilot?: boolean;
 };
 type Followup = {
   cycle: Cycle | null;
@@ -142,6 +144,9 @@ export function FollowupPanel({
       <h3>Seguimiento por WhatsApp</h3>
       {cycle ? (
         <>
+          {cycle.pilot && (
+            <p><strong>Prueba temporal: ocho intentos cada 30 minutos.</strong> Los primeros tres comprueban una plantilla distinta. Silencio mínimo: cinco minutos. El permiso temporal se retira al terminar.</p>
+          )}
           <p>
             Inicio: {date(cycle.started_at)} · Fin: {date(cycle.ends_at)}
           </p>
@@ -160,7 +165,7 @@ export function FollowupPanel({
               : cycle.permission
                 ? "Registrado"
                 : "Pendiente"}
-            . Próximo día del ciclo: {date(cycle.next_at)}.
+            . Próximo intento: {date(cycle.next_at)}.
           </p>
           <p>
             Los envíos se omiten si hay cita, pausa, actividad reciente o falta
@@ -173,7 +178,7 @@ export function FollowupPanel({
                 disabled={busy}
                 onClick={() => void action("resume")}
               >
-                Reactivar días restantes
+                Reactivar {cycle.pilot ? "intentos" : "días"} restantes
               </button>
             )}
             <button
@@ -200,8 +205,8 @@ export function FollowupPanel({
           <ul>
             {data.attempts.map((a) => (
               <li key={a.id}>
-                Día {a.day}: {states[a.delivery_status ?? a.status] ?? a.status}
-                {a.reason ? ` · ${reasons[a.reason] ?? a.reason}` : ""}
+                {a.label ?? `Día ${a.day}`}: {states[a.delivery_status ?? a.status] ?? a.status}
+                {a.reason ? ` · ${cycle.pilot && a.reason === "recent_activity" ? "Conversación en los últimos cinco minutos" : reasons[a.reason] ?? a.reason}` : ""}
               </li>
             ))}
           </ul>

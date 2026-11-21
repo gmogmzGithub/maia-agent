@@ -1,5 +1,95 @@
 # Validación manual del cuarto incremento
 
+## Pendiente comercial: rediseñar las plantillas con Santiago
+
+20 de noviembre de 2026. Guillermo confirmó que las plantillas y los mensajes funcionan técnicamente, pero calificó las plantillas actuales como pésimas y señaló que no hacen un buen seguimiento. **La entrega y la continuidad comprobadas no equivalen a aceptar su contenido comercial.**
+
+Queda pendiente discutir el seguimiento con Santiago, quien definirá qué deben decir las plantillas. Revisar con él el propósito y el contenido de cada contacto antes de preparar reemplazos y someterlos a aprobación de Meta. Después de su aprobación, sincronizar y comprobar las nuevas plantillas en Maia. No se reescriben ni se presentan a Meta durante el piloto actual por esta nota; la prueba técnica autorizada continúa con su alcance previo.
+
+## Piloto horario autorizado e iniciado, 20 de noviembre de 2026
+
+Guillermo autorizó expresamente reactivar su número para probar las tres plantillas y la secuencia automática en horas. Se aplicó la migración aditiva `0013` y se inició el ciclo 4 a las 18:47, hora de Guadalajara: ocho intentos cada 30 minutos, primero a las 18:52 y último a las 22:22. Cierre a las 22:32 y restauración de la baja anterior. El [plan actualizado](seguimiento-piloto-continuo.md) detalla límites, textos/plantillas y calendario. No se cancela la cita histórica ni se cambia el horario de otros ciclos.
+
+Las tres plantillas se volvieron a sincronizar con Meta tras renovar la credencial: todas `APPROVED`. Su uso en el piloto es específico de ese ciclo; siguen desactivadas globalmente. Backend, worker y web actualizados; migración aplicada, sin cambios de modelo pendientes y proxy real aprobado. Ningún intento se declaró entregado al programarlo.
+
+Validación final del cambio: **272 pruebas backend aprobadas y dos opcionales omitidas; 55 pruebas frontend aprobadas**, compilación web y tipos aprobados, Ruff y revisión de espacios aprobados. Los once casos nuevos cubren cadencia acotada, aislamiento respecto del calendario normal, tres plantillas sin activación global, worker con un envío por intento, actividad reciente, baja, cierre/restauración de permiso, cambio de destinatario, citas, retirada de aprobación, separación de la intención anterior y ausencia de herencia del permiso temporal a una intención posterior. A las 18:49 se comprobó que el ciclo era elegible, el túnel respondía y la prevención de suspensión seguía activa.
+
+### Primer intento: revisión y corrección
+
+El mantenimiento creó automáticamente el intento 7, día interno 1, a las 18:53. La ejecución 81 eligió `template_id=0` y quedó en revisión sin entrega. Se reprodujo con Haiku real: el contexto completo y también el último intercambio antiguo («Busquemos horarios») producían 0; añadir el permiso vigente no cambiaba el resultado. Sin ese historial anterior al nuevo ciclo, seleccionó la plantilla válida. El perfil piloto había incluido por error todo el historial, mientras los ciclos normales ya delimitaban su intención por `started_at`.
+
+Se añadió una regresión que falló antes del arreglo, se corrigió el límite temporal del contexto y volvió a pasar la reproducción original con Haiku real (ejecución diagnóstica 86), sin crear entregas durante el diagnóstico. El historial anterior se conserva en la base. Se revisó y reencoló **el mismo intento 7** dentro de su ventana, registrando la intervención en actividad del prospecto. La ejecución 87 del worker creó la entrega `b4f933a7-c3f0-42b5-b920-ddb839838dce` a las 18:56. No se alteró el horario de los otros siete intentos. Este primer intento necesitó intervención; no acredita todavía una secuencia entera sin intervención.
+
+Meta confirmó `delivered` a las 18:56:30; los eventos `sent` y `delivered` quedaron procesados sin error. Falta observar la respuesta de Guillermo a esta entrega y los intentos posteriores. El proxy real volvió a pasar tras la corrección.
+
+### Respuesta al primer intento del piloto
+
+A las 19:02:36 Guillermo respondió «Revisemos opciones» (mensaje 176). Maia consultó nuevamente el inventario y respondió con la opción de departamento en renta de Jardines Universidad, conservando Zapopan, presupuesto de MX$25,000, dos recámaras y mascotas, con aviso de propiedad de prueba (mensaje 177). La entrega `85891ab4-992b-43bd-950c-3b50b48ba801` alcanzó `read`, sin error; la primera plantilla también quedó `read`. Comprobación a las 19:03: ciclo 4 abierto, permiso vigente, sin suspensión y próximo intento a las 19:22. La respuesta no movió el calendario. Los intentos posteriores siguen pendientes de observar.
+
+### Segundo intento automático y respuesta
+
+El intento 8 se ejecutó sin intervención manual a las 19:23: plantilla `maia_retomar_municipio`, texto «¿Seguimos buscando en Zapopan o prefieres revisar otra zona?» (mensaje 178). La entrega `df55b093-9e59-46a0-82dd-dd25c2c92eb5` alcanzó `read`, sin error. Guillermo respondió «Aún es Zapopan» a las 19:24:25 (mensaje 179). Maia conservó la zona, explicó que no había más opciones con los requisitos actuales y ofreció ampliar presupuesto o cambiar de zona (mensaje 180); su entrega `a1eecbf2-daba-460a-8c68-dd14b5e50796` también alcanzó `read`, sin error.
+
+Comprobación a las 19:24: dos intentos, ambos leídos, con una entrega de plantilla por intento. Ciclo 4 abierto, permiso vigente, sin suspensión; tercer intento previsto a las 19:52. Ya hay evidencia de un seguimiento posterior completamente automático y continuidad de la conversación; falta la tercera plantilla y los siguientes intentos de selección contextual.
+
+### Tercera plantilla y cobertura de las tres
+
+El intento 9 se ejecutó automáticamente a las 19:53 (ejecución 91), sin intervención manual: `maia_retomar_tipo_municipio`, texto «Retomo tu búsqueda de departamento en Zapopan. ¿Quieres revisar opciones o ajustar lo que buscas?» (mensaje 181). La entrega `e5921bec-31fc-43ff-954f-90ed440fefaa` alcanzó `read`, sin error. Guillermo respondió «Si, sigamos» a las 19:54:19 (mensaje 182). Maia conservó departamento, renta y Zapopan, recordó la única opción disponible con el presupuesto y propuso ajustar presupuesto o zona (mensaje 183). Su entrega `e98a6bd0-9bf5-4cf7-8261-6d2ef9ae2e8c` constaba `delivered`, sin error, en la revisión de las 19:56; no se atribuye lectura todavía.
+
+Quedan comprobadas las tres plantillas aprobadas con variables reales de la prueba, entrega, respuesta entrante y continuación de Maia. Hay tres intentos y una entrega de plantilla por intento; los intentos segundo y tercero se ejecutaron sin intervención. Ciclo abierto, permiso vigente, sin suspensión. Próximo intento previsto a las 20:22; desde ese punto Haiku podrá elegir entre las tres plantillas, en vez de restringir cada intento a una para comprobar cobertura. Siguen pendientes la selección contextual entre alternativas, los cinco intentos restantes y el cierre/restauración de la baja.
+
+La compilación local emitió una advertencia de seguridad sobre Next.js; el reintento y la compilación de la imagen web terminaron correctamente. Queda pendiente revisar/actualizar esa dependencia. La reconstrucción inicial del backend falló por un 403 de un artefacto del lockfile; para arrancar este piloto se reutilizó la imagen existente con las dependencias instaladas y se copió el código actualizado, sin añadir dependencias. Base usada: `sha256:e43e3d985a38fb7b18fdde834daab6d4acef4bdbf0c0ea563a7aa4605353a927`. Al preparar el PR se incorporó la base remota del PR #27, que ya usa dependencias públicas: la comprobación de los 48 paquetes bloqueados y la reconstrucción limpia con el Dockerfile estándar pasaron. El bloqueo 403 quedó resuelto en esa base, sin interrumpir el piloto en ejecución.
+
+## Preparación del piloto continuo, 16 de noviembre de 2026
+
+Configurados prevención de suspensión, arranque al iniciar sesión de OrbStack y túnel, y reinicio de los cuatro contenedores. Se comprobaron recuperación del proceso del túnel y de la web, salud pública y proxy real. La [guía de operación de esta Mac](operacion-continua-mac.md) registra instalación, condiciones y límites. El [recorrido de seguimiento de varios días](seguimiento-piloto-continuo.md) separa la prueba puntual ya aprobada de la ejecución automática pendiente. No se activaron plantillas ni se cambió la baja de Guillermo.
+
+## Plan de prueba completa, acordar inicio
+
+Guillermo pidió comprobar el recorrido completo y los seguimientos de días posteriores. La entrega puntual ya realizada no sustituye la ejecución programada del ciclo.
+
+1. **Disponibilidad:** mantener el equipo encendido, conectado a Internet y sin suspensión, con base, backend, web, worker y túnel activos. Antes de iniciar, comprobar recuperación de servicios/túnel y disponer de una credencial de Meta cuya vigencia cubra la prueba. No atribuir al token renovado una duración todavía no verificada.
+2. **Caso de prueba:** acordar número y permiso explícito para el ciclo. El permiso anterior solo cubrió un mensaje. Si se usa el número de Guillermo, revisar desde CRM sus citas/estado antes de reactivar; no cancelar citas, borrar historial, modificar fechas ni sustituir su baja silenciosamente. Registrar nueva intención y requisitos coherentes, identificados como PRUEBA.
+3. **Tres plantillas:** comprobar entrega real y variables de cada plantilla aprobada. Solo `maia_retomar_operacion` tiene evidencia de entrega real. Acordar los otros dos textos concretos antes de enviarlos; no asumir que el selector automático elegirá las tres durante un único ciclo.
+4. **Ciclo real:** conservar inicio y calendario. Registrar los días 1, 5, 7, 14, 18, 22, 26 y 28, la hora del CRM, selección y variables, intento, entrega y estado en CRM. El silencio de más de 24 horas, permiso y ausencia de suspensión son condiciones para enviar. Si la intención comienza después de la hora de envío, el día 1 puede omitirse por actividad reciente; es el comportamiento esperado, no motivo para alterar fechas.
+5. **Continuación:** responder a una entrega y comprobar contexto y respuesta de Maia. Antes de la siguiente fecha, dejar más de 24 horas sin interacción si se espera un envío. Una respuesta reciente debe producir una omisión registrada, sin mover el calendario.
+6. **Controles:** comprobar en casos aislados cita, pausa, falta de permiso, baja, cambios durante generación y duplicados. Las 60 regresiones actuales cubren estos controles con reloj/transporte simulados. No modificar el caso principal antes de observar los seguimientos posteriores que se desean comprobar.
+7. **Cierre:** separar evidencia real de simulada. Exigir envío programado por worker, respuesta y una entrega de un día posterior; conservar pendientes los días reales todavía no transcurridos. Probar baja al terminar el caso y confirmar ausencia de nuevos envíos. No declarar completados los 28 días por las regresiones ni por un envío manual.
+
+Inspección del 16 de noviembre a las 20:09: cuatro servicios activos; todos con política de reinicio `no`. Túnel `maia-sandbox` activo como proceso; no se encontró un servicio propio de Maia/cloudflared en las carpetas habituales de LaunchAgents/LaunchDaemons consultadas. macOS conserva suspensión por inactividad configurada en alimentación eléctrica (`sleep=1`), con inhibidores temporales activos. No se cambió la energía, el arranque, las plantillas ni los permisos durante esta inspección.
+
+## Regresión del seguimiento automático, 16 de noviembre de 2026
+
+Se ejecutó `tests/test_followups.py` en la base temporal: **60 pruebas aprobadas y una opcional omitida**. Después se ejecutó esa prueba opcional con `MAIA_LIVE_HAIKU_CHECK=1`: **una aprobada con Haiku real**, sin generar entregas WhatsApp. No se cambiaron fechas, permisos o datos del piloto.
+
+La regresión comprueba los días 1/5/7/14/18/22/26/28, horario local y ventana de una hora; omisión de días vencidos; citas, pausa, baja y actividad reciente; selección con datos registrados; cambios durante generación; deduplicación de intentos/eventos y ausencia de reenvío ante resultados inciertos. El calendario y transporte se simulan en estas pruebas; la selección con Haiku real usa una plantilla de prueba y no acredita por sí sola la selección entre las tres de Meta.
+
+Consulta de operación a las 20:07 (America/Mexico_City): las tres plantillas aprobadas mantienen variables correctas y están desactivadas. Hay dos ciclos abiertos, ambos sin permiso; uno suspendido por cita. El prospecto de Guillermo conserva baja y cero ciclos abiertos. No se hicieron envíos adicionales. Siguiente decisión: habilitar las tres plantillas para prospectos con permiso vigente, conservando las bajas. La ejecución programada real con selección automática sigue pendiente de un caso autorizado y elegible.
+
+## Respuesta y continuación confirmadas, 16 de noviembre de 2026
+
+Guillermo respondió «Si» a la plantilla a las 20:05. El webhook entrante (evento `88`) quedó procesado sin error; el mensaje `171` se registró en la conversación WhatsApp existente. Maia continuó con el contexto de renta previo y guardó el mensaje `172`. Su entrega `17dfb4af-976f-4447-8165-0391c28cf9da` alcanzó `read`, sin errores, a las 20:05 (America/Mexico_City). La plantilla de prueba también alcanzó `read`.
+
+Queda comprobado el recorrido real de plantilla autorizada → entrega → respuesta entrante → continuación de Maia → entrega de la respuesta, con registro en CRM. Se verificó nuevamente `contact_opted_out=True`. El incremento 4 conserva pendientes la activación acordada de plantillas y la validación del seguimiento automático: selección contextual, calendario, omisiones, baja y ausencia de duplicados. Esta prueba puntual no cierra esos casos.
+
+## Entrega controlada confirmada, 16 de noviembre de 2026
+
+Guillermo autorizó su número personal registrado en el CRM y el texto «Sobre tu búsqueda para rentar, ¿quieres revisar opciones o cambió lo que necesitas?». Se envió una sola plantilla `maia_retomar_operacion`, `es_MX`, variable `1=rentar`, mediante la cola y transporte existentes. Entrega `72e549c2-035a-4c48-9cb3-119c0fcba31b`, con clave única de prueba para impedir duplicados. Meta aceptó el envío a las 20:04 y el webhook registró `delivered` a las 20:05 (America/Mexico_City); los eventos quedaron procesados sin error.
+
+El mensaje y su entrega están vinculados a la conversación WhatsApp del CRM. Se comprobó que `contact_opted_out=True` permanece intacto; no se activaron plantillas ni ciclos. Es una prueba puntual autorizada de entrega, no una validación del calendario o selección automática del seguimiento. Falta comprobar la respuesta del usuario y la continuación de Maia, además de los demás casos del seguimiento real.
+
+## Sincronización confirmada, 16 de noviembre de 2026
+
+Tras renovar la credencial y recrear backend/worker conservando los proveedores de correo y mapas, la sincronización real de Meta terminó correctamente a las 20:00 (America/Mexico_City). Las tres plantillas `maia_retomar_tipo_municipio`, `maia_retomar_municipio` y `maia_retomar_operacion`, idioma `es_MX`, tienen estado `APPROVED` en CRM. Conservan sus variables y `enabled=False`.
+
+Queda comprobada la aprobación y sincronización. Pendientes: acordar destinatario y texto de la prueba controlada, activar las plantillas que correspondan y validar entrega, respuesta y seguimiento real. No se enviaron mensajes ni se reactivaron ciclos; se conserva la baja de Guillermo.
+
+## Consulta de Meta, 16 de noviembre de 2026
+
+La consulta real del catálogo devolvió HTTP 401, `OAuthException`, código `190` y subcódigo `463`: el token de acceso caducó. No se pudo comprobar la decisión de Meta ni sincronizar el catálogo. Las tres plantillas de Maia siguen en CRM con el último estado guardado `PENDING`, sincronizado el 7 de noviembre, y `enabled=False`. Ese estado no acredita que sigan pendientes en Meta.
+
+Siguiente paso: renovar la credencial configurada y repetir la consulta/sincronización. No se enviaron mensajes, activaron plantillas ni reactivaron ciclos.
+
 ## Actualización de Guillermo, 7 de noviembre de 2026
 
 Guillermo confirmó que las pruebas del incremento 4 funcionan y priorizó el incremento 6, captación de propiedades, mientras Meta aprueba las plantillas. El incremento 5 queda pospuesto. Se registra su aceptación general de las pruebas realizadas; las casillas anteriores conservan su alcance histórico, sin atribuir nuevas ejecuciones individuales.
