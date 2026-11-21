@@ -2,6 +2,7 @@ name: maia-incremento1
 services:
   db:
     image: postgres:17-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-maia}
       POSTGRES_USER: ${POSTGRES_USER:-maia}
@@ -17,6 +18,7 @@ services:
       retries: 20
   backend:
     build: ./backend
+    restart: unless-stopped
     env_file: .env
     environment:
       PUBLIC_BASE_URL: https://sandbox.elmenlabs.com
@@ -38,6 +40,7 @@ services:
       retries: 30
   worker:
     build: ./backend
+    restart: unless-stopped
     env_file: .env
     environment:
       PUBLIC_BASE_URL: https://sandbox.elmenlabs.com
@@ -52,6 +55,7 @@ services:
         condition: service_healthy
   web:
     build: ./frontend
+    restart: unless-stopped
     environment:
       BACKEND_URL: http://backend:8000
     ports:

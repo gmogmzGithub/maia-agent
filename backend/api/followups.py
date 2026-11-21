@@ -12,7 +12,7 @@ from api.auth import BrowserAuth, browser_id
 from datalayer.conversations import conversation_output
 from datalayer.followups import (
     FIELDS,
-    due_date,
+    end_date,
     ensure_cycle,
     output,
     policy,
@@ -85,8 +85,6 @@ def get_followup(request, prospect_id: int):
 
 @crm.post("/prospects/{prospect_id}/followup", response=dict)
 def cycle_action(request, prospect_id: int, data: CycleAction):
-    from datetime import timedelta
-
     from datalayer.prospects import is_paused
 
     with transaction.atomic():
@@ -94,7 +92,7 @@ def cycle_action(request, prospect_id: int, data: CycleAction):
             Conversation.objects.select_for_update().filter(prospect_id=prospect_id).order_by("pk")
         )
         prospect = get_object_or_404(Prospect.objects.select_for_update(), pk=prospect_id)
-        cycle = prospect.followup_cycles.order_by("-created_at").first()
+        cycle = prospect.followup_cycles.order_by("-created_at", "-pk").first()
         if data.action == "new_intention":
             conversation = get_object_or_404(
                 Conversation, pk=data.conversation_id, prospect=prospect
@@ -108,7 +106,7 @@ def cycle_action(request, prospect_id: int, data: CycleAction):
             # Explicit staff attestation, not an automatic permission inferred from phone.
             set_permission(cycle.conversation, True, actor=request.user)
         elif data.action == "resume":
-            if cycle.closed_at or timezone.now() >= due_date(cycle, 28) + timedelta(hours=1):
+            if cycle.closed_at or timezone.now() >= end_date(cycle):
                 raise HttpError(409, "El ciclo terminó; requiere una nueva intención.")
             if (
                 prospect.contact_opted_out

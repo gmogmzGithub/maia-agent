@@ -84,7 +84,7 @@ def deliver(delivery_id, client=None):
                     o["name"] == template.get("name")
                     and o["language"] == template.get("language", {}).get("code")
                     and o["text"] == item.message.text
-                    for o in template_options(attempt.cycle)
+                    for o in template_options(attempt.cycle, attempt.day)
                 ):
                     reason = "template_changed"
         elif is_paused(conversation) or (

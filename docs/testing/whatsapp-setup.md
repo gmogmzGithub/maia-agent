@@ -43,6 +43,10 @@ El webhook verifica la firma con el secreto de la aplicación y acepta solo la c
 
 ## Plantillas contextuales
 
+Actualización del 16 de noviembre de 2026, 20:00 (America/Mexico_City): credencial renovada y cargada tras recrear backend/worker con los proveedores de correo y mapas conservados. La sincronización real recuperó ocho plantillas; las tres de Maia constan como `APPROVED`, idioma `es_MX`, con sus variables originales y `enabled=False`. Falta acordar destinatario/texto y validar la entrega controlada antes de habilitar el seguimiento. No se enviaron mensajes ni se reactivaron ciclos.
+
+Consulta del 16 de noviembre de 2026: Meta rechazó la lectura del catálogo con HTTP 401, código `190`, subcódigo `463` (token caducado). Hace falta renovar la credencial antes de comprobar aprobación y sincronizar. El CRM conserva `PENDING` del 7 de noviembre para las tres plantillas de Maia, todas desactivadas; no representa una consulta vigente de Meta. No se enviaron mensajes ni se reactivó el seguimiento.
+
 El 7 de noviembre de 2026 se crearon estas tres plantillas con los textos aprobados por Guillermo, idioma `es_MX` y categoría solicitada `MARKETING`. Meta respondió `PENDING` para las tres. Se sincronizaron al CRM con las variables configuradas y `enabled=False`; no se enviaron mensajes.
 
 | Nombre | Texto aprobado | Variables del CRM |
