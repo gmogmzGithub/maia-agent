@@ -51,8 +51,20 @@ def policy():
     return row
 
 
+def cycle_days(cycle):
+    if cycle.pilot and "days" in cycle.pilot:
+        return tuple(day for day in DAYS if day in cycle.pilot["days"])
+    return DAYS
+
+
 def due_date(cycle, day):
     if cycle.pilot:
+        first_day = cycle.pilot.get("remaining_from_day")
+        if first_day in DAYS and DAYS.index(day) >= DAYS.index(first_day):
+            days = cycle_days(cycle)
+            return datetime.fromisoformat(cycle.pilot["remaining_start_at"]) + timedelta(
+                minutes=cycle.pilot["interval_minutes"] * (days.index(day) - days.index(first_day))
+            )
         return cycle.started_at + timedelta(minutes=5 + 30 * DAYS.index(day))
     return datetime.combine(
         cycle.started_at.astimezone(LOCAL).date() + timedelta(days=day),
@@ -62,11 +74,13 @@ def due_date(cycle, day):
 
 
 def send_window(cycle):
-    return timedelta(minutes=10) if cycle.pilot else timedelta(hours=1)
+    if cycle.pilot:
+        return timedelta(minutes=min(10, cycle.pilot.get("interval_minutes", 30)))
+    return timedelta(hours=1)
 
 
 def end_date(cycle):
-    return due_date(cycle, 28) + send_window(cycle)
+    return due_date(cycle, cycle_days(cycle)[-1]) + send_window(cycle)
 
 
 @transaction.atomic
@@ -209,7 +223,11 @@ def eligible(cycle, now):
         status="queued", payload__kind="messages", payload__data__from=prospect.phone.lstrip("+")
     ).exists():
         return "incoming_pending"
-    silence = timedelta(minutes=5) if cycle.pilot else timedelta(hours=24)
+    silence = (
+        timedelta(minutes=cycle.pilot.get("silence_minutes", 5))
+        if cycle.pilot
+        else timedelta(hours=24)
+    )
     if Message.objects.filter(
         conversation__prospect=prospect, role="user", created_at__gt=now - silence
     ).exists():
@@ -330,7 +348,7 @@ def maintain():
     for cycle in FollowupCycle.objects.select_related("prospect", "conversation").filter(
         closed_at__isnull=True
     ):
-        for day in DAYS:
+        for day in cycle_days(cycle):
             due = due_date(cycle, day)
             if now < due:
                 continue
@@ -359,7 +377,9 @@ def output(prospect):
     if not cycle:
         return {"cycle": None, "opted_out": prospect.contact_opted_out, "attempts": []}
     now = timezone.now()
-    next_due = next((due_date(cycle, d) for d in DAYS if due_date(cycle, d) > now), None)
+    next_due = next(
+        (due_date(cycle, d) for d in cycle_days(cycle) if due_date(cycle, d) > now), None
+    )
     return {
         "cycle": {
             "id": cycle.pk,
@@ -367,6 +387,11 @@ def output(prospect):
             "started_at": cycle.started_at.isoformat(),
             "ends_at": end_date(cycle).isoformat(),
             "pilot": bool(cycle.pilot),
+            "pilot_retry_of": cycle.pilot.get("retry_of") if cycle.pilot else None,
+            "pilot_interval_minutes": cycle.pilot.get("interval_minutes", 30)
+            if cycle.pilot
+            else None,
+            "pilot_silence_minutes": cycle.pilot.get("silence_minutes", 5) if cycle.pilot else None,
             "closed_at": cycle.closed_at.isoformat() if cycle.closed_at else None,
             "suspended": cycle.suspended,
             "permission": cycle.permission,
