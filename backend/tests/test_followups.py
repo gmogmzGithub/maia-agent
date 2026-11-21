@@ -847,8 +847,221 @@ def test_pilot_context_keeps_new_intention_separate_from_old_visit_request(pilot
     conv, cycle, templates, now = pilot
     old = Message.objects.create(conversation=conv, role="user", text="Busquemos horarios")
     Message.objects.filter(pk=old.pk).update(created_at=now - timedelta(minutes=1))
-    current = Message.objects.create(conversation=conv, role="user", text="Ahora prefiero otra zona")
+    current = Message.objects.create(
+        conversation=conv, role="user", text="Ahora prefiero otra zona"
+    )
     data = context(cycle)
     assert data["history"] == [{"role": "user", "text": current.text}]
     assert data["criteria"]["operation"] == "rent"
     assert Message.objects.filter(pk=old.pk, text="Busquemos horarios").exists()
+
+
+def test_accelerated_pilot_preserves_completed_attempts_and_only_compresses_remainder(pilot):
+    from datalayer.followup_pilot import accelerate_pilot
+    from datalayer.followups import end_date, send_window
+
+    conv, cycle, templates, now = pilot
+    original = [due_date(cycle, day) for day in DAYS]
+    for day in DAYS[:3]:
+        a = attempt(cycle, day)
+        a.status = "read"
+        a.save()
+    cycle = accelerate_pilot(cycle.pk)
+    assert [due_date(cycle, day) for day in DAYS[:3]] == original[:3]
+    remaining = [due_date(cycle, day) for day in DAYS[3:]]
+    assert remaining == [now + timedelta(minutes=5 + i * 5) for i in range(5)]
+    assert end_date(cycle) == now + timedelta(minutes=30)
+    assert send_window(cycle) == timedelta(minutes=5)
+    assert list(cycle.attempts.values_list("status", flat=True)) == ["read"] * 3
+    repeated = accelerate_pilot(cycle.pk)
+    assert repeated.pilot == cycle.pilot
+
+
+def test_accelerated_pilot_uses_two_minute_silence_without_changing_normal_cycles(pilot):
+    from datalayer.followup_pilot import accelerate_pilot
+    from datalayer.followups import eligible
+
+    conv, cycle, templates, now = pilot
+    cycle = accelerate_pilot(cycle.pk)
+    Message.objects.create(conversation=conv, role="user", text="Sí, sigo buscando")
+    assert eligible(cycle, now + timedelta(minutes=1)) == "recent_activity"
+    assert eligible(cycle, now + timedelta(minutes=2)) == ""
+    normal = FollowupCycle(prospect=cycle.prospect, conversation=conv, permission=True)
+    assert eligible(normal, now + timedelta(minutes=3)) == "recent_activity"
+
+
+def test_accelerating_pilot_rejects_inflight_attempt_instead_of_moving_it(pilot):
+    from django.core.exceptions import ValidationError
+
+    from datalayer.followup_pilot import accelerate_pilot
+
+    conv, cycle, templates, now = pilot
+    a = attempt(cycle)
+    a.status = "preparing"
+    a.save()
+    with pytest.raises(ValidationError, match="intento en curso"):
+        accelerate_pilot(cycle.pk)
+    cycle.refresh_from_db()
+    assert "remaining_start_at" not in cycle.pilot
+
+
+def test_expired_meta_token_suspends_cycle_and_prevents_further_model_calls(setup, monkeypatch):
+    conv, cycle, template, now = setup
+    first = attempt(cycle)
+    rejected = transport(
+        lambda request: httpx.Response(
+            401,
+            json={"error": {"code": 190, "error_subcode": 463, "message": "expired"}},
+        )
+    )
+    process(first.pk, model=Model(template), transport=rejected)
+    first.refresh_from_db()
+    cycle.refresh_from_db()
+    assert first.status == "failed" and first.reason == "whatsapp_token_expired"
+    assert cycle.suspended and cycle.reason == "whatsapp_token_expired"
+    monkeypatch.setattr(timezone, "now", lambda: due_date(cycle, 7))
+    second = attempt(cycle, 7)
+    model = Model(template)
+    process(second.pk, model=model, transport=rejected)
+    second.refresh_from_db()
+    assert second.status == "skipped" and second.reason == "whatsapp_token_expired"
+    assert model.calls == 0 and WhatsAppDelivery.objects.count() == 1
+
+
+@pytest.mark.parametrize("command", ["start_followup_pilot", "accelerate_followup_pilot"])
+def test_pilot_commands_reject_expired_meta_token_without_mutation(pilot, monkeypatch, command):
+    import io
+
+    from django.core.management import call_command
+    from django.core.management.base import CommandError
+
+    from worker import whatsapp
+
+    conv, cycle, templates, now = pilot
+    original = dict(cycle.pilot)
+    count = FollowupCycle.objects.count()
+    monkeypatch.setattr(
+        whatsapp,
+        "request",
+        lambda *args, **kwargs: httpx.Response(
+            401,
+            json={"error": {"code": 190, "error_subcode": 463}},
+        ),
+    )
+    options = (
+        {"phone": cycle.prospect.phone, "consent": True}
+        if command == "start_followup_pilot"
+        else {"cycle": cycle.pk}
+    )
+    with pytest.raises(CommandError, match="whatsapp_token_expired"):
+        call_command(command, **options, stdout=io.StringIO())
+    cycle.refresh_from_db()
+    assert cycle.pilot == original and FollowupCycle.objects.count() == count
+    assert not WhatsAppDelivery.objects.exists()
+
+
+def test_whatsapp_credentials_preflight_is_read_only_without_sql_locks(setup):
+    from worker.whatsapp import check_credentials
+
+    requests = []
+
+    def check(request):
+        assert not connection.in_atomic_block
+        requests.append(request.method)
+        assert request.url.path.endswith("/test-account/message_templates")
+        return httpx.Response(200, json={"data": []})
+
+    check_credentials(client=httpx.Client(transport=httpx.MockTransport(check)))
+    assert requests == ["GET"] and not WhatsAppDelivery.objects.exists()
+
+
+def test_retry_pilot_only_resends_auth_failures_and_preserves_previous_history(pilot, monkeypatch):
+    from django.core.exceptions import ValidationError
+
+    from datalayer.followup_pilot import start_pilot
+    from datalayer.followups import cycle_days, end_date
+
+    conv, original, templates, now = pilot
+    for index, day in enumerate(DAYS):
+        delivery = WhatsAppDelivery.objects.create(
+            conversation=conv,
+            recipient=original.prospect.phone.lstrip("+"),
+            event_key=f"old-pilot:{day}",
+            status="read" if index < 3 else "failed",
+        )
+        a = attempt(original, day)
+        a.status, a.reason = delivery.status, "" if index < 3 else "meta_http_401"
+        a.delivery = delivery
+        a.save()
+    original.closed_at, original.permission = now, False
+    original.save()
+    Prospect.objects.filter(pk=original.prospect_id).update(contact_opted_out=True)
+    before = list(original.attempts.values_list("id", "day", "status", "delivery_id"))
+    retry, created = start_pilot(original.prospect.phone, retry_cycle_id=original.pk)
+    assert created and retry.pk != original.pk
+    assert cycle_days(retry) == DAYS[3:] and retry.pilot["silence_minutes"] == 2
+    assert retry.pilot["interval_minutes"] == 5
+    assert end_date(retry) == now + timedelta(minutes=26)
+    for day in cycle_days(retry):
+        monkeypatch.setattr(timezone, "now", lambda day=day: due_date(retry, day))
+        maintain()
+        a = retry.attempts.get(day=day)
+        process(a.pk, model=Model(templates[0], check_history=False), transport=transport())
+        a.refresh_from_db()
+        assert a.status == "sent"
+    assert list(retry.attempts.values_list("day", flat=True)) == list(DAYS[3:])
+    assert list(original.attempts.values_list("id", "day", "status", "delivery_id")) == before
+    monkeypatch.setattr(timezone, "now", lambda: end_date(retry))
+    maintain()
+    retry.refresh_from_db()
+    retry.prospect.refresh_from_db()
+    assert retry.closed_at and not retry.permission and retry.prospect.contact_opted_out
+    count = FollowupCycle.objects.count()
+    with pytest.raises(ValidationError, match="ya tiene una repetición"):
+        start_pilot(original.prospect.phone, retry_cycle_id=original.pk)
+    assert FollowupCycle.objects.count() == count
+
+
+def test_retry_pilot_never_repeats_uncertain_delivery(pilot):
+    from django.core.exceptions import ValidationError
+
+    from datalayer.followup_pilot import start_pilot
+
+    conv, cycle, templates, now = pilot
+    delivery = WhatsAppDelivery.objects.create(
+        conversation=conv,
+        recipient=cycle.prospect.phone.lstrip("+"),
+        event_key="unknown-pilot",
+        status="uncertain",
+    )
+    a = attempt(cycle)
+    a.status, a.reason, a.delivery = "uncertain", "unknown_delivery", delivery
+    a.save()
+    cycle.closed_at = now
+    cycle.save()
+    count = FollowupCycle.objects.count()
+    with pytest.raises(ValidationError, match="No hay envíos rechazados"):
+        start_pilot(cycle.prospect.phone, retry_cycle_id=cycle.pk)
+    assert FollowupCycle.objects.count() == count
+
+
+def test_retry_pilot_keeps_five_minute_spacing_when_failed_days_are_not_adjacent(pilot):
+    from datalayer.followup_pilot import start_pilot
+    from datalayer.followups import cycle_days
+
+    conv, cycle, templates, now = pilot
+    for day in (14, 28):
+        delivery = WhatsAppDelivery.objects.create(
+            conversation=conv,
+            recipient=cycle.prospect.phone.lstrip("+"),
+            event_key=f"sparse-auth:{day}",
+            status="failed",
+        )
+        a = attempt(cycle, day)
+        a.status, a.reason, a.delivery = "failed", "meta_http_401", delivery
+        a.save()
+    cycle.closed_at = now
+    cycle.save()
+    retry, created = start_pilot(cycle.prospect.phone, retry_cycle_id=cycle.pk)
+    assert created and cycle_days(retry) == (14, 28)
+    assert due_date(retry, 28) - due_date(retry, 14) == timedelta(minutes=5)

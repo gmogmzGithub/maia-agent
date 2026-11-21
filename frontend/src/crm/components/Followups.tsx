@@ -24,6 +24,9 @@ type Cycle = {
   reason: string;
   next_at: string | null;
   pilot?: boolean;
+  pilot_interval_minutes?: number | null;
+  pilot_silence_minutes?: number | null;
+  pilot_retry_of?: number | null;
 };
 type Followup = {
   cycle: Cycle | null;
@@ -93,6 +96,9 @@ const reasons: Record<string, string> = {
   generation_interrupted: "Generación interrumpida",
   template_changed: "La plantilla cambió",
   whatsapp_not_configured: "Falta configurar WhatsApp",
+  whatsapp_token_expired: "La credencial de WhatsApp caducó; requiere renovación",
+  whatsapp_auth_failed: "Meta rechazó la credencial de WhatsApp",
+  meta_http_401: "Meta rechazó la credencial de WhatsApp",
   outside_service_window: "Fuera de la ventana de conversación",
   conversation_changed: "La conversación cambió",
   incoming_pending: "Llegó un mensaje que todavía se está procesando",
@@ -145,7 +151,17 @@ export function FollowupPanel({
       {cycle ? (
         <>
           {cycle.pilot && (
-            <p><strong>Prueba temporal: ocho intentos cada 30 minutos.</strong> Los primeros tres comprueban una plantilla distinta. Silencio mínimo: cinco minutos. El permiso temporal se retira al terminar.</p>
+            <p>
+              <strong>
+                Prueba temporal: próximos intentos cada{" "}
+                {cycle.pilot_interval_minutes ?? 30} minutos.
+              </strong>{" "}
+              {cycle.pilot_retry_of
+                ? `Solo envíos fallidos del ciclo ${cycle.pilot_retry_of}.`
+                : "Los primeros tres comprueban una plantilla distinta."}{" "}
+              Silencio mínimo: {cycle.pilot_silence_minutes ?? 5} minutos.
+              El permiso temporal se retira al terminar.
+            </p>
           )}
           <p>
             Inicio: {date(cycle.started_at)} · Fin: {date(cycle.ends_at)}
@@ -206,7 +222,11 @@ export function FollowupPanel({
             {data.attempts.map((a) => (
               <li key={a.id}>
                 {a.label ?? `Día ${a.day}`}: {states[a.delivery_status ?? a.status] ?? a.status}
-                {a.reason ? ` · ${cycle.pilot && a.reason === "recent_activity" ? "Conversación en los últimos cinco minutos" : reasons[a.reason] ?? a.reason}` : ""}
+                {a.reason
+                  ? ` · ${cycle.pilot && a.reason === "recent_activity"
+                    ? `Conversación en los últimos ${cycle.pilot_silence_minutes ?? 5} minutos`
+                    : reasons[a.reason] ?? a.reason}`
+                  : ""}
               </li>
             ))}
           </ul>

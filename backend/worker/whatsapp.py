@@ -19,6 +19,36 @@ class WhatsAppError(Exception):
     pass
 
 
+AUTH_ERRORS = {"whatsapp_token_expired", "whatsapp_auth_failed"}
+
+
+def provider_error(response):
+    try:
+        error = response.json().get("error", {})
+    except (ValueError, AttributeError):
+        error = {}
+    if not isinstance(error, dict):
+        error = {}
+    if error.get("code") == 190 and error.get("error_subcode") == 463:
+        return "whatsapp_token_expired"
+    if response.status_code == 401 or error.get("code") == 190:
+        return "whatsapp_auth_failed"
+    return "meta_http_" + str(response.status_code)
+
+
+def check_credentials(client=None):
+    """Read-only preflight, outside transactions, without logging provider bodies or tokens."""
+    if not settings.WHATSAPP_BUSINESS_ACCOUNT_ID:
+        raise WhatsAppError("business_account_required")
+    response = request(
+        "GET",
+        settings.WHATSAPP_BUSINESS_ACCOUNT_ID + "/message_templates?fields=name,status&limit=1",
+        client=client,
+    )
+    if not response.is_success:
+        raise WhatsAppError(provider_error(response))
+
+
 def configured():
     return bool(
         settings.WHATSAPP_ACCESS_TOKEN
@@ -120,7 +150,7 @@ def deliver(delivery_id, client=None):
             "POST", settings.WHATSAPP_PHONE_NUMBER_ID + "/messages", payload=payload, client=client
         )
         if 400 <= response.status_code < 500:
-            status, error = "failed", "meta_http_" + str(response.status_code)
+            status, error = "failed", provider_error(response)
         elif response.is_success:
             data = response.json()
             provider_id = str(data["messages"][0]["id"])
@@ -141,6 +171,13 @@ def deliver(delivery_id, client=None):
         FollowupAttempt.objects.filter(delivery=item).update(
             status=item.status, reason=item.error_code, updated_at=timezone.now()
         )
+        if attempt and item.error_code in AUTH_ERRORS:
+            from datalayer.models import FollowupCycle
+
+            FollowupCycle.objects.filter(pk=attempt.cycle_id, closed_at__isnull=True).update(
+                suspended=True,
+                reason=item.error_code,
+            )
     logger.info(
         "whatsapp_send delivery=%s status=%s error=%s", delivery_id, item.status, item.error_code
     )

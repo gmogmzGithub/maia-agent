@@ -2,9 +2,17 @@
 
 Preparado el 16 de noviembre de 2026. Actualizado el 20: piloto horario iniciado por autorización explícita de Guillermo. Véanse [operación continua](operacion-continua-mac.md) y [evidencia del incremento 4](cuarto-incremento.md).
 
+**Cierre aceptado, 20 de noviembre:** Guillermo confirmó que las pruebas de mensajes resultaron bien. Las tres plantillas iniciales y los cinco seguimientos posteriores se recibieron; los cinco de la repetición quedaron `read`. Se comprobó selección entre plantillas y cambio de variables hacia Tepatitlán tras una respuesta del usuario. El ciclo 5 cerró automáticamente a las **21:37**, retiró el permiso y restauró la baja. Comprobado a las 22:07, sin próximo intento. Queda aceptada la prueba técnica comprimida; los fallos originales, el calendario natural de 28 días y los pendientes comerciales/operativos conservan su alcance separado. Los estados siguientes se mantienen como evidencia cronológica.
+
+**Estado a las 21:11 del 20 de noviembre:** el ciclo 4 terminó con tres entregas correctas y cinco fallidas porque el token había vencido a las 20:00. No se considera aprobada la secuencia completa. Tras actualizar y verificar el token (válido hasta las 23:00), el ciclo **5** repite únicamente esos cinco envíos, con previsión 21:12/21:17/21:22/21:27/21:32 y cierre hacia las 21:37. Se conservan los registros anteriores y el silencio mínimo de dos minutos. El registro detallado y las nuevas protecciones están en la sección más reciente del cuarto incremento.
+
 **Contenido comercial pendiente:** Guillermo confirmó funcionamiento técnico, pero rechazó la calidad de las plantillas como seguimiento. Santiago definirá el contenido de sus reemplazos en una revisión posterior. El piloto actual no acredita aceptación comercial de los textos; no se cambian durante esta prueba.
 
 ## Piloto horario iniciado el 20 de noviembre
+
+**Cambio autorizado a las 20:21:** Guillermo pidió acortar los cinco intentos restantes a intervalos de **cinco minutos** y silencio mínimo de **dos minutos**. Se aplicó `accelerate_followup_pilot --cycle 4`, conservando los tres intentos leídos, el inicio, el destinatario y la restauración de la baja. Nuevo calendario previsto: **20:22:44, 20:27:44, 20:32:44, 20:37:44 y 20:42:44**; cierre a las **20:47:44**, hora de Guadalajara. El mantenimiento por minuto puede ejecutar cada paso en el minuto siguiente. Esta modificación reemplaza el calendario original de los cinco intentos pendientes que aparece abajo.
+
+El ajuste persiste en los metadatos del ciclo; no requiere otra migración. Solo reprograma intentos sin ejecutar, rechaza intentos en preparación y no pospone las fechas al repetir el comando. La ventana de envío baja a cinco minutos. Los ciclos normales siguen usando sus días y 24 horas de silencio. El CRM muestra los valores vigentes del piloto.
 
 Guillermo autorizó reactivar su número personal, probar las tres plantillas y comprimir los días a horas. Se creó el ciclo **4** sobre su conversación WhatsApp existente a las **18:47**, hora de Guadalajara. No se falsificó un mensaje entrante ni se alteraron fechas de ciclos anteriores. Su búsqueda vigente en WhatsApp es departamento en renta, hasta MX$25,000, dos recámaras, mascotas y Zapopan; se usó para esta nueva intención de prueba.
 

@@ -1,14 +1,16 @@
 # Maia
 
-Pre-Alpha para una inmobiliaria: inventario en CRM, búsqueda conversacional y fichas públicas. Consulta [`docs/architecture/code-structure.md`](docs/architecture/code-structure.md) para conocer los módulos.
+BETA técnica local para una inmobiliaria: inventario y captación en CRM, búsqueda conversacional, citas y seguimiento por WhatsApp. Consulta [`docs/architecture/code-structure.md`](docs/architecture/code-structure.md) para conocer los módulos. La aceptación técnica no habilita por sí sola la operación continua con clientes.
 
 ## Estado de las pruebas
 
-El plan manual está en Obsidian: `Testing Fase 1.md` y `Testing Fase 2.md`, dentro de `Projects/maia-real-estate`. Guillermo validó inventario y búsqueda, prospectos y citas. Confirmó que las pruebas del cuarto incremento funcionan. Quedan pendientes la aprobación de plantillas por Meta y la validación del seguimiento real con ellas. Mientras tanto, priorizó el [incremento 6, captación de propiedades](docs/design/sexto-incremento-captacion.md). El incremento 5, acompañamiento posintención, queda pospuesto.
+Actualizado el 20 de noviembre de 2026. Guillermo validó inventario y búsqueda, prospectos y citas. La [prueba técnica de seguimiento](docs/testing/cuarto-incremento.md) quedó aceptada tras comprobar las tres plantillas, cinco seguimientos contextuales, respuestas, cambio de zona y cierre/restauración de baja en tiempo comprimido. La [captación del incremento 6](docs/testing/sexto-incremento-recorrido-manual.md) está cerrada para BETA desde el 16 de noviembre. El incremento 5, acompañamiento posintención, sigue pospuesto y requiere definición comercial con Santiago.
+
+Pendientes: revisar la alerta de seguridad de Next.js; completar cuentas y verificación real del celular; definir el contrato definitivo; preparar respaldo externo y restauración conjunta de base y archivos. La credencial para operación continua y los textos de seguimiento con Santiago quedan aplazados por Guillermo. No se declara preparación para RC ni GA.
 
 Consulta las [mejoras y regresiones por fase](docs/testing/mejoras-transversales.md), la [validación del cuarto incremento](docs/testing/cuarto-incremento.md) y los [criterios de fases](docs/design/acuerdos-q215-q240.md#5-criterios-de-fases). Portada, nombre y filtros del CRM conservan pendientes de aceptación manual.
 
-Captación: [retomar pruebas desde la #5](docs/testing/sexto-incremento-recorrido-manual.md). Para activar sugerencias y mapa Google, usar la [guía de Google Maps/Places](docs/testing/google-ubicacion-beta.md); sus claves se preparan con `scripts/setup-google-maps-beta.sh`, sin modificar la configuración principal.
+Captación: [recorrido aceptado y futuras regresiones](docs/testing/sexto-incremento-recorrido-manual.md). La [guía de Google Maps/Places](docs/testing/google-ubicacion-beta.md) conserva configuración y pruebas; sus claves se preparan con `scripts/setup-google-maps-beta.sh`, sin modificar la configuración principal. La [operación continua en la Mac](docs/testing/operacion-continua-mac.md) documenta arranque y recuperación de servicios y túnel.
 
 ## Opción recomendada: ejecutar todo con Docker
 
@@ -178,7 +180,7 @@ Configura [Google Calendar](docs/testing/google-calendar-setup.md) antes de prob
 
 ## Cuarto incremento: WhatsApp y seguimiento
 
-Pruebas realizadas aprobadas por Guillermo el 7 de noviembre de 2026. Pendientes: aprobación y sincronización de plantillas, activación y validación del seguimiento real mediante entrega controlada. El [diseño aceptado](docs/design/cuarto-incremento-seguimiento.md), la [configuración de WhatsApp](docs/testing/whatsapp-setup.md) y la [lista de pruebas](docs/testing/cuarto-incremento.md) describen el alcance y los pasos externos.
+Prueba técnica de mensajes y seguimiento comprimido aceptada por Guillermo el 20 de noviembre de 2026. Las tres plantillas están aprobadas por Meta y se comprobaron con entregas y respuestas reales. La credencial para operación continua y la revisión del contenido comercial con Santiago siguen pendientes y aplazadas. El [diseño aceptado](docs/design/cuarto-incremento-seguimiento.md), la [configuración de WhatsApp](docs/testing/whatsapp-setup.md) y el [registro de pruebas](docs/testing/cuarto-incremento.md) describen alcance, fallos y resultados.
 
 CRM → Prospectos → WhatsApp y reglas de seguimiento configura la hora, sincroniza plantillas aprobadas y muestra entregas que requieren revisión. La ficha de cada prospecto conserva ciclo, permisos y resultados. El website pide permiso para seguimiento; WhatsApp admite texto y botones de confirmación de citas. La transcripción queda para una incorporación posterior.
 
@@ -186,19 +188,19 @@ El código controla los días 1, 5, 7, 14, 18, 22, 26 y 28. Haiku selecciona la 
 
 ## Sexto incremento: captación de propiedades
 
-Implementado en código y pendiente de aceptación manual. El propietario usa `/propietarios` para registrar Venta, Renta o Preventa; el equipo revisa desde CRM → Captación. La cuenta requiere email, teléfono y contraseña, y email verificado antes del envío. Cinco fotos mínimas con optimización automática, planos y enlaces opcionales. La publicación exige revisión y aceptación del contrato dummy de exclusividad por seis meses.
+Cerrado para BETA por aceptación de Guillermo el 16 de noviembre de 2026. El propietario usa `/propietarios` para registrar Venta, Renta o Preventa; el equipo revisa desde CRM → Captación. La cuenta requiere email, teléfono y contraseña, y email verificado para acceder a captación. Entre cinco y veinte fotos con optimización automática, planos y enlaces opcionales. La publicación exige revisión y aceptación del contrato dummy de exclusividad por seis meses; el contrato definitivo sigue pendiente.
 
 La aprobación y la preparación de renovación generan un correo con el contrato dummy PDF y una liga directa a la solicitud. Si hace falta iniciar sesión, el destino se conserva y después se enfoca el acuerdo. Recibir el PDF o abrir la liga no acepta el contrato. El [diseño de captación](docs/architecture/captacion/README.md) documenta la copia versionada y el control de entregas.
 
 Consulta la [puesta en servicio y validación](docs/testing/sexto-incremento.md): requiere actualizar los tres procesos, aplicar las migraciones nuevas y configurar correo para verificación y recuperación reales. Por defecto, los correos se guardan como archivos privados de desarrollo. El inventario preexistente conserva su flujo.
 
-Resend está preparado por HTTPS para los correos de cuenta y captación. La [guía de activación BETA](docs/testing/resend-beta.md) incluye un asistente para dominio, remitente, claves y webhook. No se activa automáticamente. El CRM distingue correo local, aceptado, entregado al servidor del destinatario, demorado y rebotado, y permite enviar el aviso local una vez configurado el proveedor.
+Resend está activado por HTTPS en el piloto para los correos de cuenta y captación. La [guía de activación BETA](docs/testing/resend-beta.md) conserva el asistente para configurar otros entornos. El CRM distingue correo local, aceptado, entregado al servidor del destinatario, demorado y rebotado.
 
-Guillermo confirmó que pudo continuar con la verificación local. Quedan ajustes visuales y de la solicitud de cuenta, registrados en [mejoras transversales](docs/testing/mejoras-transversales.md#m22-diseño-de-captación). El [flujo completo de cuentas y verificación real de email y celular](docs/design/cuentas-y-verificacion.md) queda para otra etapa. La validación funcional de captación continúa.
+El registro, correo, recuperación y acceso actuales se validaron dentro del recorrido BETA. El [rediseño completo de cuentas y verificación de celular](docs/design/cuentas-y-verificacion.md) sigue pendiente como trabajo independiente; no se considera resuelto por la aceptación de captación.
 
 ## Checks todavía planeados
 
-El incremento 5, acompañamiento posintención, permanece pospuesto y sin implementar. El cuarto conserva los pendientes de Meta y seguimiento real. El sexto necesita aceptación manual tras su puesta en servicio.
+El incremento 5 permanece pospuesto y sin implementar. Los incrementos 4 y 6 conservan pendientes comerciales u operativos separados de su aceptación técnica. Para RC faltan despliegue en AWS, copias externas, restauración comprobada y validación operativa; consultar los [criterios de fases](docs/design/acuerdos-q215-q240.md#5-criterios-de-fases).
 
 ## Desarrollo y verificaciones automatizadas
 

@@ -1,5 +1,7 @@
 # Cuentas y verificación: trabajo posterior
 
+Actualización del 20 de noviembre de 2026: el recorrido actual de registro, verificación por email y recuperación quedó incluido en la aceptación BETA del incremento 6. Siguen pendientes el rediseño completo de acceso durante captación y la verificación de posesión del celular. Las notas siguientes conservan su cronología; los bloqueos iniciales de correo local no describen el estado actual de Resend.
+
 Solicitud de Guillermo, 7 de noviembre de 2026. Registrar para una etapa posterior; no implementar este alcance durante la validación actual de captación. No se asigna todavía un número de incremento ni una fecha.
 
 ## Problema

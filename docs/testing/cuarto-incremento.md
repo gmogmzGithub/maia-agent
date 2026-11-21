@@ -1,5 +1,39 @@
 # Validación manual del cuarto incremento
 
+## Aceptación de las pruebas de mensajes, 20 de noviembre de 2026
+
+Guillermo confirmó: «las pruebas de los mensajes resultaron bien». Se registra **aceptación de la prueba técnica comprimida de mensajes y seguimiento**. Las tres plantillas se entregaron y recibieron respuesta en el ciclo 4; los cinco seguimientos de selección contextual se entregaron y alcanzaron `read` en la repetición del ciclo 5, sin errores de entrega. Se conservan los cinco fallos de autenticación de la primera ejecución como evidencia histórica, no como aprobados.
+
+Comprobación a las 22:07: intentos 15–19 del ciclo 5, todos `read`; selección real de `maia_retomar_tipo_municipio` y `maia_retomar_municipio`. Tras el mensaje «Hay algo por Tepatitlan?» de las 21:28, Maia respondió sobre esa zona y el seguimiento de las 21:32 usó «departamento en Tepatitlán», acreditando actualización de variables según la conversación.
+
+El worker cerró automáticamente el ciclo 5 a las **21:37**, retiró el permiso temporal y restauró `contact_opted_out=True`. No hay próximo intento programado. Quedan comprobados recepción de las ocho posiciones del piloto entre ambas ejecuciones, respuestas/continuidad, selección entre alternativas, actualización contextual y cierre/restauración de baja en tiempo comprimido. No equivale a observar 28 días naturales.
+
+Pendientes separados: credencial adecuada para operación continua (el token actual sigue siendo temporal), revisión comercial de textos con Santiago, alerta de seguridad de Next.js y publicar en un PR posterior a #28 los ajustes de aceleración, preflight de credenciales y repetición segura. Guillermo pidió continuar con el PR y dejar la credencial continua y los textos con Santiago para después. La aceptación técnica no aprueba el contenido comercial de las plantillas. El preflight comprueba acceso en ese momento; no garantiza la vigencia futura del token.
+
+Comprobaciones al preparar el PR de continuación: **282 pruebas backend aprobadas, dos opcionales omitidas y 55 pruebas frontend aprobadas**; Ruff, tipos, compilación y proxy real aprobados, sin migraciones nuevas. Se añadió cobertura para repetir fallos de días no consecutivos con intervalos de cinco minutos y evitar crear otra repetición del mismo origen tras cerrar la anterior. El README se actualizó a BETA técnica local; el aviso de seguridad de Next.js sigue como pendiente explícito.
+
+## Fallo de autenticación y repetición de cinco envíos, 20 de noviembre de 2026
+
+Guillermo reportó que no recibió los cinco mensajes acelerados. Revisión a las 21:03: los intentos 10–14 se ejecutaron a las 20:23, 20:28, 20:33, 20:38 y 20:43; Haiku terminó sus cinco selecciones, pero Meta rechazó cada entrega con HTTP 401 (`meta_http_401`). La consulta de catálogo reprodujo `OAuthException`, código 190 y subcódigo 463. Meta informó vencimiento del token a las 18:00 PST, equivalentes a las **20:00 de Guadalajara**. La credencial ya estaba caducada al acelerar el piloto; faltó comprobarla antes del cambio.
+
+El ciclo 4 cerró a las 20:48 y restauró correctamente la baja. Resultado de esa ejecución: **tres plantillas recibidas y respondidas, cinco entregas fallidas**. Su estado técnico `completed` significa que terminó el periodo, no que la prueba haya pasado. Los registros y sus entregas fallidas se conservan sin alteración.
+
+Correcciones: comprobación de acceso a Meta antes de iniciar/acelerar; clasificación explícita de credencial caducada/rechazada; suspensión del ciclo ante un fallo de autenticación, evitando más generaciones y envíos hasta revisión; mensajes de error comprensibles en CRM. El comando de inicio admite `--retry-failed-cycle`: crea otro ciclo solo con entregas conocidas como rechazadas por credenciales; excluye entregas leídas, correctas o inciertas. No reutiliza ni borra intentos del ciclo anterior.
+
+Guillermo actualizó el token. Tras recrear los servicios, la consulta de catálogo y `/debug_token` confirmaron `is_valid=true`, tipo `USER` y vencimiento **20 de noviembre a las 23:00 de Guadalajara**. Sigue siendo una credencial temporal, pero cubre el nuevo tramo. No se imprimieron ni guardaron valores de credenciales en esta evidencia.
+
+Se inició el ciclo **5**, repetición del 4, a las 21:10:54. Solo contiene los días internos 14/18/22/26/28: cinco envíos contextuales, intervalos de cinco minutos, silencio de dos, previstos 21:11:54, 21:16:54, 21:21:54, 21:26:54 y 21:31:54. Cierre/restauración de baja a las 21:36:54, sujetos a la resolución de un minuto del worker. El ciclo 4 permanece cerrado e intacto.
+
+Validación del arreglo: **281 pruebas backend aprobadas y dos opcionales omitidas**, Ruff y reconstrucción estándar de backend/worker/web aprobados, con compilación y tipos frontend. Casos nuevos: detener el ciclo tras credencial caducada, impedir mutación con credencial inválida en ambos comandos, preflight de solo lectura fuera de bloqueos SQL, repetir solo fallos de autenticación conservando historial y no repetir entregas inciertas. Pendiente observar entregas reales de este nuevo tramo.
+
+Primera entrega de la repetición: el worker ejecutó automáticamente el intento **15**, día interno 14 del ciclo 5, y eligió `maia_retomar_tipo_municipio`. Entrega `5e5a65dd-6819-4519-ae34-27fed970472f`: Meta confirmó **`delivered` a las 21:12:55**, con eventos `sent` y `delivered` procesados sin error. Los cuatro intentos restantes continúan previstos hacia 21:17/21:22/21:27/21:32; no se consideran aprobados antes de observarlos. Cierre previsto hacia 21:37.
+
+## Aceleración de los cinco intentos restantes, 20 de noviembre de 2026
+
+Guillermo autorizó explícitamente intentos cada cinco minutos y silencio mínimo de dos. A las 20:21 se reprogramaron solo los cinco intentos todavía sin ejecutar del ciclo 4: 20:22:44, 20:27:44, 20:32:44, 20:37:44 y 20:42:44, hora de Guadalajara. Cierre/restauración de baja a las 20:47:44, con la resolución de un minuto del mantenimiento. Los tres intentos leídos y sus fechas/entregas permanecen intactos. El [plan vigente](seguimiento-piloto-continuo.md) registra el ajuste.
+
+Se añadió el comando explícito `accelerate_followup_pilot`, con persistencia en los metadatos existentes del ciclo. No hay migración adicional ni cambios del calendario de otros prospectos. Validación: **275 pruebas backend aprobadas y dos opcionales omitidas**, Ruff, compilación/tipos frontend, reconstrucción estándar de las tres imágenes y proxy real aprobados. Los tres casos nuevos comprueban conservación de intentos terminados, cadencia/idempotencia, silencio de dos minutos sin afectar ciclos normales y rechazo de reprogramación durante una preparación. La advertencia de seguridad de Next.js ya documentada continúa pendiente.
+
 ## Pendiente comercial: rediseñar las plantillas con Santiago
 
 20 de noviembre de 2026. Guillermo confirmó que las plantillas y los mensajes funcionan técnicamente, pero calificó las plantillas actuales como pésimas y señaló que no hacen un buen seguimiento. **La entrega y la continuidad comprobadas no equivalen a aceptar su contenido comercial.**
