@@ -3,7 +3,8 @@ import uuid
 
 from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.core.validators import MinValueValidator
-from django.db import models
+from django.db import models, transaction
+from django.utils import timezone
 
 from datalayer.capture_catalog import KINDS
 
@@ -111,6 +112,17 @@ class Property(models.Model):
         APARTMENT = "apartment", "Departamento"
         LAND = "land", "Terreno"
 
+    physical_property = models.ForeignKey(
+        "PhysicalProperty", null=True, blank=True, on_delete=models.PROTECT, related_name="offers"
+    )
+    origin = models.CharField(
+        max_length=12,
+        default="local",
+        choices=[("local", "Local"), ("easybroker", "EasyBroker")],
+        db_index=True,
+    )
+    price_visible = models.BooleanField(default=True)
+    commercialization_round = models.PositiveIntegerField(default=1)
     reference = models.CharField(max_length=32, unique=True, default=property_reference)
     title = models.CharField(max_length=180)
     operation = models.CharField(max_length=8, choices=Operation.choices)
@@ -120,16 +132,22 @@ class Property(models.Model):
     subtype = models.CharField(max_length=80, blank=True)
     state = models.CharField(max_length=80, blank=True)
     currency = models.CharField(
-        max_length=3, choices=[("MXN", "MXN"), ("USD", "USD")], default="MXN"
+        max_length=3, choices=[("MXN", "MXN"), ("USD", "USD")], default="MXN", null=True, blank=True
     )
     is_presale = models.BooleanField(default=False)
     public_location = models.JSONField(default=dict, blank=True)
     details = models.JSONField(default=dict, blank=True)
+    private_data = models.JSONField(default=dict, blank=True)
+    withdrawn_at = models.DateTimeField(null=True, blank=True)
+    land_m2 = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
+    private_m2 = models.DecimalField(max_digits=14, decimal_places=2, null=True, blank=True)
     municipality = models.CharField(max_length=100)
     neighborhood = models.CharField(max_length=100)
     public_address = models.CharField(max_length=240, blank=True)
     normalized_zone = models.CharField(max_length=180, db_index=True, editable=False)
-    price = models.DecimalField(max_digits=14, decimal_places=2, validators=[MinValueValidator(1)])
+    price = models.DecimalField(
+        max_digits=14, decimal_places=2, validators=[MinValueValidator(1)], null=True, blank=True
+    )
     bedrooms = models.PositiveSmallIntegerField(null=True, blank=True)
     bathrooms = models.DecimalField(
         max_digits=4, decimal_places=1, null=True, blank=True, validators=[MinValueValidator(0)]
@@ -151,8 +169,11 @@ class Property(models.Model):
     visit_duration = models.PositiveSmallIntegerField(default=60)
     visit_windows = models.JSONField(default=default_visit_windows)
 
+    @transaction.atomic
     def save(self, *args, **kwargs):
         self.normalized_zone = normalize_zone(f"{self.municipality} {self.neighborhood}")
+        if self._state.adding and not self.physical_property_id:
+            self.physical_property = PhysicalProperty.objects.create()
         super().save(*args, **kwargs)
 
     def __str__(self):
@@ -206,12 +227,21 @@ class Message(models.Model):
     kind = models.CharField(max_length=24, default="text")
     display_kind = models.CharField(max_length=12, default="message")
     client_message_id = models.UUIDField(null=True, blank=True)
-    # Snapshots show exactly what was presented; current detail is read from inventory.
+    # Local snapshots are retained; imported cards persist references only.
     properties = models.JSONField(default=list)
+    public_sources = models.JSONField(default=dict, blank=True)
     presentation = models.JSONField(null=True, blank=True)
     continuity = models.JSONField(null=True, blank=True)
     is_error = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    def save(self, *args, **kwargs):
+        if self._state.adding and self.conversation_id and not self.public_sources:
+            from datalayer.public_history import message_fields
+
+            for name, value in message_fields(self.conversation, self.properties).items():
+                setattr(self, name, value)
+        super().save(*args, **kwargs)
 
     class Meta:
         ordering = ["id"]
@@ -359,6 +389,9 @@ class FollowupPolicy(models.Model):
 
 
 class FollowupCycle(models.Model):
+    intent = models.OneToOneField(
+        "SearchIntent", null=True, blank=True, on_delete=models.PROTECT, related_name="cycle"
+    )
     prospect = models.ForeignKey(Prospect, on_delete=models.PROTECT, related_name="followup_cycles")
     conversation = models.ForeignKey(Conversation, on_delete=models.PROTECT)
     started_at = models.DateTimeField()
@@ -498,10 +531,12 @@ class CaptureAgreement(models.Model):
 
 
 class CaptureEvent(models.Model):
+    actor_email = models.EmailField(blank=True)
     capture = models.ForeignKey(Capture, on_delete=models.CASCADE, related_name="events")
     actor = models.ForeignKey(User, null=True, on_delete=models.SET_NULL)
     action = models.CharField(max_length=40)
     summary = models.CharField(max_length=1000, blank=True)
+    snapshot = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
 
@@ -568,3 +603,350 @@ class GoogleLocationUsage(models.Model):
         constraints = [
             models.UniqueConstraint(fields=["month", "sku"], name="google_usage_month_sku")
         ]
+
+
+class PhysicalProperty(models.Model):
+    """Stable private identity; addresses and characteristics are operation-specific."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class PhysicalPropertyLink(models.Model):
+    actor_email = models.EmailField(blank=True)
+    source = models.OneToOneField(
+        PhysicalProperty, on_delete=models.PROTECT, related_name="identity_link"
+    )
+    target = models.ForeignKey(
+        PhysicalProperty, on_delete=models.PROTECT, related_name="linked_identities"
+    )
+    actor = models.ForeignKey(User, on_delete=models.PROTECT)
+    reason = models.CharField(max_length=1000)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class ClosingAuthorization(models.Model):
+    user = models.OneToOneField(
+        User, on_delete=models.PROTECT, related_name="closing_authorization"
+    )
+    enabled = models.BooleanField(default=False)
+
+
+class PropertyEvent(models.Model):
+    actor_kind = models.CharField(max_length=12, default="human")
+    source = models.JSONField(default=dict, blank=True)
+    actor_email = models.EmailField(blank=True)
+    property = models.ForeignKey(Property, on_delete=models.PROTECT, related_name="record_events")
+    actor = models.ForeignKey(User, null=True, on_delete=models.PROTECT)
+    action = models.CharField(max_length=40)
+    reason = models.CharField(max_length=1000, blank=True)
+    snapshot = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class EasyBrokerConnection(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=100)
+    environment = models.CharField(
+        max_length=12, choices=[("sandbox", "Pruebas"), ("production", "Producción")]
+    )
+    advisor = models.ForeignKey(Advisor, on_delete=models.PROTECT)
+    enabled = models.BooleanField(default=True)
+    encrypted_key = models.TextField()
+    key_fingerprint = models.CharField(max_length=64)
+    continuity_verified = models.BooleanField(default=True)
+    generation = models.PositiveIntegerField(default=1)
+    revision = models.PositiveIntegerField(default=1)
+    next_sync_at = models.DateTimeField(default=timezone.now)
+    last_success_at = models.DateTimeField(null=True)
+    error_code = models.CharField(max_length=40, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["environment", "key_fingerprint"],
+                condition=models.Q(enabled=True),
+                name="eb_active_key_unique",
+            )
+        ]
+
+
+class EasyBrokerSyncRun(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    connection = models.ForeignKey(
+        EasyBrokerConnection, on_delete=models.PROTECT, related_name="runs"
+    )
+    generation = models.PositiveIntegerField()
+    status = models.CharField(max_length=12, default="queued")
+    trigger = models.CharField(max_length=12, default="manual")
+    initiator = models.ForeignKey(User, null=True, on_delete=models.PROTECT)
+    initiator_email = models.EmailField(blank=True)
+    lease = models.UUIDField(null=True)
+    lease_until = models.DateTimeField(null=True)
+    checkpoint = models.JSONField(default=dict)
+    counters = models.JSONField(default=dict)
+    error_code = models.CharField(max_length=40, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    finished_at = models.DateTimeField(null=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["connection"],
+                condition=models.Q(status__in=["queued", "running"]),
+                name="eb_one_active_run",
+            )
+        ]
+
+
+class EasyBrokerListing(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    connection = models.ForeignKey(
+        EasyBrokerConnection, on_delete=models.PROTECT, related_name="listings"
+    )
+    public_id = models.CharField(max_length=40)
+    status = models.CharField(max_length=24, default="unknown")
+    source_updated_at = models.DateTimeField(null=True)
+    checked_at = models.DateTimeField(null=True)
+    checked_generation = models.PositiveIntegerField(default=0)
+    revision = models.PositiveIntegerField(default=0)
+    facts = models.JSONField(default=dict)
+    images = models.JSONField(default=list)
+    issues = models.JSONField(default=list)
+    geography = models.JSONField(default=dict)
+    geography_signature = models.CharField(max_length=64, blank=True)
+    physical_property = models.ForeignKey("PhysicalProperty", null=True, on_delete=models.PROTECT)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["connection", "public_id"], name="eb_listing_identity")
+        ]
+
+
+class EasyBrokerListingRevision(models.Model):
+    listing = models.ForeignKey(
+        EasyBrokerListing, on_delete=models.PROTECT, related_name="revisions"
+    )
+    number = models.PositiveIntegerField()
+    facts = models.JSONField(default=dict)
+    mapping_version = models.PositiveIntegerField(default=1)
+    run = models.ForeignKey(EasyBrokerSyncRun, on_delete=models.PROTECT)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise ValueError("Las revisiones del origen son inmutables.")
+        return super().save(*args, **kwargs)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["listing", "number"], name="eb_revision_number")
+        ]
+
+
+class EasyBrokerOfferLink(models.Model):
+    listing = models.ForeignKey(EasyBrokerListing, on_delete=models.PROTECT, related_name="links")
+    operation = models.CharField(max_length=8)
+    offer = models.ForeignKey(Property, on_delete=models.PROTECT, related_name="source_links")
+    role = models.CharField(max_length=12, default="primary")
+    active = models.BooleanField(default=True)
+    actor = models.ForeignKey(User, null=True, on_delete=models.PROTECT)
+    actor_email = models.EmailField(blank=True)
+    reason = models.CharField(max_length=1000, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["listing", "operation"],
+                condition=models.Q(active=True),
+                name="eb_active_operation_link",
+            ),
+            models.UniqueConstraint(
+                fields=["offer"],
+                condition=models.Q(active=True, role="primary"),
+                name="eb_primary_offer_source",
+            ),
+        ]
+
+
+class ImportedOfferPolicy(models.Model):
+    offer = models.OneToOneField(
+        Property, primary_key=True, on_delete=models.PROTECT, related_name="import_policy"
+    )
+    primary_link = models.OneToOneField(
+        EasyBrokerOfferLink, on_delete=models.PROTECT, related_name="policy"
+    )
+    publish_requested = models.BooleanField(default=False)
+    manual_block = models.BooleanField(default=False)
+    review_required = models.BooleanField(default=True)
+    source_block = models.BooleanField(default=False)
+    disconnected = models.BooleanField(default=False)
+    expired = models.BooleanField(default=False)
+    compatible = models.BooleanField(default=False)
+    approved_revision = models.PositiveIntegerField(default=0)
+    public_version = models.PositiveIntegerField(default=0)
+
+
+class ImportedPublicTextRevision(models.Model):
+    offer = models.ForeignKey(
+        Property, on_delete=models.PROTECT, related_name="public_text_revisions"
+    )
+    source_revision = models.ForeignKey(EasyBrokerListingRevision, on_delete=models.PROTECT)
+    title = models.CharField(max_length=180)
+    description = models.TextField(max_length=5000, blank=True)
+    actor = models.ForeignKey(User, on_delete=models.PROTECT)
+    actor_email = models.EmailField()
+    reason = models.CharField(max_length=1000)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise ValueError("Las revisiones públicas son inmutables.")
+        return super().save(*args, **kwargs)
+
+
+class EasyBrokerRequest(models.Model):
+    id = models.UUIDField(primary_key=True, editable=False)
+    actor = models.ForeignKey(User, on_delete=models.PROTECT)
+    actor_email = models.EmailField()
+    resource = models.CharField(max_length=100)
+    action = models.CharField(max_length=40)
+    signature = models.CharField(max_length=64)
+    result = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class ClosingAuthorizationEvent(models.Model):
+    user = models.ForeignKey(
+        User, on_delete=models.PROTECT, related_name="closing_permission_events"
+    )
+    actor = models.ForeignKey(
+        User, on_delete=models.PROTECT, related_name="closing_permission_changes"
+    )
+    enabled = models.BooleanField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class Closing(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    physical_property = models.ForeignKey(
+        PhysicalProperty, on_delete=models.PROTECT, related_name="closings"
+    )
+    offer = models.ForeignKey(
+        Property, null=True, blank=True, on_delete=models.PROTECT, related_name="closings"
+    )
+    origin = models.CharField(
+        max_length=12, choices=[("current", "Actual"), ("historical", "Histórica")]
+    )
+    author = models.ForeignKey(User, on_delete=models.PROTECT, related_name="authored_closings")
+    status = models.CharField(max_length=12, default="draft")
+    revision = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+
+class ClosingRevision(models.Model):
+    source_evidence = models.JSONField(default=dict, blank=True)
+    actor_email = models.EmailField(blank=True)
+    closing = models.ForeignKey(Closing, on_delete=models.CASCADE, related_name="revisions")
+    number = models.PositiveIntegerField()
+    action = models.CharField(max_length=20)
+    status = models.CharField(max_length=12)
+    actor = models.ForeignKey(User, on_delete=models.PROTECT)
+    reason = models.CharField(max_length=1000, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    operation = models.CharField(max_length=8, blank=True)
+    price = models.DecimalField(max_digits=14, decimal_places=2, null=True)
+    currency = models.CharField(max_length=3, blank=True)
+    year = models.PositiveSmallIntegerField(null=True)
+    month = models.PositiveSmallIntegerField(null=True)
+    day = models.PositiveSmallIntegerField(null=True)
+    kind = models.CharField(max_length=24, blank=True)
+    subtype = models.CharField(max_length=80, blank=True)
+    state = models.CharField(max_length=80, blank=True)
+    municipality = models.CharField(max_length=100, blank=True)
+    zone_type = models.CharField(max_length=20, blank=True)
+    zone = models.CharField(max_length=100, blank=True)
+    address_mode = models.CharField(max_length=12, default="urban")
+    street = models.CharField(max_length=240, blank=True)
+    address_text = models.CharField(max_length=240, blank=True)
+    exterior_number = models.CharField(max_length=40, blank=True)
+    interior_number = models.CharField(max_length=40, blank=True)
+    interior_applicable = models.BooleanField(null=True)
+    rural_identification = models.CharField(max_length=500, blank=True)
+    rural_reference = models.CharField(max_length=500, blank=True)
+    access_notes = models.CharField(max_length=500, blank=True)
+    land_m2 = models.DecimalField(max_digits=14, decimal_places=2, null=True)
+    construction_m2 = models.DecimalField(max_digits=14, decimal_places=2, null=True)
+    private_m2 = models.DecimalField(max_digits=14, decimal_places=2, null=True)
+    characteristics = models.JSONField(default=dict)
+    charges_status = models.CharField(max_length=12, default="unknown")
+    charges = models.JSONField(default=list)
+    notes = models.CharField(max_length=2000, blank=True)
+    responsible = models.ForeignKey(Advisor, null=True, on_delete=models.PROTECT)
+    buyer = models.ForeignKey(Prospect, null=True, on_delete=models.PROTECT)
+    is_test = models.BooleanField(default=False)
+    confirmed_at = models.DateTimeField(null=True)
+    confirmed_by = models.ForeignKey(
+        User, null=True, on_delete=models.PROTECT, related_name="confirmed_closing_revisions"
+    )
+    reversal_date = models.DateField(null=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["closing", "number"], name="closing_revision_number")
+        ]
+        indexes = [
+            models.Index(fields=["state", "municipality", "zone"]),
+            models.Index(fields=["operation", "kind", "currency", "year"]),
+        ]
+        ordering = ["number"]
+
+    def save(self, *args, **kwargs):
+        if not self._state.adding:
+            raise ValueError("Las revisiones de cierre son inmutables.")
+        return super().save(*args, **kwargs)
+
+
+class OfferClosure(models.Model):
+    offer = models.ForeignKey(Property, on_delete=models.PROTECT, related_name="closing_periods")
+    period = models.PositiveIntegerField()
+    closing = models.OneToOneField(Closing, on_delete=models.PROTECT)
+    closed_at = models.DateTimeField()
+    reopened_at = models.DateTimeField(null=True)
+    reopened_by = models.ForeignKey(User, null=True, on_delete=models.PROTECT)
+    reopen_reason = models.CharField(max_length=1000, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["offer", "period"], name="one_closing_per_offer_period")
+        ]
+
+
+class ClosingRequest(models.Model):
+    """Committed command receipts make retries return the original business result."""
+
+    id = models.UUIDField(primary_key=True, editable=False)
+    actor = models.ForeignKey(User, on_delete=models.PROTECT)
+    closing = models.ForeignKey(Closing, null=True, on_delete=models.PROTECT)
+    fingerprint = models.CharField(max_length=64)
+    result = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class SearchIntent(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    prospect = models.ForeignKey(Prospect, on_delete=models.PROTECT, related_name="search_intents")
+    conversation = models.ForeignKey(
+        Conversation, on_delete=models.PROTECT, related_name="search_intents"
+    )
+    started_at = models.DateTimeField()
+    criteria = models.JSONField(default=dict)
+    resolved_by = models.ForeignKey(User, null=True, on_delete=models.PROTECT)
+    resolved_at = models.DateTimeField(null=True)
+    closing = models.ForeignKey(
+        Closing, null=True, on_delete=models.PROTECT, related_name="resolved_intents"
+    )

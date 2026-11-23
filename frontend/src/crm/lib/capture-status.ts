@@ -48,6 +48,12 @@ const states: Record<
     tone: "closed",
     icon: "−",
   },
+  closed: {
+    label: "Terminada por cierre",
+    next: "Consultar el registro de cierre en el CRM",
+    tone: "closed",
+    icon: "✓",
+  },
   expired: {
     label: "Exclusividad vencida",
     next: "Renovar exige otra aceptación",

@@ -1,6 +1,8 @@
 "use client";
 import ErrorNotice from "@/shared/components/ErrorFeedback";
 import MoneyInput from "@/shared/components/MoneyInput";
+import LocationFields from "@/shared/components/LocationFields";
+import type { CaptureData, Catalog, LocationPoint } from "@/shared/lib/capture";
 
 import { useEffect, useState } from "react";
 import Header from "@/shared/components/Header";
@@ -13,11 +15,14 @@ import {
   type Session,
 } from "@/shared/lib/api";
 import Captures from "@/crm/components/Captures";
+import Closings from "@/crm/components/Closings";
+import PropertyOutcome from "@/crm/components/PropertyOutcome";
 import { labels } from "@/shared/lib/api";
 import Advisors from "@/crm/components/Advisors";
 import Prospects from "@/crm/components/Prospects";
 import Appointments from "@/crm/components/Appointments";
 import PropertyInventory from "@/crm/components/PropertyInventory";
+import EasyBroker from "@/crm/components/EasyBroker";
 import "@/crm/styles/prospects.css";
 
 function Editor({
@@ -33,7 +38,24 @@ function Editor({
   const [saving, setSaving] = useState(false);
   const [currency, setCurrency] = useState(value?.currency || "MXN");
   const [advisors, setAdvisors] = useState<Advisor[]>([]);
+  const [catalog, setCatalog] = useState<Catalog | null>(null);
+  const [point, setPoint] = useState<LocationPoint | null>(null);
+  const [locationPending, setLocationPending] = useState(false);
+  const [locationData, setLocationData] = useState<CaptureData>({
+    state: value?.state || "",
+    municipality: value?.municipality || "",
+    neighborhood: value?.neighborhood || "",
+    kind: value?.kind || "house",
+    private_address: value?.private_data?.private_address || "",
+    location_mode: value?.private_data?.location_mode || "address",
+    location_reference: value?.private_data?.location_reference || "",
+    rural_identification: value?.private_data?.rural_identification || "",
+    rural_reference: value?.private_data?.rural_reference || "",
+  });
   useEffect(() => {
+    void api<Catalog>("/capture/catalog")
+      .then(setCatalog)
+      .catch(() => setError("No pudimos cargar las opciones de la ficha."));
     void api<Advisor[]>("/crm/advisors")
       .then(setAdvisors)
       .catch(() => setError("No pudimos cargar los asesores."));
@@ -57,21 +79,51 @@ function Editor({
           currency: (data.get("currency") ||
             value?.currency ||
             "MXN") as PropertyInput["currency"],
-          state: String(data.get("state") || value?.state || ""),
-          subtype: value?.subtype || "",
+          state: String(locationData.state || ""),
+          subtype: String(data.get("subtype") || ""),
           is_presale: data.get("is_presale") === "on",
           operation: data.get("operation") as PropertyInput["operation"],
           kind: data.get("kind") as PropertyInput["kind"],
-          municipality: data.get(
-            "municipality",
-          ) as PropertyInput["municipality"],
-          neighborhood: String(data.get("neighborhood")),
+          municipality: String(locationData.municipality || ""),
+          neighborhood: String(locationData.neighborhood || ""),
           price: String(data.get("price")),
           public_address: String(data.get("public_address")),
           bedrooms: optionalNumber("bedrooms"),
           bathrooms: optionalNumber("bathrooms"),
           parking: optionalNumber("parking"),
           area_m2: optionalNumber("area_m2"),
+          land_m2: optionalNumber("land_m2"),
+          private_m2: optionalNumber("private_m2"),
+          private_data: {
+            private_address: String(locationData.private_address || ""),
+            location_mode: String(locationData.location_mode || "address"),
+            location_reference: String(locationData.location_reference || ""),
+            rural_identification: String(
+              locationData.rural_identification || "",
+            ),
+            rural_reference: String(locationData.rural_reference || ""),
+            zone_type:
+              locationData.location_mode === "reference"
+                ? "localidad"
+                : String(data.get("zone_type") || "colonia"),
+            characteristics: {
+              age_type: (data.get("age_type") || "") as
+                | ""
+                | "new"
+                | "years"
+                | "construction",
+              age_years:
+                data.get("age_type") === "years"
+                  ? optionalNumber("age_years")
+                  : null,
+              condition: String(data.get("condition") || ""),
+              half_bathrooms: optionalNumber("half_bathrooms"),
+              amenities:
+                data.get("amenities_known") === "on"
+                  ? data.getAll("amenities").map(String)
+                  : null,
+            },
+          },
           furnished: tri("furnished"),
           accepts_pets: tri("accepts_pets"),
           near_schools: tri("near_schools"),
@@ -128,7 +180,13 @@ function Editor({
         </label>
         <label>
           Tipo
-          <select name="kind" defaultValue={value?.kind ?? "house"}>
+          <select
+            name="kind"
+            defaultValue={value?.kind ?? "house"}
+            onChange={(e) =>
+              setLocationData((d) => ({ ...d, kind: e.target.value }))
+            }
+          >
             {Object.entries(labels)
               .filter(
                 ([key]) =>
@@ -150,23 +208,17 @@ function Editor({
               ))}
           </select>
         </label>
-        <label>
-          Estado
-          <input
-            name="state"
-            defaultValue={value?.state || ""}
-            maxLength={80}
+        <div className="full">
+          <LocationFields
+            data={locationData}
+            states={catalog?.states || []}
+            location={point}
+            signedIn
+            onLocation={setPoint}
+            onChange={setLocationData}
+            onPendingChange={setLocationPending}
           />
-        </label>
-        <label>
-          Municipio
-          <input
-            name="municipality"
-            required
-            defaultValue={value?.municipality || ""}
-            maxLength={100}
-          />
-        </label>
+        </div>
         <label>
           Moneda
           <select
@@ -181,6 +233,15 @@ function Editor({
           </select>
         </label>
         <label>
+          Subtipo
+          <select name="subtype" defaultValue={value?.subtype || ""}>
+            <option value="">Sin especificar</option>
+            {catalog?.kinds[String(locationData.kind)]?.subtypes.map((v) => (
+              <option key={v}>{v}</option>
+            ))}
+          </select>
+        </label>
+        <label>
           <input
             name="is_presale"
             type="checkbox"
@@ -189,13 +250,15 @@ function Editor({
           Preventa (solo venta)
         </label>
         <label>
-          Colonia
-          <input
-            name="neighborhood"
-            required
-            maxLength={100}
-            defaultValue={value?.neighborhood}
-          />
+          Tipo de zona
+          <select
+            name="zone_type"
+            defaultValue={value?.private_data?.zone_type || "colonia"}
+          >
+            <option value="colonia">Colonia</option>
+            <option value="barrio">Barrio</option>
+            <option value="localidad">Localidad</option>
+          </select>
         </label>
         <label>
           Precio
@@ -204,18 +267,38 @@ function Editor({
             name="price"
             required
             min="1"
-            defaultValue={value?.price}
+            defaultValue={value?.price ?? undefined}
           />
           <small>Mensual para renta; total para venta.</small>
         </label>
         <label>
-          Superficie en m²
+          Construcción (m²)
           <input
             name="area_m2"
             type="number"
             min="1"
             step="0.01"
             defaultValue={value?.area_m2 ?? ""}
+          />
+        </label>
+        <label>
+          Terreno (m²)
+          <input
+            type="number"
+            name="land_m2"
+            min="0.01"
+            step="0.01"
+            defaultValue={value?.land_m2 ?? ""}
+          />
+        </label>
+        <label>
+          Superficie privativa (m², departamentos)
+          <input
+            type="number"
+            name="private_m2"
+            min="0.01"
+            step="0.01"
+            defaultValue={value?.private_m2 ?? ""}
           />
         </label>
         <label>
@@ -267,8 +350,12 @@ function Editor({
         ))}
         <label className="full">
           Asesor responsable
-          <select name="advisor_id" defaultValue={value?.advisor_id ?? ""}>
-            <option value="">Usar el asesor predeterminado</option>
+          <select
+            name="advisor_id"
+            required
+            defaultValue={value?.advisor_id ?? ""}
+          >
+            <option value="">Seleccionar asesor responsable</option>
             {advisors.map((a) => (
               <option key={a.id} value={a.id}>
                 {a.name}
@@ -276,6 +363,86 @@ function Editor({
             ))}
           </select>
         </label>
+        <label>
+          Antigüedad
+          <select
+            name="age_type"
+            defaultValue={value?.private_data?.characteristics?.age_type || ""}
+          >
+            <option value="">Desconocida</option>
+            <option value="new">Nuevo</option>
+            <option value="years">Años conocidos</option>
+            <option value="construction">En construcción</option>
+          </select>
+        </label>
+        <label>
+          Años de antigüedad
+          <input
+            name="age_years"
+            type="number"
+            min="0"
+            max="1000"
+            defaultValue={value?.private_data?.characteristics?.age_years ?? ""}
+          />
+        </label>
+        <label>
+          Medios baños
+          <input
+            name="half_bathrooms"
+            type="number"
+            min="0"
+            max="100"
+            defaultValue={
+              value?.private_data?.characteristics?.half_bathrooms ?? ""
+            }
+          />
+        </label>
+        <label>
+          Conservación
+          <select
+            name="condition"
+            defaultValue={value?.private_data?.characteristics?.condition || ""}
+          >
+            <option value="">Desconocida</option>
+            {catalog?.conditions.map((v) => (
+              <option key={v}>{v}</option>
+            ))}
+          </select>
+        </label>
+        <div className="full">
+          <label className="check">
+            <input
+              name="amenities_known"
+              type="checkbox"
+              defaultChecked={
+                value?.private_data?.characteristics?.amenities != null
+              }
+            />
+            Amenidades conocidas (ninguna seleccionada significa que no tiene)
+          </label>
+          {Object.entries(catalog?.amenities || {}).map(([group, items]) => (
+            <fieldset key={group}>
+              <legend>{group}</legend>
+              <div className="closing-checks">
+                {items.map((item) => (
+                  <label className="check" key={item}>
+                    <input
+                      name="amenities"
+                      type="checkbox"
+                      value={item}
+                      defaultChecked={
+                        value?.private_data?.characteristics?.amenities?.includes(
+                          item,
+                        ) || false
+                      }
+                    />
+                    {item}
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+          ))}
+        </div>
         <label className="full">
           Dirección pública
           <input
@@ -324,16 +491,12 @@ function Editor({
           Publicar en el inventario
         </label>
       </div>
-      {error && (
-        <ErrorNotice>
-          {error}
-        </ErrorNotice>
-      )}
+      {error && <ErrorNotice>{error}</ErrorNotice>}
       <div className="form-actions">
         <button type="button" className="button secondary" onClick={onCancel}>
           Cancelar
         </button>
-        <button className="button primary" disabled={saving}>
+        <button className="button primary" disabled={saving || locationPending}>
           {saving ? "Guardando…" : "Guardar propiedad"}
         </button>
       </div>
@@ -343,17 +506,45 @@ function Editor({
 
 export default function Crm() {
   const [tab, setTab] = useState<
-    "inventory" | "prospects" | "advisors" | "appointments" | "captures"
+    | "inventory"
+    | "prospects"
+    | "advisors"
+    | "appointments"
+    | "captures"
+    | "easybroker"
   >("inventory");
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.has("capture")) setTab("captures");
+    if (params.has("closing") || params.has("closing_offer"))
+      setTab("inventory");
     if (params.has("calendar_advisor") || params.has("calendar_error"))
       setTab("advisors");
     if (new URLSearchParams(window.location.search).has("conversation"))
       setTab("prospects");
   }, []);
   const [user, setUser] = useState<Session | null>(null);
+  const [closingOffer, setClosingOffer] = useState<number | null>(null);
+  const [outcomeMode, setOutcomeMode] = useState<
+    "complete" | "withdraw" | "history"
+  >("complete");
+  const [legacyOperations, setLegacyOperations] = useState(false);
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get("closing_offer");
+    if (id && Number.isInteger(Number(id))) setClosingOffer(Number(id));
+    const operation = new URLSearchParams(window.location.search).get(
+      "closing",
+    );
+    if (operation)
+      void api<{ offer_id: number | null }>(`/crm/closings/${operation}`)
+        .then((row) => {
+          if (row.offer_id) {
+            setClosingOffer(row.offer_id);
+            setOutcomeMode("history");
+          } else setLegacyOperations(true);
+        })
+        .catch(() => {});
+  }, []);
   const [loaded, setLoaded] = useState(false);
   const [properties, setProperties] = useState<ManagedProperty[]>([]);
   const [error, setError] = useState("");
@@ -438,11 +629,7 @@ export default function Crm() {
                   required
                 />
               </label>
-              {error && (
-                <ErrorNotice>
-                  {error}
-                </ErrorNotice>
-              )}
+              {error && <ErrorNotice>{error}</ErrorNotice>}
               <button className="button primary" disabled={loggingIn}>
                 {loggingIn ? "Entrando…" : "Entrar al CRM ↗"}
               </button>
@@ -454,15 +641,17 @@ export default function Crm() {
               <div>
                 <p className="eyebrow">Tu inmobiliaria</p>
                 <h1>
-                  {tab === "inventory"
-                    ? "Inventario de propiedades"
-                    : tab === "prospects"
-                      ? "Atención a prospectos"
-                      : tab === "appointments"
-                        ? "Citas y disponibilidad"
-                        : tab === "captures"
-                          ? "Captación"
-                          : "Equipo y notificaciones"}
+                  {tab === "easybroker"
+                    ? "EasyBroker"
+                    : tab === "inventory"
+                      ? "Inventario de propiedades"
+                      : tab === "prospects"
+                        ? "Atención a prospectos"
+                        : tab === "appointments"
+                          ? "Citas y disponibilidad"
+                          : tab === "captures"
+                            ? "Captación"
+                            : "Equipo y notificaciones"}
                 </h1>
                 {tab === "inventory" && (
                   <p>
@@ -499,6 +688,7 @@ export default function Crm() {
                   ["advisors", "Asesores"],
                   ["appointments", "Citas"],
                   ["captures", "Captación"],
+                  ["easybroker", "EasyBroker"],
                 ] as const
               ).map(([id, label]) => (
                 <button
@@ -518,12 +708,10 @@ export default function Crm() {
                 worker.
               </div>
             )}
-            {error && (
-              <ErrorNotice>
-                {error}
-              </ErrorNotice>
-            )}
-            {tab === "captures" ? (
+            {error && <ErrorNotice>{error}</ErrorNotice>}
+            {tab === "easybroker" ? (
+              <EasyBroker onChanged={() => void loadProperties()} />
+            ) : tab === "captures" ? (
               <Captures />
             ) : tab === "appointments" ? (
               <Appointments />
@@ -531,6 +719,44 @@ export default function Crm() {
               <Prospects />
             ) : tab === "advisors" ? (
               <Advisors />
+            ) : closingOffer !== null ? (
+              <PropertyOutcome
+                key={closingOffer}
+                offerId={closingOffer}
+                mode={outcomeMode}
+                onDismiss={() => {
+                  setClosingOffer(null);
+                  window.history.replaceState(null, "", "/crm");
+                }}
+                onChanged={() => void loadProperties()}
+                onEdit={() => {
+                  const property = properties.find(
+                    (p) => p.id === closingOffer,
+                  );
+                  setClosingOffer(null);
+                  if (property?.capture_id) {
+                    window.history.replaceState(
+                      null,
+                      "",
+                      `/crm?capture=${property.capture_id}`,
+                    );
+                    setTab("captures");
+                  } else if (property) setEditing(property);
+                }}
+              />
+            ) : legacyOperations ? (
+              <section>
+                <button
+                  className="link-button"
+                  onClick={() => setLegacyOperations(false)}
+                >
+                  Volver a propiedades
+                </button>
+                <Closings
+                  initialOfferId={null}
+                  onInventoryChange={() => void loadProperties()}
+                />
+              </section>
             ) : editing !== undefined ? (
               <Editor
                 key={editing?.id ?? "new"}
@@ -542,24 +768,50 @@ export default function Crm() {
                 }}
               />
             ) : properties.length ? (
-              <PropertyInventory
-                properties={properties}
-                onEdit={(property) => {
-                  if (property.capture_id) {
+              <>
+                <PropertyInventory
+                  properties={properties}
+                  onOutcome={(property, mode) => {
+                    setClosingOffer(property.id);
+                    setOutcomeMode(mode);
                     window.history.replaceState(
                       null,
                       "",
-                      `/crm?capture=${property.capture_id}`,
+                      `/crm?closing_offer=${property.id}`,
                     );
-                    setTab("captures");
-                  } else setEditing(property);
-                }}
-                onChange={(saved) =>
-                  setProperties((current) =>
-                    current.map((p) => (p.id === saved.id ? saved : p)),
-                  )
-                }
-              />
+                  }}
+                  onEdit={(property) => {
+                    if (property.origin === "easybroker") {
+                      setTab("easybroker");
+                    } else if (property.capture_id) {
+                      window.history.replaceState(
+                        null,
+                        "",
+                        `/crm?capture=${property.capture_id}`,
+                      );
+                      setTab("captures");
+                    } else setEditing(property);
+                  }}
+                  onChange={(saved) =>
+                    setProperties((current) =>
+                      current.map((p) => (p.id === saved.id ? saved : p)),
+                    )
+                  }
+                />
+                <details>
+                  <summary>Operaciones anteriores</summary>
+                  <p>
+                    Carga excepcional de ventas o rentas históricas que todavía
+                    no tengan una ficha en el inventario.
+                  </p>
+                  <button
+                    className="link-button"
+                    onClick={() => setLegacyOperations(true)}
+                  >
+                    Consultar o incorporar operaciones anteriores
+                  </button>
+                </details>
+              </>
             ) : (
               <div className="empty-state">
                 <h2>El inventario comienza aquí.</h2>

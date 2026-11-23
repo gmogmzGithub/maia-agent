@@ -1,6 +1,23 @@
 from procrastinate.contrib.django import app
 
 
+@app.task(name="sync_easybroker", queue="easybroker")
+def sync_easybroker(run_id: str):
+    from worker.easybroker import process
+
+    process(run_id)
+
+
+@app.periodic(cron="* * * * *")
+@app.task(name="maintain_easybroker", queue="maintenance", queueing_lock="maintain-easybroker")
+def maintain_easybroker(timestamp: int):
+    from datalayer.easybroker.publication import expire_imports
+    from datalayer.easybroker.sync import maintain
+
+    expire_imports()
+    maintain()
+
+
 @app.periodic(cron="17 * * * *")
 @app.task(
     name="maintain_google_locations", queue="maintenance", queueing_lock="maintain-google-locations"

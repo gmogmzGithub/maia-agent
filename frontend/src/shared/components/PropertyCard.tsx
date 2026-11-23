@@ -110,8 +110,8 @@ export default function PropertyCard({
         <div className="property-price">
           {money(property.price, property.currency || "MXN")}{" "}
           <span>
-            {property.currency || "MXN"}
-            {property.operation === "rent" ? " / mes" : ""}
+            {property.price !== null ? property.currency : ""}
+            {property.price !== null && property.operation === "rent" ? " / mes" : ""}
           </span>
         </div>
         {compact ? (

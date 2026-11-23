@@ -17,7 +17,6 @@ from datalayer.models import (
     Capture,
     CaptureAgreement,
     CaptureDelivery,
-    CaptureEvent,
     Property,
     normalize_zone,
 )
@@ -48,7 +47,9 @@ def active_agreement(capture):
 
 
 def event(capture, actor, action, summary=""):
-    CaptureEvent.objects.create(capture=capture, actor=actor, action=action, summary=summary[:1000])
+    from datalayer.property_records import record_capture
+
+    record_capture(capture, actor, action, summary)
 
 
 def delivery(channel, key, recipient, subject, body, capture=None, attachment=None):
@@ -254,6 +255,11 @@ def submit(capture_id, owner, revision):
 def sync_property(capture):
     data = CaptureData.model_validate(capture.data)
     prop = capture.property or Property()
+    from datalayer.property_records import capture_facts
+
+    prop.private_data = capture_facts(capture.data).model_dump(mode="json")
+    prop.land_m2 = data.land_m2
+    prop.private_m2 = data.private_m2
     for key in [
         "operation",
         "is_presale",
@@ -345,6 +351,10 @@ def review(capture_id, actor, payload):
     )
     check_revision(capture, payload.get("revision"))
     action = payload.get("action")
+    if capture.property_id and action not in {"valuation", "resolve_request"}:
+        from datalayer.closings import ensure_offer_open
+
+        ensure_offer_open(Property.objects.select_for_update().get(pk=capture.property_id))
     if capture.status == "draft":
         raise ValueError("La solicitud todavía es un borrador del propietario.")
     if action == "retry_delivery":
@@ -460,6 +470,10 @@ def review(capture_id, actor, payload):
 @transaction.atomic
 def accept(capture_id, owner, revision, version):
     capture = Capture.objects.select_for_update().get(pk=capture_id, owner=owner)
+    if capture.property_id:
+        from datalayer.closings import ensure_offer_open
+
+        ensure_offer_open(Property.objects.select_for_update().get(pk=capture.property_id))
     if active_agreement(capture) and capture.status in {"accepted", "published"}:
         return capture
     check_revision(capture, revision)
@@ -505,6 +519,10 @@ def owner_request(capture_id, owner, kind, message):
     ):
         raise ValueError("Indica el cambio, retirada o renovación que solicitas.")
     capture = Capture.objects.select_for_update().get(pk=capture_id, owner=owner)
+    if capture.property_id:
+        from datalayer.closings import ensure_offer_open
+
+        ensure_offer_open(Property.objects.select_for_update().get(pk=capture.property_id))
     if capture.status == "draft":
         raise ValueError("Todavía puedes editar tu borrador.")
     if capture.pending_request:

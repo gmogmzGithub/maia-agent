@@ -53,8 +53,8 @@ export default function Detail({
               <div className="detail-price">
                 {money(property.price, property.currency || "MXN")}
                 <span>
-                  {property.currency || "MXN"}
-                  {property.operation === "rent" ? " / mes" : ""} ·{" "}
+                  {property.price !== null ? property.currency : ""}
+                  {property.price !== null && property.operation === "rent" ? " / mes" : ""} ·{" "}
                   {property.is_presale
                     ? "Preventa"
                     : labels[property.operation]}

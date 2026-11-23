@@ -25,6 +25,7 @@ INSTALLED_APPS = [
     "datalayer.apps.DataLayerConfig",
 ]
 MIDDLEWARE = [
+    "api.cache.CurrentFactsMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -97,6 +98,9 @@ GOOGLE_REDIRECT_URI = os.getenv(
     "GOOGLE_REDIRECT_URI", "http://localhost:3000/api/calendar/callback"
 )
 CALENDAR_ENCRYPTION_KEY = os.getenv("CALENDAR_ENCRYPTION_KEY", "")
+EASYBROKER_ENCRYPTION_KEY = os.getenv("EASYBROKER_ENCRYPTION_KEY", "")
+# Enable only after the complete privacy/delivery acceptance suite passes.
+EASYBROKER_PUBLIC_ENABLED = os.getenv("EASYBROKER_PUBLIC_ENABLED", "false").lower() == "true"
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,

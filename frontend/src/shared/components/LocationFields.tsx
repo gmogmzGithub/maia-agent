@@ -212,17 +212,39 @@ export default function LocationFields({
         </label>
       </div>
       {reference && (
-        <label>
-          Referencia para localizar el inmueble
-          <textarea
-            value={String(data.location_reference || "")}
-            maxLength={500}
-            required
-            onChange={(e) =>
-              editor.edit({ location_reference: e.target.value })
-            }
-          />
-        </label>
+        <div className="capture-grid">
+          <label>
+            Identificación del predio, lote o parcela
+            <input
+              maxLength={500}
+              required
+              value={String(data.rural_identification || "")}
+              onChange={(e) =>
+                editor.edit({ rural_identification: e.target.value })
+              }
+            />
+          </label>
+          <label>
+            Referencia documental que identifica el predio
+            <input
+              maxLength={500}
+              required
+              value={String(data.rural_reference || "")}
+              onChange={(e) => editor.edit({ rural_reference: e.target.value })}
+            />
+          </label>
+          <label>
+            Referencia para localizar el inmueble
+            <textarea
+              value={String(data.location_reference || "")}
+              maxLength={500}
+              required
+              onChange={(e) =>
+                editor.edit({ location_reference: e.target.value })
+              }
+            />
+          </label>
+        </div>
       )}
       {location?.needs_confirmation && (
         <p className="notice">

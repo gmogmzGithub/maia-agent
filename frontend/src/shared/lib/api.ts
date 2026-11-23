@@ -54,7 +54,9 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   return data as T;
 }
 
-export function money(value: string | number, currency = "MXN") {
+export function money(value: string | number | null, currency: string | null = "MXN") {
+  if (value === null) return "Precio por consultar";
+  if (!currency) return "Importe sin moneda confirmada";
   return new Intl.NumberFormat("es-MX", {
     style: "currency",
     currency,

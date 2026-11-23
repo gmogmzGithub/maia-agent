@@ -113,6 +113,8 @@ No incluir valoración automática en la primera versión estable. El propietari
 
 Una valoración automática requiere diseñar posteriormente fuentes de comparables, método y revisión. No condiciona GA.
 
+Actualización del 20 de noviembre de 2026: Guillermo pidió diseñar el [registro de cierres e historial para comparables](cierres-y-comparables.md), para acumular datos de operaciones reales y características similares. Este frente no cambia la definición de opinión de valor manual ni aprueba una valoración automática. El alcance y las reglas se resolverán mediante entrevista antes de implementar.
+
 ## 7. Pendientes explícitos
 
 - Herramienta de observabilidad avanzada, si una necesidad concreta la justifica. No es un requisito añadido para Beta.

@@ -108,14 +108,14 @@ def crm_properties(request):
 
 @crm.post("/properties", response=ManagedProperty, operation_id="core_api_create_property")
 def create_property(request, data: PropertyInput):
-    return managed_property(save_property(data))
+    return managed_property(save_property(data, actor=request.user))
 
 
 @crm.put(
     "/properties/{property_id}", response=ManagedProperty, operation_id="core_api_update_property"
 )
 def update_property(request, property_id: int, data: PropertyInput):
-    return managed_property(save_property(data, get_object_or_404(Property, pk=property_id)))
+    return managed_property(save_property(data, get_object_or_404(Property, pk=property_id), actor=request.user))
 
 
 @crm.patch(
@@ -125,7 +125,7 @@ def update_property(request, property_id: int, data: PropertyInput):
 )
 def change_publication(request, property_id: int, data: PublicationInput):
     try:
-        prop = set_publication(property_id, data.published)
+        prop = set_publication(property_id, data.published, actor=request.user)
     except Property.DoesNotExist:
         raise HttpError(404, "Propiedad no encontrada") from None
     return managed_property(prop)

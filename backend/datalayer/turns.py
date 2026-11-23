@@ -4,9 +4,8 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
-from datalayer.inventory import public_property
 from datalayer.memory import read_memory
-from datalayer.models import Conversation, Message, Property
+from datalayer.models import Conversation, Message
 from datalayer.prospects import is_paused
 from llm_ops.executions import finish_execution, log_execution, start_execution
 
@@ -21,24 +20,35 @@ async def pending_turn_delay(conversation_id):
     return min(quiet_until, ceiling) - timezone.now().timestamp()
 
 
-
 def load_turn(conversation_id):
     with transaction.atomic():
-        conversation = Conversation.objects.select_for_update().get(pk=conversation_id)
+        conversation = Conversation.objects.select_for_update(no_key=True).get(pk=conversation_id)
         if conversation.revision <= conversation.answered_revision or is_paused(conversation):
             return None
         snapshot = read_memory(conversation)
         execution = start_execution(
-            conversation=conversation, revision=conversation.revision, model=settings.ANTHROPIC_MODEL,
+            conversation=conversation,
+            revision=conversation.revision,
+            model=settings.ANTHROPIC_MODEL,
         )
         return {**snapshot, "execution_id": execution.pk}
 
 
 def finish_turn(
-    conversation_id, turn, text, cards, status, usage, elapsed_ms, events, error_code="", *, reply=None
+    conversation_id,
+    turn,
+    text,
+    cards,
+    status,
+    usage,
+    elapsed_ms,
+    events,
+    error_code="",
+    *,
+    reply=None,
 ):
     with transaction.atomic():
-        conversation = Conversation.objects.select_for_update().get(pk=conversation_id)
+        conversation = Conversation.objects.select_for_update(no_key=True).get(pk=conversation_id)
         if (
             conversation.revision != turn["revision"]
             or conversation.answered_revision >= turn["revision"]
@@ -46,54 +56,16 @@ def finish_turn(
         ):
             status = "superseded"
         else:
-            # Confirm public visibility and values again before displaying property cards.
-            visible = {
-                p.pk: p
-                for p in Property.objects.filter(pk__in=[c["id"] for c in cards], published=True)
-            }
-            refreshed = [
-                public_property(visible[c["id"]], c.get("unconfirmed"))
-                for c in cards
-                if c["id"] in visible
-            ]
-            if refreshed != cards:
-                cards = []
-                text = "El inventario cambió mientras buscaba. ¿Revisamos las opciones de nuevo?"
-            else:
-                cards = refreshed
-            from datalayer.replies import validate_reply
-            from datalayer.schemas import ReplyProposal
+            from datalayer.public_history import accept_reply
 
-            if reply is None or not cards and any(b.property_ids for b in reply.blocks):
-                reply = ReplyProposal.model_validate({
-                    "blocks": [{"kind": "text", "text": text}],
-                    "continuity": {"purpose": "continuar la atención", "pending": None},
-                })
-            try:
-                reply, text, cards = validate_reply(
-                    conversation_id, turn["revision"], reply.model_dump(mode="json"), cards
-                )
-            except ValueError:
-                text = "Los datos cambiaron mientras respondía. Revisemos tu solicitud de nuevo."
-                cards = []
-                reply = ReplyProposal.model_validate({
-                    "blocks": [{"kind": "text", "text": text}],
-                    "continuity": {"purpose": "revisar datos actuales", "pending": None},
-                })
+            accepted = accept_reply(conversation, turn, text, cards, reply)
+            if accepted.validation_failed:
                 events.append({"tool": "reply_validation", "outcome": "state_changed"})
             message = Message.objects.create(
                 conversation=conversation,
                 role="assistant",
-                text=text,
-                properties=cards,
                 is_error=status == "failed",
-                presentation=reply.model_dump(mode="json")["blocks"],
-                continuity={
-                    "version": 1,
-                    **reply.continuity.model_dump(mode="json"),
-                    "revision": turn["revision"],
-                    "input_message_id": turn["input_message_id"],
-                },
+                **accepted.message_fields,
             )
             conversation.answered_revision = turn["revision"]
             conversation.pending_since = None

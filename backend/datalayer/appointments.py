@@ -1,4 +1,3 @@
-
 """Deterministic booking rules. Short SQL transactions; Google calls stay outside."""
 
 from datetime import datetime, timedelta
@@ -118,7 +117,7 @@ def validate_windows(windows):
 
 def validate_slot(prop, start, end, policy, *, duration=None):
     start, end = date_time(start), date_time(end)
-    if not prop.published:
+    if not public_inventory().filter(pk=prop.pk).exists():
         reject("La propiedad ya no admite nuevas reservas.")
     expected = duration or prop.visit_duration
     if end - start != timedelta(minutes=expected):
@@ -194,12 +193,13 @@ def google_free(calendar, start, end, *, existing=None):
 
 
 def appointment_output(appointment, *, staff=False):
+    from datalayer.public_history import public_title
     operations = appointment.operations.order_by("-created_at")
     last = operations.first()
     result = {
         "id": str(appointment.pk),
         "property_id": appointment.property_id,
-        "property_title": appointment.property.title,
+        "property_title": appointment.property.title if staff else public_title(appointment.property),
         "advisor": appointment.advisor.name,
         "start": appointment.start.isoformat(),
         "end": appointment.end.isoformat(),
@@ -230,12 +230,14 @@ def appointment_output(appointment, *, staff=False):
 
 
 def proposal_output(proposal):
+    from datalayer.public_history import public_title
+
     return {
         "id": str(proposal.pk),
         "action": proposal.action,
         "appointment_id": str(proposal.appointment_id) if proposal.appointment_id else None,
         "property_id": proposal.property_id,
-        "property_title": proposal.property.title,
+        "property_title": public_title(proposal.property),
         "advisor": proposal.advisor.name,
         "start": proposal.start.isoformat(),
         "end": proposal.end.isoformat(),
@@ -243,10 +245,11 @@ def proposal_output(proposal):
     }
 
 
-def notify_appointment(appointment, key, summary, *, headline=None):
+def notify_appointment(appointment, key, summary, *, headline=None, notify_client=True):
+    from datalayer.public_history import public_title
     from worker.dispatch import enqueue_notification
 
-    if appointment.conversation.channel == "whatsapp":
+    if notify_client and appointment.conversation.channel == "whatsapp":
         from datalayer.whatsapp import reply
 
         if not appointment.conversation.whatsapp_deliveries.filter(
@@ -254,9 +257,9 @@ def notify_appointment(appointment, key, summary, *, headline=None):
         ).exists():
             when = visit_time(appointment.start, appointment.end)
             if appointment.status == "cancelled":
-                public_summary = f"Listo, tu visita a {appointment.property.title} quedó cancelada. Cuando quieras retomarla, escríbeme."
+                public_summary = f"Listo, tu visita a {public_title(appointment.property)} quedó cancelada. Cuando quieras retomarla, escríbeme."
             elif appointment.status == "confirmed":
-                public_summary = f"Tu visita a {appointment.property.title} ya quedó agendada para el {when}, hora de Guadalajara. Te recibirá {appointment.advisor.name}."
+                public_summary = f"Tu visita a {public_title(appointment.property)} ya quedó agendada para el {when}, hora de Guadalajara. Te recibirá {appointment.advisor.name}."
             else:
                 public_summary = "Todavía no pude completar el cambio de tu visita. Dejé la solicitud para que tu asesor la revise."
             reply(appointment.conversation, public_summary, f"visit-result:{key}")

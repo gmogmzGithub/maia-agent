@@ -988,6 +988,7 @@ export default function OwnerCapture() {
                                   ["parking", "Estacionamientos"],
                                   ["area_m2", "Superficie construida (m²)"],
                                   ["land_m2", "Superficie total (m²)"],
+                                  ["private_m2", "Superficie privativa (m², si aplica)"],
                                 ].map(([key, label]) =>
                                   field(key, label, "number"),
                                 )}

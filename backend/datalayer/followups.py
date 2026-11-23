@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from datalayer.models import (
@@ -18,6 +19,7 @@ from datalayer.models import (
     Message,
     Prospect,
     ProspectEvent,
+    SearchIntent,
     WhatsAppEvent,
     WhatsAppTemplate,
 )
@@ -85,6 +87,7 @@ def end_date(cycle):
 
 @transaction.atomic
 def finish_cycle(cycle, now, reason="completed"):
+    freeze_intent(cycle)
     cycle.closed_at, cycle.reason = now, reason
     cycle.save(update_fields=["closed_at", "reason"])
     if cycle.pilot:
@@ -108,7 +111,16 @@ def mark_intent(conversation):
         conversation.intent_started_at = latest.created_at if latest else timezone.now()
         conversation.save(update_fields=["intent_started_at", "updated_at"])
     if conversation.prospect_id:
-        ensure_cycle(conversation)
+        cycle = ensure_cycle(conversation)
+        if (
+            cycle
+            and not cycle.closed_at
+            and cycle.intent_id
+            and cycle.conversation_id == conversation.pk
+        ):
+            SearchIntent.objects.filter(pk=cycle.intent_id, resolved_at__isnull=True).update(
+                criteria=conversation.criteria
+            )
 
 
 @transaction.atomic
@@ -147,9 +159,18 @@ def ensure_cycle(conversation, *, new=False, actor=None):
         started = interaction.created_at
     else:
         started = conversation.intent_started_at
+    intent = SearchIntent.objects.create(
+        prospect=prospect,
+        conversation=conversation,
+        started_at=started,
+        criteria=prospect.criteria
+        if prospect.criteria_source_id in {None, conversation.pk}
+        else conversation.criteria,
+    )
     cycle = FollowupCycle.objects.create(
         prospect=prospect,
         conversation=conversation,
+        intent=intent,
         started_at=started,
         permission=conversation.followup_permission is True and not prospect.contact_opted_out,
     )
@@ -174,6 +195,8 @@ def set_permission(conversation, allowed, *, actor=None):
         prospect.contact_opted_out = not allowed
         prospect.save(update_fields=["contact_opted_out", "updated_at"])
         if not allowed:
+            for active in prospect.followup_cycles.filter(closed_at__isnull=True):
+                freeze_intent(active)
             prospect.followup_cycles.filter(closed_at__isnull=True).update(
                 permission=False, closed_at=timezone.now(), reason="opted_out"
             )
@@ -190,6 +213,11 @@ def set_permission(conversation, allowed, *, actor=None):
 
 def eligible(cycle, now):
     prospect, conversation = cycle.prospect, cycle.conversation
+    if (
+        cycle.intent_id
+        and SearchIntent.objects.filter(pk=cycle.intent_id, resolved_at__isnull=False).exists()
+    ):
+        return "search_resolved"
     if cycle.closed_at:
         return "closed"
     if cycle.pilot and (
@@ -197,6 +225,7 @@ def eligible(cycle, now):
     ):
         return "pilot_recipient_changed"
     if prospect.contact_opted_out or prospect.status == "not_interested":
+        freeze_intent(cycle)
         reason = "opted_out" if prospect.contact_opted_out else "not_interested"
         if cycle.pilot:
             finish_cycle(cycle, now, reason)
@@ -235,17 +264,54 @@ def eligible(cycle, now):
     return ""
 
 
+def criteria_for(cycle):
+    if not cycle.intent_id:
+        return cycle.prospect.criteria
+    intent = SearchIntent.objects.get(pk=cycle.intent_id)
+    latest = cycle.prospect.followup_cycles.order_by("-created_at", "-pk").first()
+    if (
+        not intent.resolved_at
+        and not cycle.closed_at
+        and latest
+        and latest.pk == cycle.pk
+        and cycle.prospect.criteria_source_id
+        in {
+            None,
+            cycle.conversation_id,
+        }
+    ):
+        return cycle.prospect.criteria
+    return intent.criteria
+
+
+def freeze_intent(cycle):
+    if cycle.intent_id:
+        SearchIntent.objects.filter(pk=cycle.intent_id, resolved_at__isnull=True).update(
+            criteria=criteria_for(cycle)
+        )
+
+
 def snapshot(cycle):
     prospect = cycle.prospect
     state = {
-        "criteria": prospect.criteria,
+        "criteria": criteria_for(cycle),
+        "intent": str(cycle.intent_id) if cycle.intent_id else None,
+        "resolved": SearchIntent.objects.filter(
+            pk=cycle.intent_id, resolved_at__isnull=False
+        ).exists()
+        if cycle.intent_id
+        else False,
         "status": prospect.status,
         "paused": prospect.automation_paused,
         "opted_out": prospect.contact_opted_out,
         "next_step": prospect.next_step,
         "pilot": cycle.pilot,
         "conversations": list(
-            prospect.conversations.order_by("pk").values_list("pk", "revision", "automation_paused")
+            prospect.conversations.filter(
+                Q(pk=cycle.conversation_id) | Q(context_origin_id=cycle.conversation_id)
+            )
+            .order_by("pk")
+            .values_list("pk", "revision", "automation_paused")
         ),
         "appointments": list(
             prospect.appointments.order_by("pk").values_list("pk", "status", "start", "end")
@@ -255,7 +321,12 @@ def snapshot(cycle):
 
 
 def template_options(cycle, day=None):
-    criteria = cycle.prospect.criteria
+    if (
+        cycle.intent_id
+        and SearchIntent.objects.filter(pk=cycle.intent_id, resolved_at__isnull=False).exists()
+    ):
+        return []
+    criteria = criteria_for(cycle)
     mapping = {
         "rent": "rentar",
         "sale": "comprar",
@@ -333,10 +404,13 @@ def context(cycle):
             "skipped",
         ]
     )
+    from datalayer.public_history import message_projection
+
     return {
-        "criteria": cycle.prospect.criteria,
+        "criteria": criteria_for(cycle),
         "next_step": cycle.prospect.next_step,
-        "history": list(messages.order_by("created_at", "pk").values("role", "text")),
+        "history": [{"role": m.role, "text": message_projection(m)["text"]}
+                    for m in messages.order_by("created_at", "pk")],
     }
 
 

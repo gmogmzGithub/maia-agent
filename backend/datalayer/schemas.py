@@ -6,6 +6,7 @@ from ninja import Schema
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
 from datalayer.capture_catalog import KINDS
+from datalayer.property_records import PrivatePropertyData
 
 Operation = Literal["rent", "sale"]
 Kind = Literal[tuple(KINDS)]
@@ -67,6 +68,27 @@ class PropertyInput(Schema):
     internal_notes: str = Field(default="", max_length=5000)
     published: bool = False
     advisor_id: int | None = Field(default=None, gt=0)
+    private_data: PrivatePropertyData | None = None
+    land_m2: Decimal | None = Field(default=None, gt=0, max_digits=14, decimal_places=2)
+    private_m2: Decimal | None = Field(default=None, gt=0, max_digits=14, decimal_places=2)
+
+    @model_validator(mode="after")
+    def complete_private_profile(self):
+        if self.published and self.private_data is not None:
+            if not self.state:
+                raise ValueError("Completa el estado en la ficha antes de publicar.")
+            if (
+                self.private_data.location_mode == "address"
+                and not self.private_data.private_address
+            ):
+                raise ValueError("Completa la dirección privada exacta antes de publicar.")
+            if self.private_data.location_mode == "reference" and not all(
+                [self.private_data.rural_identification, self.private_data.rural_reference]
+            ):
+                raise ValueError(
+                    "Completa la identificación rural y su referencia antes de publicar."
+                )
+        return self
 
 
 class PublicationInput(Schema):
@@ -83,7 +105,8 @@ class PublicProperty(Schema):
     municipality: str
     neighborhood: str
     public_address: str
-    price: str
+    price: str | None
+    price_visible: bool = True
     bedrooms: int | None
     bathrooms: str | None
     parking: int | None
@@ -94,19 +117,28 @@ class PublicProperty(Schema):
     description: str
     photos: list[str]
     unconfirmed: list[str] = Field(default_factory=list)
-    currency: Literal["MXN", "USD"] = "MXN"
+    currency: Literal["MXN", "USD"] | None = "MXN"
     state: str = ""
     subtype: str = ""
     is_presale: bool = False
     public_location: dict = Field(default_factory=dict)
     details: dict = Field(default_factory=dict)
+    public_revision: str | None = None
 
 
 class ManagedProperty(PublicProperty):
+    origin: str = "local"
+    source_current: dict | None = None
     capture_id: str | None = None
     internal_notes: str
     published: bool
     advisor_id: int | None
+    private_data: PrivatePropertyData = Field(default_factory=PrivatePropertyData)
+    land_m2: str | None = None
+    private_m2: str | None = None
+    commercial_status: str = "available"
+    closing_id: str | None = None
+    withdrawn_at: str | None = None
 
 
 class SearchResult(Schema):

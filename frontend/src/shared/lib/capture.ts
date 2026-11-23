@@ -80,6 +80,7 @@ export const statusLabels: Record<string, string> = {
   rejected: "Descartada",
   withdrawn: "Retirada",
   expired: "Exclusividad vencida",
+  closed: "Comercialización terminada por cierre",
 };
 export const initialData: CaptureData = {
   name: "",
