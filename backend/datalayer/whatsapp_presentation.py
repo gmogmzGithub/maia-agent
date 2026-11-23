@@ -8,11 +8,12 @@ from harness.presentation.whatsapp import render_reply
 
 
 def visit_snapshot(proposal):
+    from datalayer.public_history import public_title
     if not proposal:
         return None
     return {
         "id": str(proposal.pk), "action": proposal.action,
-        "summary": (f"Tu visita a {proposal.property.title}\n"
+        "summary": (f"Tu visita a {public_title(proposal.property)}\n"
                     f"{visit_time(proposal.start, proposal.end)}, hora de Guadalajara.\n"
                     f"Con {proposal.advisor.name} · "
                     f"{int((proposal.end - proposal.start).total_seconds() // 60)} minutos."),

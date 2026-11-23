@@ -15,6 +15,7 @@ class TurnTools:
     """Own search protections, available cards and recovery controls, not model retries."""
 
     def __init__(self, conversation_id, turn):
+        self.turn = turn
         self.conversation_id = conversation_id
         self.revision = turn["revision"]
         self.initial_criteria = turn["criteria"]
@@ -50,6 +51,13 @@ class TurnTools:
             result = {"error": exc.code, "detail": "Google Calendar requiere revisión; no confirmes cita. Ofrece registrar la solicitud para el asesor."}
         except (ValidationError, DjangoValidationError, ValueError, TypeError, KeyError, ObjectDoesNotExist):
             result = {"error": "invalid_criteria", "detail": "Revisa los criterios y aclara la petición si es necesario."}
+        # Track every imported fact read by the model, including show_card=False.
+        observed = self.turn.setdefault("observed_public_sources", {})
+        candidates = list(result.get("results", []))
+        candidates.extend(result[k] for k in ("property", "details") if isinstance(result.get(k), dict))
+        for prop in candidates:
+            if prop.get("public_revision") is not None:
+                observed[str(prop["id"])] = prop["public_revision"]
         if "results" in result:
             self.cards = [p for p in result["results"] if p["id"] not in self.shown_ids][:3]
         if "property" in result:

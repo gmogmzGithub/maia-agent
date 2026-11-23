@@ -38,6 +38,9 @@ class CaptureData(BaseModel):
     parking: int | None = Field(default=None, ge=0, le=100)
     area_m2: Decimal | None = Field(default=None, gt=0, le=100000000)
     land_m2: Decimal | None = Field(default=None, gt=0, le=100000000)
+    private_m2: Decimal | None = Field(default=None, gt=0, le=100000000)
+    rural_identification: str = Field(default="", max_length=500)
+    rural_reference: str = Field(default="", max_length=500)
     age_type: Literal["", "new", "years", "construction"] = ""
     age_years: int | None = Field(default=None, ge=0, le=1000)
     condition: str = ""

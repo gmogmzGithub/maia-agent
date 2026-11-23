@@ -144,6 +144,15 @@ def deliver(delivery_id, client=None):
             "biz_opaque_callback_data": str(item.pk),
             **item.payload,
         }
+    # Final pre-transport check: never send text prepared from a now-private fact.
+    if item.message.public_sources:
+        from datalayer.public_history import message_projection
+
+        if message_projection(item.message)["changed"]:
+            with transaction.atomic():
+                WhatsAppDelivery.objects.filter(pk=item.pk, status="sending").update(
+                    status="skipped", error_code="property_facts_changed")
+            return
     status, error, provider_id = "uncertain", "unknown_result", ""
     try:
         response = request(

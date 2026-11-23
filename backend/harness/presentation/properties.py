@@ -60,10 +60,12 @@ def property_highlights(prop, criteria):
 
 
 def property_text(prop, criteria, base_url):
-    price = f"${Decimal(prop['price']):,.0f} {prop.get('currency', 'MXN')}"
+    price = (f"${Decimal(prop['price']):,.0f} {prop.get('currency', 'MXN')}"
+             if prop.get("price") is not None and prop.get("price_visible", True)
+             else "Precio por consultar")
     if prop.get("is_presale"):
         price += " · Preventa"
-    if prop["operation"] == "rent":
+    if prop["operation"] == "rent" and prop.get("price") is not None:
         price += " al mes"
     lines = [
         prop["title"],

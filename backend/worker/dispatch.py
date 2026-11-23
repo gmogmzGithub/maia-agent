@@ -23,6 +23,19 @@ def enqueue_conversation(conversation_id):
         pass
 
 
+def enqueue_easybroker(run_id, *, at=None):
+    from worker.tasks import sync_easybroker
+
+    try:
+        with transaction.atomic():
+            sync_easybroker.configure(
+                lock="easybroker-global", queueing_lock=f"easybroker:{run_id}",
+                priority=-20, schedule_at=at or timezone.now(),
+            ).defer(run_id=str(run_id))
+    except exceptions.AlreadyEnqueued:
+        pass
+
+
 def enqueue_followup(attempt_id):
     from worker.tasks import process_followup
 

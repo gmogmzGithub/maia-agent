@@ -742,7 +742,12 @@ export interface components {
             /** Public Address */
             public_address: string;
             /** Price */
-            price: string;
+            price: string | null;
+            /**
+             * Price Visible
+             * @default true
+             */
+            price_visible: boolean;
             /** Bedrooms */
             bedrooms: number | null;
             /** Bathrooms */
@@ -766,9 +771,8 @@ export interface components {
             /**
              * Currency
              * @default MXN
-             * @enum {string}
              */
-            currency: "MXN" | "USD";
+            currency: ("MXN" | "USD") | null;
             /**
              * State
              * @default
@@ -792,6 +796,8 @@ export interface components {
             details?: {
                 [key: string]: unknown;
             };
+            /** Public Revision */
+            public_revision?: string | null;
         };
         /** SearchResult */
         SearchResult: {
@@ -802,6 +808,34 @@ export interface components {
             /** Next Offset */
             next_offset: number | null;
             criteria: components["schemas"]["SearchCriteria"];
+        };
+        /** Characteristics */
+        Characteristics: {
+            /** Bedrooms */
+            bedrooms?: number | null;
+            /** Bathrooms */
+            bathrooms?: string | null;
+            /** Half Bathrooms */
+            half_bathrooms?: number | null;
+            /** Parking */
+            parking?: number | null;
+            /**
+             * Age Type
+             * @default
+             * @enum {string}
+             */
+            age_type: "" | "new" | "years" | "construction";
+            /** Age Years */
+            age_years?: number | null;
+            /**
+             * Condition
+             * @default
+             */
+            condition: string;
+            /** Amenities */
+            amenities?: string[] | null;
+            /** Not Applicable */
+            not_applicable?: ("bedrooms" | "bathrooms" | "half_bathrooms" | "parking" | "age_years")[];
         };
         /** ManagedProperty */
         ManagedProperty: {
@@ -828,7 +862,12 @@ export interface components {
             /** Public Address */
             public_address: string;
             /** Price */
-            price: string;
+            price: string | null;
+            /**
+             * Price Visible
+             * @default true
+             */
+            price_visible: boolean;
             /** Bedrooms */
             bedrooms: number | null;
             /** Bathrooms */
@@ -852,9 +891,8 @@ export interface components {
             /**
              * Currency
              * @default MXN
-             * @enum {string}
              */
-            currency: "MXN" | "USD";
+            currency: ("MXN" | "USD") | null;
             /**
              * State
              * @default
@@ -878,6 +916,17 @@ export interface components {
             details?: {
                 [key: string]: unknown;
             };
+            /** Public Revision */
+            public_revision?: string | null;
+            /**
+             * Origin
+             * @default local
+             */
+            origin: string;
+            /** Source Current */
+            source_current?: {
+                [key: string]: unknown;
+            } | null;
             /** Capture Id */
             capture_id?: string | null;
             /** Internal Notes */
@@ -886,6 +935,54 @@ export interface components {
             published: boolean;
             /** Advisor Id */
             advisor_id: number | null;
+            private_data?: components["schemas"]["PrivatePropertyData"];
+            /** Land M2 */
+            land_m2?: string | null;
+            /** Private M2 */
+            private_m2?: string | null;
+            /**
+             * Commercial Status
+             * @default available
+             */
+            commercial_status: string;
+            /** Closing Id */
+            closing_id?: string | null;
+            /** Withdrawn At */
+            withdrawn_at?: string | null;
+        };
+        /** PrivatePropertyData */
+        PrivatePropertyData: {
+            /**
+             * Private Address
+             * @default
+             */
+            private_address: string;
+            /**
+             * Zone Type
+             * @default colonia
+             */
+            zone_type: string;
+            /**
+             * Location Mode
+             * @default address
+             */
+            location_mode: string;
+            /**
+             * Location Reference
+             * @default
+             */
+            location_reference: string;
+            /**
+             * Rural Identification
+             * @default
+             */
+            rural_identification: string;
+            /**
+             * Rural Reference
+             * @default
+             */
+            rural_reference: string;
+            characteristics?: components["schemas"]["Characteristics"];
         };
         /** PropertyInput */
         PropertyInput: {
@@ -966,6 +1063,11 @@ export interface components {
             published: boolean;
             /** Advisor Id */
             advisor_id?: number | null;
+            private_data?: components["schemas"]["PrivatePropertyData"] | null;
+            /** Land M2 */
+            land_m2?: number | string | null;
+            /** Private M2 */
+            private_m2?: number | string | null;
         };
         /** PublicationInput */
         PublicationInput: {

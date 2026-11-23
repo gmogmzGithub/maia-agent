@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "packageManager": "pnpm@11.25.0",
   "scripts": {
-    "test": "node scripts/test-conversation.mjs && node scripts/test-owner-draft.mjs && node scripts/test-capture-uploads.mjs && node scripts/test-money-input.mjs && node scripts/test-capture-status.mjs && node scripts/test-location-fields.mjs && node scripts/test-form-feedback.mjs && node scripts/test-location-editing.mjs && node scripts/test-capture-journey.mjs",
+    "test": "node scripts/test-conversation.mjs && node scripts/test-owner-draft.mjs && node scripts/test-capture-uploads.mjs && node scripts/test-money-input.mjs && node scripts/test-capture-status.mjs && node scripts/test-location-fields.mjs && node scripts/test-form-feedback.mjs && node scripts/test-location-editing.mjs && node scripts/test-capture-journey.mjs && node scripts/test-easybroker-review.mjs",
     "dev": "next dev --hostname 127.0.0.1",
     "build": "next build",
     "start": "next start --hostname 0.0.0.0",
@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "leaflet": "^1.9.4",
-    "next": "^16.2.9",
+    "next": "^16.4.6",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },

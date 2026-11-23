@@ -1,0 +1,129 @@
+.closings {
+  display: grid;
+  gap: 1.25rem;
+}
+.closings > .crm-actions {
+  align-items: end;
+}
+.closings input[type="checkbox"] {
+  width: auto;
+  min-width: 1rem;
+  margin-right: 0.35rem;
+}
+.closing-layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+  gap: 1.5rem;
+  align-items: start;
+}
+.closing-layout aside {
+  display: grid;
+  gap: 0.65rem;
+}
+.closing-filters {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.65rem;
+}
+.closing-item {
+  text-align: left;
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.9rem;
+  border: 1px solid var(--line, #d6ded8);
+  border-radius: 12px;
+  background: var(--surface, #fff);
+  color: inherit;
+  cursor: pointer;
+}
+.closing-item.active {
+  outline: 2px solid var(--accent, #277354);
+  outline-offset: 1px;
+}
+.closing-item span {
+  font-size: 0.85rem;
+}
+.closing-detail {
+  min-width: 0;
+}
+.closing-detail fieldset {
+  border: 0;
+  padding: 0;
+  margin: 0 0 1rem;
+  min-width: 0;
+}
+.closing-detail fieldset fieldset {
+  border-top: 1px solid var(--line, #d6ded8);
+  padding-top: 0.65rem;
+}
+.closing-facts {
+  display: grid;
+  grid-template-columns: minmax(110px, 1fr) 2fr;
+  gap: 0.5rem 1rem;
+  overflow-wrap: anywhere;
+}
+.closing-facts dd {
+  margin: 0;
+}
+.closing-fact {
+  display: contents;
+}
+.closing-facts dt {
+  font-weight: 600;
+}
+.closing-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+.closing-charge {
+  display: grid;
+  grid-template-columns: 2fr 1.5fr 1fr auto;
+  gap: 0.7rem;
+  align-items: end;
+  margin-bottom: 0.75rem;
+}
+.closing-preview {
+  border: 2px solid var(--accent, #277354);
+  border-radius: 12px;
+  padding: 1rem;
+  margin: 1.5rem 0;
+}
+.closing-history {
+  border-top: 1px solid var(--line, #d6ded8);
+  padding: 1rem 0;
+}
+.closing-detail article > section {
+  margin-top: 1.5rem;
+}
+@media (max-width: 900px) {
+  .closing-layout {
+    grid-template-columns: 1fr;
+  }
+  .closing-layout[data-detail="true"] .closing-detail {
+    order: -1;
+  }
+  .closing-charge {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+@media (max-width: 520px) {
+  .closings > .crm-actions {
+    display: grid;
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+  .closings > .crm-actions > label {
+    min-width: 0;
+  }
+  .closing-facts {
+    grid-template-columns: 1fr;
+    gap: 0.25rem;
+  }
+  .closing-facts dd {
+    margin-bottom: 0.5rem;
+  }
+  .closing-charge {
+    grid-template-columns: 1fr;
+  }
+}

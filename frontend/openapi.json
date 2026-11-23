@@ -2337,8 +2337,20 @@
             "type": "string"
           },
           "price": {
-            "title": "Price",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price"
+          },
+          "price_visible": {
+            "default": true,
+            "title": "Price Visible",
+            "type": "boolean"
           },
           "bedrooms": {
             "anyOf": [
@@ -2436,13 +2448,20 @@
             "type": "array"
           },
           "currency": {
-            "default": "MXN",
-            "enum": [
-              "MXN",
-              "USD"
+            "anyOf": [
+              {
+                "enum": [
+                  "MXN",
+                  "USD"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
-            "title": "Currency",
-            "type": "string"
+            "default": "MXN",
+            "title": "Currency"
           },
           "state": {
             "default": "",
@@ -2468,6 +2487,17 @@
             "additionalProperties": true,
             "title": "Details",
             "type": "object"
+          },
+          "public_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Public Revision"
           }
         },
         "required": [
@@ -2530,6 +2560,121 @@
         "title": "SearchResult",
         "type": "object"
       },
+      "Characteristics": {
+        "additionalProperties": false,
+        "properties": {
+          "bedrooms": {
+            "anyOf": [
+              {
+                "maximum": 100,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bedrooms"
+          },
+          "bathrooms": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bathrooms"
+          },
+          "half_bathrooms": {
+            "anyOf": [
+              {
+                "maximum": 100,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Half Bathrooms"
+          },
+          "parking": {
+            "anyOf": [
+              {
+                "maximum": 100,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parking"
+          },
+          "age_type": {
+            "default": "",
+            "enum": [
+              "",
+              "new",
+              "years",
+              "construction"
+            ],
+            "title": "Age Type",
+            "type": "string"
+          },
+          "age_years": {
+            "anyOf": [
+              {
+                "maximum": 1000,
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Age Years"
+          },
+          "condition": {
+            "default": "",
+            "title": "Condition",
+            "type": "string"
+          },
+          "amenities": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 40,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Amenities"
+          },
+          "not_applicable": {
+            "items": {
+              "enum": [
+                "bedrooms",
+                "bathrooms",
+                "half_bathrooms",
+                "parking",
+                "age_years"
+              ],
+              "type": "string"
+            },
+            "title": "Not Applicable",
+            "type": "array"
+          }
+        },
+        "title": "Characteristics",
+        "type": "object"
+      },
       "ManagedProperty": {
         "properties": {
           "id": {
@@ -2590,8 +2735,20 @@
             "type": "string"
           },
           "price": {
-            "title": "Price",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price"
+          },
+          "price_visible": {
+            "default": true,
+            "title": "Price Visible",
+            "type": "boolean"
           },
           "bedrooms": {
             "anyOf": [
@@ -2689,13 +2846,20 @@
             "type": "array"
           },
           "currency": {
-            "default": "MXN",
-            "enum": [
-              "MXN",
-              "USD"
+            "anyOf": [
+              {
+                "enum": [
+                  "MXN",
+                  "USD"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
-            "title": "Currency",
-            "type": "string"
+            "default": "MXN",
+            "title": "Currency"
           },
           "state": {
             "default": "",
@@ -2721,6 +2885,34 @@
             "additionalProperties": true,
             "title": "Details",
             "type": "object"
+          },
+          "public_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Public Revision"
+          },
+          "origin": {
+            "default": "local",
+            "title": "Origin",
+            "type": "string"
+          },
+          "source_current": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Current"
           },
           "capture_id": {
             "anyOf": [
@@ -2751,6 +2943,62 @@
               }
             ],
             "title": "Advisor Id"
+          },
+          "private_data": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PrivatePropertyData"
+              }
+            ]
+          },
+          "land_m2": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Land M2"
+          },
+          "private_m2": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Private M2"
+          },
+          "commercial_status": {
+            "default": "available",
+            "title": "Commercial Status",
+            "type": "string"
+          },
+          "closing_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closing Id"
+          },
+          "withdrawn_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Withdrawn At"
           }
         },
         "required": [
@@ -2777,6 +3025,56 @@
           "advisor_id"
         ],
         "title": "ManagedProperty",
+        "type": "object"
+      },
+      "PrivatePropertyData": {
+        "additionalProperties": false,
+        "properties": {
+          "private_address": {
+            "default": "",
+            "maxLength": 240,
+            "title": "Private Address",
+            "type": "string"
+          },
+          "zone_type": {
+            "default": "colonia",
+            "pattern": "^(colonia|barrio|localidad)$",
+            "title": "Zone Type",
+            "type": "string"
+          },
+          "location_mode": {
+            "default": "address",
+            "pattern": "^(address|reference)$",
+            "title": "Location Mode",
+            "type": "string"
+          },
+          "location_reference": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Location Reference",
+            "type": "string"
+          },
+          "rural_identification": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Rural Identification",
+            "type": "string"
+          },
+          "rural_reference": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Rural Reference",
+            "type": "string"
+          },
+          "characteristics": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Characteristics"
+              }
+            ]
+          }
+        },
+        "title": "PrivatePropertyData",
         "type": "object"
       },
       "PropertyInput": {
@@ -3006,6 +3304,46 @@
               }
             ],
             "title": "Advisor Id"
+          },
+          "private_data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PrivatePropertyData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "land_m2": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Land M2"
+          },
+          "private_m2": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Private M2"
           }
         },
         "required": [

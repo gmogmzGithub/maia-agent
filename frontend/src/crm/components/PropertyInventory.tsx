@@ -21,10 +21,15 @@ const normalize = (value: string) =>
 export default function PropertyInventory({
   properties,
   onEdit,
+  onOutcome,
   onChange,
 }: {
   properties: ManagedProperty[];
   onEdit: (property: ManagedProperty) => void;
+  onOutcome?: (
+    property: ManagedProperty,
+    mode: "complete" | "withdraw" | "history",
+  ) => void;
   onChange: (property: ManagedProperty) => void;
 }) {
   const [filters, setFilters] = useState(emptyFilters);
@@ -156,11 +161,7 @@ export default function PropertyInventory({
           </button>
         )}
       </div>
-      {error && (
-        <ErrorNotice>
-          {error}
-        </ErrorNotice>
-      )}
+      {error && <ErrorNotice>{error}</ErrorNotice>}
       {result && (
         <p className="inventory-action-result" role="status">
           {result}
@@ -185,6 +186,7 @@ export default function PropertyInventory({
                     <strong>{p.title}</strong>
                     <small>
                       {p.reference} · {p.neighborhood}, {p.municipality}
+                      {p.origin === "easybroker" && " · EasyBroker, última oferta aplicada"}
                     </small>
                   </td>
                   <td>{labels[p.operation]}</td>
@@ -200,12 +202,26 @@ export default function PropertyInventory({
                     >
                       {p.published ? "Publicada" : "No publicada"}
                     </span>
+                    {p.commercial_status !== "available" && (
+                      <small>
+                        {(
+                          {
+                            sold: "Vendida",
+                            rented: "Rentada",
+                            withdrawn: "Retirada",
+                          } as Record<string, string>
+                        )[p.commercial_status] || "Conservada en historial"}
+                      </small>
+                    )}
                   </td>
                   <td>
                     <div className="inventory-row-actions">
                       <button
                         className="button secondary"
-                        disabled={pending !== null}
+                        disabled={
+                          pending !== null ||
+                          p.commercial_status !== "available"
+                        }
                         aria-label={`${p.published ? "Despublicar" : "Publicar"} ${p.title}`}
                         onClick={() => void publish(p)}
                       >
@@ -222,6 +238,39 @@ export default function PropertyInventory({
                       >
                         Editar ↗
                       </button>
+                      {onOutcome && (
+                        <button
+                          className="link-button"
+                          onClick={() =>
+                            onOutcome(
+                              p,
+                              p.commercial_status === "available"
+                                ? "complete"
+                                : "history",
+                            )
+                          }
+                        >
+                          {p.commercial_status === "available"
+                            ? `Marcar ${p.operation === "sale" ? "vendida" : "rentada"}`
+                            : "Ver resultado e historial"}
+                        </button>
+                      )}
+                      {onOutcome && p.commercial_status === "available" && (
+                        <button
+                          className="link-button"
+                          onClick={() => onOutcome(p, "withdraw")}
+                        >
+                          Retirar
+                        </button>
+                      )}
+                      {onOutcome && p.commercial_status === "available" && (
+                        <button
+                          className="link-button"
+                          onClick={() => onOutcome(p, "history")}
+                        >
+                          Historial
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>

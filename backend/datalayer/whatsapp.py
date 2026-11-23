@@ -72,17 +72,20 @@ def store_events(payload):
 
 
 def queue_reply(conversation, message, *, key=None, proposal=None):
+    from datalayer.public_history import message_projection
+
+    public = message_projection(message)
     if message.presentation is not None:
-        payload = structured_payload(conversation, message.presentation, message.properties)
+        payload = structured_payload(conversation, public["presentation"], public["properties"])
         return _queue_payload(conversation, message, payload, key)
-    text = message.text
-    if message.properties:
+    text = public["text"]
+    if public["properties"]:
         from harness.presentation.properties import property_text, split_closing_question
 
         intro, question = split_closing_question(text)
         cards = "\n\n".join(
             property_text(p, conversation.criteria, settings.PUBLIC_BASE_URL)
-            for p in message.properties[:3]
+            for p in public["properties"][:3]
         )
         text = "\n\n".join(part for part in (intro, cards, question) if part)
     from datalayer.models import AppointmentOperation

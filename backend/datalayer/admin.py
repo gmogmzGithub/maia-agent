@@ -35,7 +35,23 @@ class MaiaUserAdmin(UserAdmin):
 class PropertyAdmin(admin.ModelAdmin):
     list_display = ("reference", "title", "operation", "municipality", "price", "published")
     list_filter = ("operation", "published", "municipality")
-    readonly_fields = ("normalized_zone", "created_at", "updated_at")
+    readonly_fields = (
+        "normalized_zone",
+        "created_at",
+        "updated_at",
+        "physical_property",
+        "commercialization_round",
+    )
+
+    def has_change_permission(self, request, obj=None):
+        if obj and obj.closing_periods.filter(period=obj.commercialization_round).exists():
+            return False
+        return super().has_change_permission(request, obj)
+
+    def has_delete_permission(self, request, obj=None):
+        if obj and (obj.closings.exists() or obj.closing_periods.exists()):
+            return False
+        return super().has_delete_permission(request, obj)
 
 
 @admin.register(Execution)

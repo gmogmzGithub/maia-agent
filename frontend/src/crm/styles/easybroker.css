@@ -1,0 +1,83 @@
+.easybroker-panel {
+  display: grid;
+  gap: 1rem;
+}
+.easybroker-panel button {
+  padding: 0.7rem 1rem;
+  min-height: 44px;
+  border: 1px solid #c8d1cb;
+  border-radius: 8px;
+  background: #f5f7f4;
+  color: #29483b;
+  font: inherit;
+  cursor: pointer;
+}
+.easybroker-panel button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.easybroker-panel button:focus-visible {
+  outline: 2px solid #29483b;
+  outline-offset: 3px;
+}
+.easybroker-panel input,
+.easybroker-panel select,
+.easybroker-panel textarea {
+  width: 100%;
+  padding: 0.7rem;
+  border: 1px solid #c8d1cb;
+  border-radius: 8px;
+  background: #fff;
+  color: #24382e;
+  font: inherit;
+}
+.easybroker-panel input[type="checkbox"] {
+  width: auto;
+}
+.eb-accounts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 290px), 1fr));
+  gap: 1rem;
+}
+.eb-account,
+.eb-review {
+  border: 1px solid var(--line, #ddd);
+  border-radius: 12px;
+  padding: 1.25rem;
+}
+.eb-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  margin-block: 1rem;
+}
+.eb-form label,
+.eb-account form {
+  display: grid;
+  gap: 0.4rem;
+}
+.eb-form .full {
+  grid-column: 1 / -1;
+}
+.eb-account form {
+  margin-block: 1rem;
+}
+.easybroker-panel pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 24rem;
+  overflow: auto;
+  font-size: 0.85rem;
+}
+.easybroker-panel summary {
+  cursor: pointer;
+  padding-block: 0.6rem;
+}
+.easybroker-panel .table-scroll {
+  overflow: auto;
+}
+@media (max-width: 650px) {
+  .eb-form {
+    grid-template-columns: 1fr;
+  }
+}

@@ -7,7 +7,7 @@ from django.http import JsonResponse
 
 from api.capture import body, endpoint, require_owner, throttle
 from datalayer import google_locations as locations
-from datalayer.models import Capture, Property
+from datalayer.models import Capture
 
 
 def response(value, status=200):
@@ -92,7 +92,11 @@ def property_location(request, property_id):
     blocked = throttle(request, "location-public", 180)
     if blocked:
         return blocked
-    prop = Property.objects.get(pk=property_id, published=True)
+    from datalayer.inventory import public_inventory
+
+    prop = public_inventory().get(pk=property_id)
+    if prop.origin == "easybroker":
+        return response({"location": None})
     try:
         point = locations.public_point(prop)
     except locations.LocationUnavailable:

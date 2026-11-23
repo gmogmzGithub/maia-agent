@@ -9,15 +9,18 @@ from datalayer.prospects import is_paused, notice, prepare_declared_phone, recor
 
 
 def message_output(message):
+    from datalayer.public_history import message_projection
+
+    public = message_projection(message)
     delivery = message.whatsappdelivery_set.order_by("created_at").last()
     return {
         "id": message.pk,
         "role": "assistant" if message.display_kind == "card" else message.role,
-        "text": "" if message.display_kind == "card" else message.text,
-        "properties": message.properties if message.role == "assistant" or message.display_kind == "card" else [],
+        "text": "" if message.display_kind == "card" else public["text"],
+        "properties": public["properties"] if message.role == "assistant" or message.display_kind == "card" else [],
         "is_error": message.is_error,
         "delivery_status": delivery.status if delivery else None,
-        "presentation": message.presentation,
+        "presentation": public["presentation"],
     }
 
 
@@ -25,7 +28,7 @@ def message_output(message):
 def receive_message(conversation_id, owner_browser_id, text, client_message_id, *, property_id=None):
     from worker.dispatch import enqueue_conversation
 
-    conversation = Conversation.objects.select_for_update().get(
+    conversation = Conversation.objects.select_for_update(no_key=True).get(
         id=conversation_id, browser_id=owner_browser_id
     )
     existing = Message.objects.filter(

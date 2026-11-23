@@ -329,6 +329,7 @@ export default function Captures() {
                 {captureTitle(selected)}
               </h2>
               <CaptureStatus status={selected.status} />
+              {selected.property_id && <a className="button secondary" href={`/crm?closing_offer=${selected.property_id}`}>{selected.status === "closed" ? "Ver resultado e historial" : `Marcar ${selected.data.operation === "rent" ? "rentada" : "vendida"}`}</a>}
               <p className="capture-detail-next">
                 {captureState(selected.status).next}
               </p>
@@ -659,6 +660,7 @@ export default function Captures() {
                     ["parking", "Estacionamientos"],
                     ["area_m2", "Construcción m²"],
                     ["land_m2", "Terreno m²"],
+                    ["private_m2", "Superficie privativa m²"],
                     ["half_bathrooms", "Medios baños"],
                     ["age_years", "Años de antigüedad"],
                     ["maintenance", "Mantenimiento"],
@@ -709,7 +711,7 @@ export default function Captures() {
                 </label>
                 <button
                   className="button primary"
-                  disabled={busy || locationPending}
+                  disabled={busy || locationPending || selected.status === "closed"}
                 >
                   Guardar corrección
                 </button>
@@ -937,14 +939,14 @@ export default function Captures() {
               )}
               <button
                 className="button secondary"
-                disabled={busy || selected.status === "withdrawn"}
+                disabled={busy || ["withdrawn", "closed"].includes(selected.status)}
                 onClick={() => void act("withdraw")}
               >
                 Retirar y cancelar exclusividad
               </button>
               <button
                 className="link-button"
-                disabled={busy || selected.status === "rejected"}
+                disabled={busy || ["rejected", "closed"].includes(selected.status)}
                 onClick={() => void act("reject")}
               >
                 Descartar solicitud
@@ -1009,6 +1011,8 @@ export default function Captures() {
                       reject: "Descartada",
                       change: "Cambio solicitado",
                       resolve_request: "Solicitud atendida",
+                      closed: "Comercialización terminada por cierre",
+                      closing_reopened: "Oferta reabierta tras anulación",
                     } as Record<string, string>
                   )[x.action] || "Solicitud registrada"}{" "}
                   {x.summary}

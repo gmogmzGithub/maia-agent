@@ -13,7 +13,6 @@ from datalayer.models import (
     Conversation,
     Message,
     Notification,
-    Property,
     Prospect,
     ProspectEvent,
 )
@@ -125,9 +124,9 @@ def record_interest(conversation, arguments):
     if data.name.strip():
         record_name(conversation, {"name": data.name})
     already_requested = conversation.human_requested
-    properties = {
-        p.pk: p for p in Property.objects.filter(pk__in=data.property_ids, published=True)
-    }
+    from datalayer.inventory import public_inventory
+
+    properties = {p.pk: p for p in public_inventory().filter(pk__in=data.property_ids)}
     if len(properties) != len(set(data.property_ids)):
         return {"error": "property_not_available"}
     old_ids = set(conversation.interests.values_list("pk", flat=True))
@@ -318,6 +317,10 @@ def update_prospect(prospect_id, data, actor):
     from datalayer.models import FollowupCycle
 
     if data.status == "not_interested":
+        from datalayer.followups import freeze_intent
+
+        for cycle in prospect.followup_cycles.filter(closed_at__isnull=True):
+            freeze_intent(cycle)
         FollowupCycle.objects.filter(prospect=prospect, closed_at__isnull=True).update(
             closed_at=timezone.now(), reason="not_interested"
         )
